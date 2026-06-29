@@ -1,0 +1,31 @@
+{
+  "name": "@auto-typer/desktop",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "npm run prepare:electron && concurrently -k \"npm:dev:renderer\" \"npm:dev:main\"",
+    "dev:renderer": "vite --host 127.0.0.1",
+    "dev:main": "wait-on http://127.0.0.1:5173 && electron .",
+    "prepare:electron": "node electron/check-electron.cjs && tsc -p tsconfig.electron.json",
+    "build": "npm run typecheck && vite build && tsc -p tsconfig.electron.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.electron.json"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^42.5.0",
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "vite": "^6.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "concurrently": "^9.1.0",
+    "typescript": "^5.7.2",
+    "wait-on": "^8.0.1"
+  }
+}

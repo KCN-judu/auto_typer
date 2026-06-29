@@ -1,0 +1,13 @@
+{
+  "name": "auto-typer-workspace",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/desktop"
+  ],
+  "scripts": {
+    "desktop:dev": "npm run dev --workspace @auto-typer/desktop",
+    "desktop:build": "npm run build --workspace @auto-typer/desktop",
+    "desktop:typecheck": "npm run typecheck --workspace @auto-typer/desktop"
+  }
+}

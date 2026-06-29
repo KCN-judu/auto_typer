@@ -1,0 +1,12 @@
+.DS_Store
+
+node_modules/
+apps/*/node_modules/
+apps/*/dist/
+apps/*/dist-electron/
+
+.arduino-build/
+.arduino-cache/
+src/test/.arduino-cli/
+src/test/docs/auto_typer_connectivity_test.pdf
+node_modules
