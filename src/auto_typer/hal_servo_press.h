@@ -9,7 +9,13 @@ namespace auto_typer {
 class ServoPressHal {
  public:
   explicit ServoPressHal(const ServoActuatorConfig& config)
-      : config_(config), driver_(config.address), ready_(false) {}
+      : config_(config),
+        driver_(config.address),
+        ready_(false),
+        actionActive_(false),
+        actionStartedAtMs_(0),
+        actionDwellMs_(0),
+        settling_(false) {}
 
   bool begin() {
     ready_ = driver_.begin();
@@ -28,17 +34,50 @@ class ServoPressHal {
   }
 
   bool apply(PressAction action, uint16_t dwellMs) {
+    if (!start(action, dwellMs)) {
+      return false;
+    }
+    while (busy()) {
+      tick();
+      delay(1);
+    }
+    return true;
+  }
+
+  bool start(PressAction action, uint16_t dwellMs) {
     if (!ensureReady()) {
       return false;
     }
     const ServoMotion motion =
         action == PressAction::Release ? config_.semantics.releaseMotion : config_.semantics.pressMotion;
     writeMotion(motion);
-    delay(dwellMs);
-    writeMotion(ServoMotion::Neutral);
-    delay(config_.settleMs);
-    disableOutputs();
+    actionActive_ = true;
+    settling_ = false;
+    actionStartedAtMs_ = millis();
+    actionDwellMs_ = dwellMs;
     return true;
+  }
+
+  void tick() {
+    if (!actionActive_) {
+      return;
+    }
+    const uint32_t elapsed = millis() - actionStartedAtMs_;
+    if (!settling_ && elapsed >= actionDwellMs_) {
+      writeMotion(ServoMotion::Neutral);
+      settling_ = true;
+      actionStartedAtMs_ = millis();
+      return;
+    }
+    if (settling_ && elapsed >= config_.settleMs) {
+      disableOutputs();
+      actionActive_ = false;
+      settling_ = false;
+    }
+  }
+
+  bool busy() const {
+    return actionActive_;
   }
 
   bool release() {
@@ -108,6 +147,10 @@ class ServoPressHal {
   ServoActuatorConfig config_;
   Adafruit_PWMServoDriver driver_;
   bool ready_;
+  bool actionActive_;
+  uint32_t actionStartedAtMs_;
+  uint16_t actionDwellMs_;
+  bool settling_;
 };
 
 }  // namespace auto_typer

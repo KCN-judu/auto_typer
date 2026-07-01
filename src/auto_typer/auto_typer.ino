@@ -2,8 +2,11 @@
 
 #include "auto_typer_config.h"
 #include "auto_typer_runtime.h"
+#include "can/CanBus.h"
+#include "can/CanRxTask.h"
+#include "can/CanTxQueue.h"
+#include "drivers/EmmV5Driver.h"
 #include "hal_display.h"
-#include "hal_emm_can_motion.h"
 #include "hal_servo_press.h"
 #include "http_control_server.h"
 
@@ -13,9 +16,13 @@ using namespace auto_typer;
 
 const TypingConfig kConfig = defaultTypingConfig();
 DisplayHal gDisplay(kConfig.oled);
-EmmCanMotionHal gMotion(kConfig.canBus);
+CanBus gCanBus(kConfig.canBus);
+CanTxQueue gCanTx(gCanBus);
+MotorFeedbackStore gFeedback;
+CanRxTask gCanRx(gCanBus, gFeedback);
+EmmV5Driver gMotion(gCanTx);
 ServoPressHal gServo(kConfig.servo);
-AutoTyperApplication gApp(kConfig, gDisplay, gMotion, gServo, Serial);
+AutoTyperApplication gApp(kConfig, gDisplay, gCanBus, gCanTx, gCanRx, gMotion, gServo, gFeedback, Serial);
 HttpControlServer gHttp(kConfig, gApp, Serial);
 
 }  // namespace

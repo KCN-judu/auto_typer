@@ -11,6 +11,13 @@ export const mockStatus: DeviceStatus = {
   servoReady: true,
   motionReady: true,
   keymapVersion: 1,
+  currentJob: undefined,
+  motors: [
+    { id: 1, enabled: true, fault: false, moving: false, estimatedPositionSteps: 0, observedPositionSteps: 0, velocityRpm: 0, lastFeedbackMs: 0 },
+    { id: 2, enabled: true, fault: false, moving: false, estimatedPositionSteps: 0, observedPositionSteps: 0, velocityRpm: 0, lastFeedbackMs: 0 },
+    { id: 3, enabled: true, fault: false, moving: false, estimatedPositionSteps: 0, observedPositionSteps: 0, velocityRpm: 0, lastFeedbackMs: 0 },
+    { id: 4, enabled: true, fault: false, moving: false, estimatedPositionSteps: 0, observedPositionSteps: 0, velocityRpm: 0, lastFeedbackMs: 0 },
+  ],
 };
 
 export const mockKeymap: KeymapDocument = currentFeiyu200Keymap();

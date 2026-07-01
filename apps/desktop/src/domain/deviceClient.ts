@@ -1,4 +1,5 @@
 import type {
+  ApiErrorBody,
   CreateJobRequest,
   CreateJobResponse,
   DeviceStatus,
@@ -10,6 +11,7 @@ import type {
   ServoApplyRequest,
 } from "../../../../shared/protocol/auto-typer-protocol";
 import { protocolRoutes } from "../../../../shared/protocol/auto-typer-protocol";
+import { isApiErrorBody } from "../../../../shared/protocol/schema";
 
 export class DeviceClientError extends Error {
   constructor(
@@ -37,6 +39,10 @@ export class DeviceClient {
 
   async stopMachine(): Promise<DeviceStatus> {
     return this.postJson<DeviceStatus>(protocolRoutes.machineStop, {});
+  }
+
+  async resetFault(): Promise<DeviceStatus> {
+    return this.postJson<DeviceStatus>(protocolRoutes.resetFault, {});
   }
 
   async getKeymap(): Promise<KeymapDocument> {
@@ -94,7 +100,7 @@ export class DeviceClient {
       : await directRequest(url, init);
 
     if (!result.ok) {
-      throw new DeviceClientError(result.body || result.statusText, result.status);
+      throw new DeviceClientError(parseErrorMessage(result.body, result.statusText), result.status);
     }
 
     if (!result.body) {
@@ -111,6 +117,21 @@ export class DeviceClient {
       );
     }
   }
+}
+
+function parseErrorMessage(body: string, fallback: string): string {
+  if (!body) {
+    return fallback;
+  }
+  try {
+    const parsed = JSON.parse(body) as ApiErrorBody;
+    if (isApiErrorBody(parsed)) {
+      return `${parsed.code}: ${parsed.message}`;
+    }
+  } catch {
+    // Fall through to plain body.
+  }
+  return body;
 }
 
 async function directRequest(url: string, init: RequestInit) {

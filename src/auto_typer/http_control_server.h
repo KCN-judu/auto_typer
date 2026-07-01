@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <ArduinoJson.h>
 #include <WebServer.h>
 #include <WiFi.h>
 
@@ -14,26 +15,31 @@ class HttpControlServer {
       : config_(config), app_(app), log_(log), server_(80) {}
 
   void begin() {
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(config_.wifiSsid, config_.wifiPassword);
-    log_.print("Connecting WiFi SSID: ");
-    log_.println(config_.wifiSsid);
-
-    const uint32_t startedAt = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - startedAt < 12000) {
-      delay(250);
-      log_.print(".");
-    }
-    log_.println();
-
-    if (WiFi.status() == WL_CONNECTED) {
-      log_.print("WiFi IP: ");
-      log_.println(WiFi.localIP());
+    if (strlen(config_.wifiSsid) == 0) {
+      WiFi.mode(WIFI_AP);
+      WiFi.softAP("auto-typer-setup");
+      log_.println("WiFi credentials missing; setup AP started: auto-typer-setup");
     } else {
-      log_.println("WiFi connection failed; HTTP control offline");
-      return;
+      WiFi.mode(WIFI_STA);
+      WiFi.begin(config_.wifiSsid, config_.wifiPassword);
+      log_.print("Connecting WiFi SSID: ");
+      log_.println(config_.wifiSsid);
+      const uint32_t startedAt = millis();
+      while (WiFi.status() != WL_CONNECTED && millis() - startedAt < 12000) {
+        delay(50);
+        app_.tick();
+        log_.print(".");
+      }
+      log_.println();
+      if (WiFi.status() != WL_CONNECTED) {
+        WiFi.mode(WIFI_AP);
+        WiFi.softAP("auto-typer-setup");
+        log_.println("WiFi connection failed; setup AP started: auto-typer-setup");
+      }
     }
 
+    log_.print("HTTP IP: ");
+    log_.println(currentIp());
     registerRoutes();
     server_.begin();
     log_.println("HTTP control ready");
@@ -50,6 +56,7 @@ class HttpControlServer {
     server_.on("/api/jobs/current", HTTP_GET, [this]() { sendJob(); });
     server_.on("/api/jobs/current/cancel", HTTP_POST, [this]() { handleCancelJob(); });
     server_.on("/api/machine/stop", HTTP_POST, [this]() { handleEmergencyStop(); });
+    server_.on("/api/machine/reset-fault", HTTP_POST, [this]() { handleResetFault(); });
     server_.on("/api/keymap", HTTP_GET, [this]() { sendKeymap(); });
     server_.on("/api/keymap", HTTP_PUT, [this]() { handlePutKeymap(); });
     server_.on("/api/debug/motor/move-relative", HTTP_POST, [this]() { handleMotorMove(); });
@@ -60,32 +67,38 @@ class HttpControlServer {
     server_.onNotFound([this]() { sendError(404, "not_found", "Route not found"); });
   }
 
+  bool parseBody(JsonDocument& doc) {
+    const DeserializationError error = deserializeJson(doc, server_.arg("plain"));
+    if (error) {
+      sendError(400, "invalid_json", "Invalid JSON body");
+      return false;
+    }
+    return true;
+  }
+
   void handleCreateJob() {
-    const String body = server_.arg("plain");
-    const String text = extractString(body, "text");
-    if (text.length() == 0) {
+    StaticJsonDocument<512> request;
+    if (!parseBody(request)) {
+      return;
+    }
+    const char* text = request["text"] | "";
+    if (strlen(text) == 0) {
       sendError(400, "invalid_job", "Missing text");
       return;
     }
 
-    const bool accepted = app_.submitTextJob(text.c_str());
+    const bool accepted = app_.submitTextJob(text);
     const JobSnapshot snapshot = app_.snapshot();
-    String json = "{";
-    json += "\"jobId\":\"";
-    json += snapshot.jobId;
-    json += "\",\"accepted\":";
-    json += accepted ? "true" : "false";
-    json += ",\"planStatus\":\"";
-    json += planStatusJson(snapshot.planStatus);
-    json += "\",\"stepCount\":";
-    json += snapshot.totalSteps;
+    StaticJsonDocument<512> response;
+    response["jobId"] = String(snapshot.jobId);
+    response["accepted"] = accepted;
+    response["planStatus"] = planStatusJson(snapshot.planStatus);
+    response["stepCount"] = snapshot.totalBlocks;
     if (snapshot.failedKey != '\0') {
-      json += ",\"failedKey\":\"";
-      json += escapeJsonChar(snapshot.failedKey);
-      json += "\"";
+      char failedKey[2] = {snapshot.failedKey, '\0'};
+      response["failedKey"] = failedKey;
     }
-    json += "}";
-    sendJson(accepted ? 200 : 409, json);
+    sendJson(accepted ? 200 : 409, response);
   }
 
   void handleCancelJob() {
@@ -101,15 +114,26 @@ class HttpControlServer {
     sendStatus();
   }
 
-  void handleMotorMove() {
-    const String body = server_.arg("plain");
-    const uint8_t motorId = static_cast<uint8_t>(extractInt(body, "motorId", 0));
-    const uint16_t rpm = static_cast<uint16_t>(extractInt(body, "rpm", 0));
-    const uint8_t acceleration = static_cast<uint8_t>(extractInt(body, "acceleration", 0));
-    const uint32_t steps = static_cast<uint32_t>(extractInt(body, "steps", 0));
-    const bool sync = extractBool(body, "sync", false);
-    const MotorDirection direction = extractString(body, "direction") == "ccw" ? MotorDirection::Ccw : MotorDirection::Cw;
+  void handleResetFault() {
+    if (!app_.resetFault()) {
+      sendError(409, "reset_fault_rejected", "Fault reset rejected");
+      return;
+    }
+    sendStatus();
+  }
 
+  void handleMotorMove() {
+    StaticJsonDocument<384> request;
+    if (!parseBody(request)) {
+      return;
+    }
+    const uint8_t motorId = request["motorId"] | 0;
+    const uint16_t rpm = request["rpm"] | 0;
+    const uint8_t acceleration = request["acceleration"] | 0;
+    const uint32_t steps = request["steps"] | 0;
+    const bool sync = request["sync"] | false;
+    const String directionText = request["direction"] | "cw";
+    const MotorDirection direction = directionText == "ccw" ? MotorDirection::Ccw : MotorDirection::Cw;
     if (motorId == 0 || rpm == 0 || steps == 0) {
       sendError(400, "invalid_motor_move", "motorId or motor group, rpm and steps are required");
       return;
@@ -122,10 +146,13 @@ class HttpControlServer {
   }
 
   void handleMotorEnable() {
-    const String body = server_.arg("plain");
-    const uint8_t motorId = static_cast<uint8_t>(extractInt(body, "motorId", 0));
-    const bool enabled = extractBool(body, "enabled", true);
-    const bool sync = extractBool(body, "sync", false);
+    StaticJsonDocument<256> request;
+    if (!parseBody(request)) {
+      return;
+    }
+    const uint8_t motorId = request["motorId"] | 0;
+    const bool enabled = request["enabled"] | true;
+    const bool sync = request["sync"] | false;
     if (motorId == 0 || !app_.debugMotorEnable(motorId, enabled, sync)) {
       sendError(409, "motor_enable_rejected", "Motor enable rejected");
       return;
@@ -134,9 +161,12 @@ class HttpControlServer {
   }
 
   void handleMotorStop() {
-    const String body = server_.arg("plain");
-    const uint8_t motorId = static_cast<uint8_t>(extractInt(body, "motorId", 0));
-    const bool sync = extractBool(body, "sync", false);
+    StaticJsonDocument<256> request;
+    if (!parseBody(request)) {
+      return;
+    }
+    const uint8_t motorId = request["motorId"] | 0;
+    const bool sync = request["sync"] | false;
     if (motorId == 0 || !app_.debugMotorStop(motorId, sync)) {
       sendError(409, "motor_stop_rejected", "Motor stop rejected");
       return;
@@ -145,9 +175,12 @@ class HttpControlServer {
   }
 
   void handleServoApply() {
-    const String body = server_.arg("plain");
-    const String command = extractString(body, "command");
-    const uint16_t dwellMs = extractUint16(body, "durationMs", 0);
+    StaticJsonDocument<256> request;
+    if (!parseBody(request)) {
+      return;
+    }
+    const String command = request["command"] | "";
+    const uint16_t dwellMs = request["durationMs"] | 0;
     bool ok = false;
     if (command == "press") {
       ok = app_.debugServo(PressAction::Press, dwellMs);
@@ -164,10 +197,14 @@ class HttpControlServer {
   }
 
   void handleProbeKey() {
-    const String body = server_.arg("plain");
-    const String key = extractString(body, "key");
-    const float xMm = extractFloat(body, "xMm", extractFloat(body, "x", 0.0f));
-    const float yMm = extractFloat(body, "yMm", extractFloat(body, "y", 0.0f));
+    StaticJsonDocument<384> request;
+    if (!parseBody(request)) {
+      return;
+    }
+    const String key = request["key"] | "";
+    const JsonVariant point = request["point"];
+    const float xMm = point["xMm"] | (request["xMm"] | (request["x"] | 0.0f));
+    const float yMm = point["yMm"] | (request["yMm"] | (request["y"] | 0.0f));
     if (key.length() == 0 || !app_.upsertKeyBinding(key[0], {xMm, yMm})) {
       sendError(400, "invalid_probe", "Invalid key probe");
       return;
@@ -176,13 +213,26 @@ class HttpControlServer {
   }
 
   void handlePutKeymap() {
-    KeyBinding parsed[64];
-    size_t count = 0;
-    if (!parseBindings(server_.arg("plain"), parsed, sizeof(parsed) / sizeof(parsed[0]), count)) {
-      sendError(400, "invalid_keymap", "Invalid keymap bindings");
+    StaticJsonDocument<8192> request;
+    if (!parseBody(request)) {
       return;
     }
-    if (!app_.replaceKeymap(parsed, count)) {
+    KeyBinding parsed[64];
+    size_t count = 0;
+    for (JsonObject binding : request["bindings"].as<JsonArray>()) {
+      if (count >= sizeof(parsed) / sizeof(parsed[0])) {
+        sendError(400, "invalid_keymap", "Too many keymap bindings");
+        return;
+      }
+      const String key = binding["key"] | "";
+      if (key.length() == 0) {
+        sendError(400, "invalid_keymap", "Invalid key binding");
+        return;
+      }
+      parsed[count] = {key[0], {binding["point"]["xMm"] | 0.0f, binding["point"]["yMm"] | 0.0f}};
+      ++count;
+    }
+    if (count == 0 || !app_.replaceKeymap(parsed, count)) {
       sendError(409, "keymap_rejected", "Keymap rejected");
       return;
     }
@@ -190,222 +240,120 @@ class HttpControlServer {
   }
 
   void sendStatus() {
+    StaticJsonDocument<2048> response;
+    response["deviceId"] = config_.deviceId;
+    response["firmwareVersion"] = config_.firmwareVersion;
+    response["ipAddress"] = currentIp();
+    response["mode"] = modeJson(app_.mode());
+    response["health"] = app_.mode() == DeviceMode::Faulted ? "fault" : "ok";
+    response["wifiRssi"] = WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0;
+    response["servoReady"] = app_.servoReady();
+    response["motionReady"] = app_.motionReady();
+    response["keymapVersion"] = app_.keymapVersion();
     const JobSnapshot snapshot = app_.snapshot();
-    String json = "{";
-    json += "\"deviceId\":\"";
-    json += config_.deviceId;
-    json += "\",\"firmwareVersion\":\"";
-    json += config_.firmwareVersion;
-    json += "\",\"ipAddress\":\"";
-    json += WiFi.localIP().toString();
-    json += "\",\"mode\":\"";
-    json += modeJson(app_.mode());
-    json += "\",\"health\":\"";
-    json += app_.mode() == DeviceMode::Faulted ? "fault" : "ok";
-    json += "\",\"wifiRssi\":";
-    json += WiFi.RSSI();
-    json += ",\"servoReady\":";
-    json += app_.servoReady() ? "true" : "false";
-    json += ",\"motionReady\":";
-    json += app_.motionReady() ? "true" : "false";
-    json += ",\"keymapVersion\":";
-    json += app_.keymapVersion();
-    if (snapshot.state != JobState::None) {
-      json += ",\"currentJob\":";
-      json += jobJson(snapshot);
+    if (snapshot.state == JobState::None) {
+      response["currentJob"] = nullptr;
+    } else {
+      writeJob(response.createNestedObject("currentJob"), snapshot);
     }
-    json += "}";
-    sendJson(200, json);
+    writeMotorStates(response.createNestedArray("motors"));
+    if (app_.mode() == DeviceMode::Faulted) {
+      JsonObject fault = response.createNestedObject("fault");
+      fault["code"] = snapshot.faultCode;
+      fault["message"] = snapshot.faultMessage;
+      fault["recoverable"] = true;
+    }
+    sendJson(200, response);
   }
 
   void sendJob() {
-    sendJson(200, jobJson(app_.snapshot()));
+    StaticJsonDocument<1024> response;
+    const JobSnapshot snapshot = app_.snapshot();
+    if (snapshot.state == JobState::None) {
+      response["currentJob"] = nullptr;
+    } else {
+      writeJob(response.createNestedObject("currentJob"), snapshot);
+    }
+    sendJson(200, response);
   }
 
   void sendKeymap() {
-    String json = "{\"version\":";
-    json += app_.keymapVersion();
-    json += ",\"machine\":\"feiyu200\",\"updatedAt\":\"device\",\"bindings\":[";
-    const KeyBinding* bindings = app_.keymap();
+    StaticJsonDocument<8192> response;
+    response["version"] = app_.keymapVersion();
+    response["machine"] = "feiyu200";
+    response["updatedAt"] = "device";
+    JsonArray bindings = response.createNestedArray("bindings");
+    const KeyBinding* keymap = app_.keymap();
     for (size_t i = 0; i < app_.keymapCount(); ++i) {
-      if (i > 0) {
-        json += ",";
-      }
-      json += "{\"key\":\"";
-      json += escapeJsonChar(bindings[i].key);
-      json += "\",\"point\":{\"xMm\":";
-      json += String(bindings[i].point.xMm, 3);
-      json += ",\"yMm\":";
-      json += String(bindings[i].point.yMm, 3);
-      json += "}}";
+      JsonObject binding = bindings.createNestedObject();
+      char key[2] = {keymap[i].key, '\0'};
+      binding["key"] = key;
+      JsonObject point = binding.createNestedObject("point");
+      point["xMm"] = keymap[i].point.xMm;
+      point["yMm"] = keymap[i].point.yMm;
     }
-    json += "]}";
-    sendJson(200, json);
+    sendJson(200, response);
   }
 
-  String jobJson(const JobSnapshot& snapshot) const {
-    String json = "{";
-    json += "\"jobId\":\"";
-    json += snapshot.jobId;
-    json += "\",\"state\":\"";
-    json += jobStateJson(snapshot.state);
-    json += "\",\"textLength\":";
-    json += snapshot.textLength;
-    json += ",\"currentIndex\":";
-    json += snapshot.currentIndex;
-    json += ",\"currentStep\":";
-    json += snapshot.currentStep;
-    json += ",\"totalSteps\":";
-    json += snapshot.totalSteps;
-    json += ",\"currentPoint\":{\"xMm\":";
-    json += String(snapshot.currentPoint.xMm, 3);
-    json += ",\"yMm\":";
-    json += String(snapshot.currentPoint.yMm, 3);
-    json += "}}";
-    return json;
+  void writeJob(JsonObject json, const JobSnapshot& snapshot) {
+    json["jobId"] = String(snapshot.jobId);
+    json["state"] = jobStateJson(snapshot.state);
+    json["textLength"] = snapshot.textLength;
+    json["currentIndex"] = snapshot.currentIndex;
+    json["currentStep"] = snapshot.currentStep;
+    json["totalSteps"] = snapshot.totalSteps;
+    json["currentBlock"] = snapshot.currentBlock;
+    json["totalBlocks"] = snapshot.totalBlocks;
+    JsonObject point = json.createNestedObject("currentPoint");
+    point["xMm"] = snapshot.currentPoint.xMm;
+    point["yMm"] = snapshot.currentPoint.yMm;
+    if (snapshot.faultCode != nullptr && strlen(snapshot.faultCode) > 0) {
+      json["message"] = snapshot.faultMessage;
+    }
   }
 
-  void sendJson(int status, const String& json) {
+  void writeMotorStates(JsonArray motors) {
+    const uint8_t ids[] = {
+      config_.topology.xMotorId,
+      config_.topology.yLeftMotorId,
+      config_.topology.yRightMotorId,
+      config_.topology.lineFeedMotorId,
+    };
+    for (uint8_t id : ids) {
+      const MotorState state = app_.motorState(id);
+      JsonObject motor = motors.createNestedObject();
+      motor["id"] = id;
+      motor["enabled"] = state.enabled;
+      motor["fault"] = state.fault;
+      motor["moving"] = state.moving;
+      motor["estimatedPositionSteps"] = state.estimatedPositionSteps;
+      motor["observedPositionSteps"] = state.observedPositionSteps;
+      motor["velocityRpm"] = state.velocityRpm;
+      motor["lastFeedbackMs"] = state.lastFeedbackMs;
+    }
+  }
+
+  template <typename T>
+  void sendJson(int status, T& doc) {
+    String json;
+    serializeJson(doc, json);
     server_.send(status, "application/json", json);
   }
 
   void sendError(int status, const char* code, const char* message) {
-    String json = "{\"code\":\"";
-    json += code;
-    json += "\",\"message\":\"";
-    json += message;
-    json += "\"}";
-    sendJson(status, json);
+    StaticJsonDocument<256> response;
+    response["code"] = code;
+    response["message"] = message;
+    JsonObject details = response.createNestedObject("details");
+    details["status"] = status;
+    sendJson(status, response);
   }
 
-  static String extractString(const String& json, const char* key) {
-    const String marker = String("\"") + key + "\":";
-    int start = json.indexOf(marker);
-    if (start < 0) {
-      return "";
+  String currentIp() const {
+    if (WiFi.status() == WL_CONNECTED) {
+      return WiFi.localIP().toString();
     }
-    start = json.indexOf('"', start + marker.length());
-    if (start < 0) {
-      return "";
-    }
-    String value;
-    bool escaped = false;
-    for (int i = start + 1; i < json.length(); ++i) {
-      const char current = json[i];
-      if (escaped) {
-        appendJsonEscapedChar(value, current);
-        escaped = false;
-        continue;
-      }
-      if (current == '\\') {
-        escaped = true;
-        continue;
-      }
-      if (current == '"') {
-        return value;
-      }
-      value += current;
-    }
-    return "";
-  }
-
-  static void appendJsonEscapedChar(String& value, char escaped) {
-    switch (escaped) {
-      case '"':
-      case '\\':
-      case '/':
-        value += escaped;
-        break;
-      case 'b':
-        value += '\b';
-        break;
-      case 'f':
-        value += '\f';
-        break;
-      case 'n':
-        value += '\n';
-        break;
-      case 'r':
-        value += '\r';
-        break;
-      case 't':
-        value += '\t';
-        break;
-      default:
-        value += escaped;
-        break;
-    }
-  }
-
-  static long extractInt(const String& json, const char* key, long fallback) {
-    const String marker = String("\"") + key + "\":";
-    int start = json.indexOf(marker);
-    if (start < 0) {
-      return fallback;
-    }
-    start += marker.length();
-    return json.substring(start).toInt();
-  }
-
-  static uint16_t extractUint16(const String& json, const char* key, uint16_t fallback) {
-    const long value = extractInt(json, key, fallback);
-    if (value < 0) {
-      return fallback;
-    }
-    if (value > 65535) {
-      return 65535;
-    }
-    return static_cast<uint16_t>(value);
-  }
-
-  static float extractFloat(const String& json, const char* key, float fallback) {
-    const String marker = String("\"") + key + "\":";
-    int start = json.indexOf(marker);
-    if (start < 0) {
-      return fallback;
-    }
-    start += marker.length();
-    return json.substring(start).toFloat();
-  }
-
-  static bool extractBool(const String& json, const char* key, bool fallback) {
-    const String marker = String("\"") + key + "\":";
-    int start = json.indexOf(marker);
-    if (start < 0) {
-      return fallback;
-    }
-    start += marker.length();
-    return json.substring(start).startsWith("true");
-  }
-
-  static bool parseBindings(const String& json, KeyBinding* bindings, size_t capacity, size_t& count) {
-    count = 0;
-    int cursor = 0;
-    while (count < capacity) {
-      const int keyMarker = json.indexOf("\"key\":", cursor);
-      if (keyMarker < 0) {
-        break;
-      }
-      const int keyQuote = json.indexOf('"', keyMarker + 6);
-      if (keyQuote < 0) {
-        return false;
-      }
-      const int keyEnd = json.indexOf('"', keyQuote + 1);
-      if (keyEnd < 0) {
-        return false;
-      }
-      const String keyText = json.substring(keyQuote + 1, keyEnd);
-      const int xMarker = json.indexOf("\"xMm\":", keyEnd);
-      const int yMarker = json.indexOf("\"yMm\":", keyEnd);
-      if (keyText.length() == 0 || xMarker < 0 || yMarker < 0) {
-        return false;
-      }
-      bindings[count] = {keyText[0],
-                         {json.substring(xMarker + 6).toFloat(), json.substring(yMarker + 6).toFloat()}};
-      ++count;
-      cursor = keyEnd + 1;
-    }
-    return count > 0;
+    return WiFi.softAPIP().toString();
   }
 
   static const char* modeJson(DeviceMode mode) {
@@ -426,8 +374,12 @@ class HttpControlServer {
     switch (state) {
       case JobState::Queued:
         return "queued";
+      case JobState::Planning:
+        return "planning";
       case JobState::Running:
         return "running";
+      case JobState::Cancelling:
+        return "cancelling";
       case JobState::Completed:
         return "completed";
       case JobState::Cancelled:
@@ -436,7 +388,7 @@ class HttpControlServer {
         return "failed";
       case JobState::None:
       default:
-        return "queued";
+        return "none";
     }
   }
 
@@ -450,19 +402,6 @@ class HttpControlServer {
       default:
         return "ok";
     }
-  }
-
-  static String escapeJsonChar(char value) {
-    if (value == '"') {
-      return "\\\"";
-    }
-    if (value == '\\') {
-      return "\\\\";
-    }
-    if (value == ' ') {
-      return " ";
-    }
-    return String(value);
   }
 
   const TypingConfig& config_;

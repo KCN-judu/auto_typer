@@ -38,7 +38,9 @@ enum class PlanStatus : uint8_t {
 enum class JobState : uint8_t {
   None,
   Queued,
+  Planning,
   Running,
+  Cancelling,
   Completed,
   Cancelled,
   Failed,
@@ -100,6 +102,20 @@ struct LineFeedProfile {
   uint16_t characterReleaseSettleMs;
 };
 
+struct MotionRuntimeConfig {
+  uint8_t yPairVirtualMotorId;
+  uint16_t defaultMoveRpm;
+  uint8_t defaultAccelerationPercent;
+  uint8_t defaultAccelerationRaw;
+  uint32_t positionToleranceSteps;
+  uint32_t ySkewToleranceSteps;
+  float idleVelocityThresholdRpm;
+  uint16_t motionPollIntervalMs;
+  uint32_t motionTimeoutMs;
+  uint8_t completionSamples;
+  uint16_t minimumCoordinatedRpm;
+};
+
 struct ServoPressSemantics {
   ServoMotion releaseMotion;
   ServoMotion pressMotion;
@@ -151,6 +167,7 @@ struct TypingConfig {
   AxisConservativeReturnProfile xReturn;
   AxisConservativeReturnProfile yReturn;
   LineFeedProfile lineFeed;
+  MotionRuntimeConfig motionRuntime;
   MachinePointMm homePoint;
   const char* sampleText;
 };
@@ -179,6 +196,48 @@ struct TypingPlan {
   TypingStep steps[256];
 };
 
+enum class MotionBlockKind : uint8_t {
+  MoveXY,
+  LineFeed,
+  CharacterRelease,
+  ServoPress,
+  ServoRelease,
+  Wait,
+};
+
+struct MotorTargetSteps {
+  int32_t x;
+  int32_t yLeft;
+  int32_t yRight;
+  int32_t lineFeed;
+};
+
+struct MotionProfile {
+  uint16_t maxRpm;
+  uint8_t acceleration;
+  uint16_t settleMs;
+  uint32_t timeoutMs;
+};
+
+struct MotionBlock {
+  MotionBlockKind kind;
+  MachinePointMm targetMm;
+  MotorTargetSteps deltaSteps;
+  MotionProfile profile;
+  uint16_t waitMs;
+};
+
+struct MotorState {
+  uint8_t id;
+  bool enabled;
+  bool fault;
+  bool moving;
+  int32_t estimatedPositionSteps;
+  int32_t observedPositionSteps;
+  float velocityRpm;
+  uint32_t lastFeedbackMs;
+};
+
 struct JobSnapshot {
   JobState state;
   uint32_t jobId;
@@ -186,9 +245,13 @@ struct JobSnapshot {
   size_t currentIndex;
   size_t currentStep;
   size_t totalSteps;
+  size_t currentBlock;
+  size_t totalBlocks;
   MachinePointMm currentPoint;
   PlanStatus planStatus;
   char failedKey;
+  const char* faultCode;
+  const char* faultMessage;
 };
 
 }  // namespace auto_typer

@@ -111,6 +111,15 @@ export function App() {
     }
   }
 
+  async function resetFault() {
+    try {
+      setStatus(await client.resetFault());
+      appendLog("已请求清除故障");
+    } catch (error) {
+      appendLog(error instanceof Error ? error.message : "清除故障失败");
+    }
+  }
+
   async function cancelJob() {
     try {
       setStatus(await client.cancelJob());
@@ -186,7 +195,9 @@ export function App() {
     setLogLines((lines) => [`${new Date().toLocaleTimeString()} ${line}`, ...lines].slice(0, 10));
   }
 
-  const canDebug = connection === "connected" && status.mode !== "running";
+  const jobState = status.currentJob?.state ?? "none";
+  const isBusy = status.mode === "running" || jobState === "queued" || jobState === "planning" || jobState === "running" || jobState === "cancelling";
+  const canDebug = connection === "connected" && !isBusy && status.mode !== "faulted";
 
   return (
     <div className="appShell">
@@ -230,6 +241,9 @@ export function App() {
               <AlertTriangle size={16} />
               急停
             </button>
+            <button className="secondary" onClick={resetFault} disabled={connection !== "connected" || status.mode !== "faulted"}>
+              清故障
+            </button>
           </div>
         </header>
 
@@ -249,7 +263,7 @@ export function App() {
               </div>
               <textarea value={jobText} onChange={(event) => setJobText(event.target.value)} spellCheck={false} />
               <div className="actionRow">
-                <button className="primary" onClick={submitJob} disabled={connection !== "connected" || status.mode === "running"}>
+                <button className="primary" onClick={submitJob} disabled={connection !== "connected" || isBusy || status.mode === "faulted"}>
                   <Send size={16} />
                   创建打印任务
                 </button>
@@ -380,7 +394,21 @@ function StatusPanel({ status, logLines }: { status: DeviceStatus; logLines: str
         <StateRow label="舵机" value={status.servoReady ? "READY" : "WAIT"} />
         <StateRow label="运动" value={status.motionReady ? "READY" : "WAIT"} />
         <StateRow label="任务" value={status.currentJob?.state ?? "none"} />
+        <StateRow label="Block" value={`${status.currentJob?.currentBlock ?? 0}/${status.currentJob?.totalBlocks ?? 0}`} />
+        <StateRow label="坐标" value={`${status.currentJob?.currentPoint.xMm.toFixed(1) ?? "0.0"}, ${status.currentJob?.currentPoint.yMm.toFixed(1) ?? "0.0"}`} />
+        {status.fault && <StateRow label="故障" value={`${status.fault.code}: ${status.fault.message}`} />}
       </div>
+      {status.motors && status.motors.length > 0 && (
+        <div className="stateRows">
+          {status.motors.map((motor) => (
+            <StateRow
+              key={motor.id}
+              label={`M${motor.id}`}
+              value={`${motor.observedPositionSteps} steps / ${motor.velocityRpm.toFixed(1)} rpm`}
+            />
+          ))}
+        </div>
+      )}
       <div className="logBox">
         {logLines.map((line) => (
           <div key={line}>{line}</div>

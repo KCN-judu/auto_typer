@@ -35,6 +35,7 @@ export interface DeviceStatus {
   keymapVersion: number;
   currentJob?: JobStatus;
   fault?: DeviceFault;
+  motors?: MotorState[];
 }
 
 export interface DeviceFault {
@@ -60,14 +61,33 @@ export interface CreateJobResponse {
 }
 
 export interface JobStatus {
-  jobId: string;
-  state: "queued" | "running" | "completed" | "cancelled" | "failed";
+  jobId?: string;
+  state: "none" | "queued" | "planning" | "running" | "cancelling" | "completed" | "cancelled" | "failed";
   textLength: number;
   currentIndex: number;
   currentStep: number;
   totalSteps: number;
+  currentBlock?: number;
+  totalBlocks?: number;
   currentPoint: MachinePointMm;
   message?: string;
+}
+
+export interface MotorState {
+  id: number;
+  enabled: boolean;
+  fault: boolean;
+  moving: boolean;
+  estimatedPositionSteps: number;
+  observedPositionSteps: number;
+  velocityRpm: number;
+  lastFeedbackMs: number;
+}
+
+export interface ApiErrorBody {
+  code: string;
+  message: string;
+  details?: unknown;
 }
 
 export interface MotorMoveRelativeRequest {
@@ -116,6 +136,7 @@ export const protocolRoutes = {
   currentJob: "/api/jobs/current",
   cancelJob: "/api/jobs/current/cancel",
   machineStop: "/api/machine/stop",
+  resetFault: "/api/machine/reset-fault",
   keymap: "/api/keymap",
   events: "/api/events",
   debugMotorMoveRelative: "/api/debug/motor/move-relative",

@@ -3,16 +3,22 @@
 #include <Arduino.h>
 
 #include "auto_typer_types.h"
+#include "config/MachineConfig.h"
+
+#if __has_include("config/Secrets.h")
+#include "config/Secrets.h"
+#else
+#define AUTO_TYPER_WIFI_SSID ""
+#define AUTO_TYPER_WIFI_PASSWORD ""
+#endif
 
 namespace auto_typer {
 
 inline TypingConfig defaultTypingConfig() {
   TypingConfig config{};
   config.serialBaudrate = 115200;
-  config.wifiSsid = "CMCC-102";
-  config.wifiPassword = "13472789989zq";
-  // config.wifiSsid = "realme Neo7 D6EC";
-  // config.wifiPassword = "kcnjudu1";
+  config.wifiSsid = AUTO_TYPER_WIFI_SSID;
+  config.wifiPassword = AUTO_TYPER_WIFI_PASSWORD;
   config.deviceId = "esp32-s3-auto-typer";
   config.firmwareVersion = "0.1.0";
 
@@ -39,8 +45,9 @@ inline TypingConfig defaultTypingConfig() {
   config.topology = {1, 2, 3, 4};
   config.calibration = {2.0f, 20, 3200};
 
-  config.xProfile = {3000, 255, 120};
-  config.yProfile = {3000, 255, 120};
+  config.motionRuntime = defaultMotionRuntimeConfig();
+  config.xProfile = {config.motionRuntime.defaultMoveRpm, config.motionRuntime.defaultAccelerationRaw, 120};
+  config.yProfile = {config.motionRuntime.defaultMoveRpm, config.motionRuntime.defaultAccelerationRaw, 120};
   config.xReturn = {true, 200, 3, 200, 180};
   config.yReturn = {true, 200, 3, 100, 180};
   config.lineFeed = {500, 10, 16440, MotorDirection::Cw, 6400, 180, MotorDirection::Ccw, 400, 80};

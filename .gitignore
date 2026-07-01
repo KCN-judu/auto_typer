@@ -10,3 +10,5 @@ apps/*/dist-electron/
 src/test/.arduino-cli/
 src/test/docs/auto_typer_connectivity_test.pdf
 node_modules
+
+src/auto_typer/config/Secrets.h

@@ -8,6 +8,7 @@
   "scripts": {
     "desktop:dev": "npm run dev --workspace @auto-typer/desktop",
     "desktop:build": "npm run build --workspace @auto-typer/desktop",
-    "desktop:typecheck": "npm run typecheck --workspace @auto-typer/desktop"
+    "desktop:typecheck": "npm run typecheck --workspace @auto-typer/desktop",
+    "firmware:test": "node src/auto_typer/test/run-tests.mjs"
   }
 }
