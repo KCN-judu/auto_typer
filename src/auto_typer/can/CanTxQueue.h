@@ -31,15 +31,23 @@ class CanTxQueue {
     return xQueueSendToBack(queue_, &item, 0) == pdTRUE;
   }
 
-  void tick() {
+  void tick(size_t maxFrames = 4) {
     if (queue_ == nullptr) {
       return;
     }
     QueuedFrame item{};
-    while (xQueueReceive(queue_, &item, 0) == pdTRUE) {
+    size_t sent = 0;
+    while (sent < maxFrames && xQueueReceive(queue_, &item, 0) == pdTRUE) {
       if (!bus_.transmit(item.frame)) {
         return;
       }
+      ++sent;
+    }
+  }
+
+  void clear() {
+    if (queue_ != nullptr) {
+      xQueueReset(queue_);
     }
   }
 

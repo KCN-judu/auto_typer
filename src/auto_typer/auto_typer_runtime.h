@@ -46,6 +46,7 @@ class AutoTyperApplication {
         activeBlocks_{},
         lastPlanStatus_(PlanStatus::Ok),
         failedKey_('\0'),
+        deviceReadyWarning_(false),
         faulted_(false),
         faultCode_(""),
         faultMessage_("") {}
@@ -75,9 +76,10 @@ class AutoTyperApplication {
       showError();
       return;
     }
-    if (!prepareMotors()) {
-      setFault("motor_prepare_failed", "Motor preparation failed");
-      showError();
+    canBus_.setSoftFaultEscalationEnabled(false);
+    prepareMotors();
+    canBus_.setSoftFaultEscalationEnabled(true);
+    if (faulted_) {
       return;
     }
     log_.println("Auto typer ready");
@@ -85,11 +87,17 @@ class AutoTyperApplication {
   }
 
   void tick() {
-    canRx_.tick();
-    canTx_.tick();
+    canRx_.tick(16);
+    canTx_.tick(4);
 
-    if (canBus_.fault() != CanBusFault::None) {
-      emergencyStopWithReason("can_fault", "CAN bus fault");
+    if (canBus_.hasFatalFault()) {
+      if (!faulted_) {
+        const CanBusDiagnostics diagnostics = canBus_.diagnostics();
+        setFault(diagnostics.lastFaultCode, diagnostics.lastFaultMessage);
+        executor_.stopAll();
+        jobState_ = JobState::Failed;
+        showError();
+      }
       return;
     }
 
@@ -105,7 +113,7 @@ class AutoTyperApplication {
     }
 
     executor_.tick();
-    canTx_.tick();
+    canTx_.tick(4);
 
     if (jobState_ == JobState::Running && executor_.completed()) {
       jobState_ = JobState::Completed;
@@ -121,10 +129,27 @@ class AutoTyperApplication {
     }
   }
 
-  bool submitTextJob(const char* text) {
+  SubmitJobResult submitTextJob(const char* text) {
+    SubmitJobResult result{false, "", "", PlanStatus::Ok, 0, 0, '\0'};
+    if (faulted_) {
+      result.planStatus = PlanStatus::DeviceFault;
+      result.rejectionCode = faultCode_;
+      result.rejectionMessage = faultMessage_;
+      result.stepCount = 0;
+      return result;
+    }
     if (jobState_ == JobState::Queued || jobState_ == JobState::Planning || jobState_ == JobState::Running ||
-        jobState_ == JobState::Cancelling || faulted_) {
-      return false;
+        jobState_ == JobState::Cancelling) {
+      result.planStatus = PlanStatus::DeviceBusy;
+      result.rejectionCode = "device_busy";
+      result.rejectionMessage = "Device is already processing a job";
+      return result;
+    }
+    if (!motionReady()) {
+      result.planStatus = PlanStatus::DeviceNotReady;
+      result.rejectionCode = "motion_not_ready";
+      result.rejectionMessage = motionNotReadyMessage();
+      return result;
     }
 
     jobState_ = JobState::Planning;
@@ -137,23 +162,32 @@ class AutoTyperApplication {
     log_.print("Plan status: ");
     log_.println(statusText(activePlan_.status));
     if (activePlan_.status != PlanStatus::Ok) {
-      jobState_ = JobState::Failed;
-      setFault("planning_failed", statusText(activePlan_.status));
-      showError();
-      return false;
+      jobState_ = JobState::None;
+      result.planStatus = activePlan_.status;
+      result.rejectionCode = statusText(activePlan_.status);
+      result.rejectionMessage = statusText(activePlan_.status);
+      result.failedKey = failedKey_;
+      result.stepCount = activePlan_.count;
+      return result;
     }
 
     activeBlocks_ = planMotionBlocks(activePlan_, config_);
     if (activeBlocks_.status != PlanStatus::Ok) {
       lastPlanStatus_ = activeBlocks_.status;
-      jobState_ = JobState::Failed;
-      setFault("motion_planning_failed", statusText(activeBlocks_.status));
-      showError();
-      return false;
+      jobState_ = JobState::None;
+      result.planStatus = activeBlocks_.status;
+      result.rejectionCode = statusText(activeBlocks_.status);
+      result.rejectionMessage = statusText(activeBlocks_.status);
+      result.stepCount = activeBlocks_.count;
+      return result;
     }
 
     jobState_ = JobState::Queued;
-    return true;
+    result.accepted = true;
+    result.jobId = jobId_;
+    result.planStatus = PlanStatus::Ok;
+    result.stepCount = activeBlocks_.count;
+    return result;
   }
 
   bool cancelCurrentJob() {
@@ -175,15 +209,29 @@ class AutoTyperApplication {
   }
 
   bool resetFault() {
-    if (!faulted_) {
-      return true;
-    }
     executor_.resetFault();
-    canBus_.clearFaultForRecovery();
+    const bool recovered = canBus_.recoverOrClearFault();
     faulted_ = false;
     faultCode_ = "";
     faultMessage_ = "";
     jobState_ = JobState::None;
+    deviceReadyWarning_ = false;
+    canBus_.setSoftFaultEscalationEnabled(false);
+    requestMotorFeedback();
+    const uint32_t startedAt = millis();
+    while (millis() - startedAt < 300) {
+      canTx_.tick(4);
+      canRx_.tick(16);
+      delay(10);
+    }
+    canBus_.setSoftFaultEscalationEnabled(true);
+    refreshDeviceReadyWarning();
+    if (!recovered || canBus_.hasFatalFault()) {
+      const CanBusDiagnostics diagnostics = canBus_.diagnostics();
+      setFault(diagnostics.lastFaultCode, diagnostics.lastFaultMessage);
+      showError();
+      return false;
+    }
     display_.showStatus(DisplayStatus::Idle);
     return true;
   }
@@ -319,7 +367,15 @@ class AutoTyperApplication {
   }
 
   bool motionReady() const {
-    return canBus_.ready();
+    return canBus_.motionReady() && !deviceReadyWarning_;
+  }
+
+  bool healthWarning() const {
+    return !faulted_ && (!motionReady() || canBus_.diagnostics().lastAlerts != 0 || deviceReadyWarning_);
+  }
+
+  CanBusDiagnostics canDiagnostics() const {
+    return canBus_.diagnostics();
   }
 
  private:
@@ -341,7 +397,7 @@ class AutoTyperApplication {
     log_.println(config_.motionRuntime.defaultMoveRpm);
   }
 
-  bool prepareMotors() {
+  void prepareMotors() {
     const uint8_t motors[] = {
       config_.topology.xMotorId,
       config_.topology.yLeftMotorId,
@@ -350,19 +406,37 @@ class AutoTyperApplication {
     };
     for (uint8_t motor : motors) {
       if (!motion_.setClosedLoopControlMode(motor) || !motion_.enableMotor(motor)) {
-        return false;
+        deviceReadyWarning_ = true;
+      }
+      motion_.requestStatusFlags(motor);
+      motion_.requestPosition(motor);
+    }
+    const uint32_t startedAt = millis();
+    while (millis() - startedAt < 800) {
+      canTx_.tick(4);
+      canRx_.tick(16);
+      delay(10);
+    }
+    for (uint8_t motor : motors) {
+      const MotorState state = feedback_.get(motor);
+      if (state.fault) {
+        setFault("motor_fault", "Motor reported a fault");
+        showError();
+        return;
+      }
+      if (state.lastFeedbackMs == 0) {
+        deviceReadyWarning_ = true;
       }
     }
-    canTx_.tick();
-    return true;
   }
 
   bool emergencyStopWithReason(const char* code, const char* message) {
+    canTx_.clear();
     executor_.emergencyStop();
     setFault(code, message);
     jobState_ = JobState::Failed;
     showError();
-    canTx_.tick();
+    canTx_.tick(8);
     return true;
   }
 
@@ -379,6 +453,56 @@ class AutoTyperApplication {
     faulted_ = true;
     faultCode_ = code;
     faultMessage_ = message;
+  }
+
+  void requestMotorFeedback() {
+    const uint8_t motors[] = {
+      config_.topology.xMotorId,
+      config_.topology.yLeftMotorId,
+      config_.topology.yRightMotorId,
+      config_.topology.lineFeedMotorId,
+    };
+    for (uint8_t motor : motors) {
+      motion_.requestStatusFlags(motor);
+      motion_.requestPosition(motor);
+      motion_.requestVelocity(motor);
+    }
+  }
+
+  void refreshDeviceReadyWarning() {
+    const uint8_t motors[] = {
+      config_.topology.xMotorId,
+      config_.topology.yLeftMotorId,
+      config_.topology.yRightMotorId,
+      config_.topology.lineFeedMotorId,
+    };
+    deviceReadyWarning_ = false;
+    for (uint8_t motor : motors) {
+      const MotorState state = feedback_.get(motor);
+      if (state.lastFeedbackMs == 0) {
+        deviceReadyWarning_ = true;
+      }
+    }
+  }
+
+  const char* motionNotReadyMessage() const {
+    const CanBusDiagnostics diagnostics = canBus_.diagnostics();
+    if (!canBus_.driverReady()) {
+      return "CAN driver is not ready";
+    }
+    if (diagnostics.fatalFault) {
+      return diagnostics.lastFaultMessage;
+    }
+    if (deviceReadyWarning_) {
+      return "Motor feedback is not ready";
+    }
+    if (diagnostics.rxQueueFullCount > 0) {
+      return "CAN RX queue has overflow warnings";
+    }
+    if (diagnostics.txFailedCount > 0 || diagnostics.busErrorCount > 0) {
+      return "CAN warning counters are non-zero";
+    }
+    return "Motion subsystem is not ready";
   }
 
   void showError() {
@@ -409,6 +533,7 @@ class AutoTyperApplication {
   MotionBlockPlan activeBlocks_;
   PlanStatus lastPlanStatus_;
   char failedKey_;
+  bool deviceReadyWarning_;
   bool faulted_;
   const char* faultCode_;
   const char* faultMessage_;

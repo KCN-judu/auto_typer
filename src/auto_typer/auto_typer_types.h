@@ -33,6 +33,9 @@ enum class PlanStatus : uint8_t {
   Ok,
   KeyNotFound,
   PlanFull,
+  DeviceFault,
+  DeviceBusy,
+  DeviceNotReady,
 };
 
 enum class JobState : uint8_t {
@@ -236,6 +239,16 @@ struct MotorState {
   int32_t observedPositionSteps;
   float velocityRpm;
   uint32_t lastFeedbackMs;
+};
+
+struct SubmitJobResult {
+  bool accepted;
+  const char* rejectionCode;
+  const char* rejectionMessage;
+  PlanStatus planStatus;
+  uint32_t jobId;
+  size_t stepCount;
+  char failedKey;
 };
 
 struct JobSnapshot {

@@ -125,6 +125,12 @@ inline const char* statusText(PlanStatus status) {
       return "KEY_NOT_FOUND";
     case PlanStatus::PlanFull:
       return "PLAN_FULL";
+    case PlanStatus::DeviceFault:
+      return "DEVICE_FAULT";
+    case PlanStatus::DeviceBusy:
+      return "DEVICE_BUSY";
+    case PlanStatus::DeviceNotReady:
+      return "DEVICE_NOT_READY";
     default:
       return "UNKNOWN";
   }

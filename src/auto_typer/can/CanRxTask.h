@@ -92,11 +92,13 @@ class CanRxTask {
  public:
   CanRxTask(CanBus& bus, MotorFeedbackStore& feedback) : bus_(bus), feedback_(feedback) {}
 
-  void tick() {
+  void tick(size_t maxFrames = 16) {
     bus_.readAlerts(0);
     CanFrame frame{};
-    while (bus_.receive(frame, 0)) {
+    size_t received = 0;
+    while (received < maxFrames && bus_.receive(frame, 0)) {
       parseFrame(frame);
+      ++received;
     }
   }
 

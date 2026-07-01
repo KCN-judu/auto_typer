@@ -57,6 +57,7 @@ class HttpControlServer {
     server_.on("/api/jobs/current/cancel", HTTP_POST, [this]() { handleCancelJob(); });
     server_.on("/api/machine/stop", HTTP_POST, [this]() { handleEmergencyStop(); });
     server_.on("/api/machine/reset-fault", HTTP_POST, [this]() { handleResetFault(); });
+    server_.on("/api/diagnostics/can", HTTP_GET, [this]() { sendCanDiagnostics(); });
     server_.on("/api/keymap", HTTP_GET, [this]() { sendKeymap(); });
     server_.on("/api/keymap", HTTP_PUT, [this]() { handlePutKeymap(); });
     server_.on("/api/debug/motor/move-relative", HTTP_POST, [this]() { handleMotorMove(); });
@@ -87,18 +88,30 @@ class HttpControlServer {
       return;
     }
 
-    const bool accepted = app_.submitTextJob(text);
+    const SubmitJobResult result = app_.submitTextJob(text);
     const JobSnapshot snapshot = app_.snapshot();
-    StaticJsonDocument<512> response;
-    response["jobId"] = String(snapshot.jobId);
-    response["accepted"] = accepted;
-    response["planStatus"] = planStatusJson(snapshot.planStatus);
-    response["stepCount"] = snapshot.totalBlocks;
-    if (snapshot.failedKey != '\0') {
-      char failedKey[2] = {snapshot.failedKey, '\0'};
+    StaticJsonDocument<768> response;
+    if (result.accepted) {
+      response["jobId"] = String(result.jobId);
+    }
+    response["accepted"] = result.accepted;
+    response["planStatus"] = planStatusJson(result.planStatus);
+    response["stepCount"] = result.stepCount;
+    if (!result.accepted) {
+      response["rejectionCode"] = result.rejectionCode;
+      response["rejectionMessage"] = result.rejectionMessage;
+    }
+    if (result.planStatus == PlanStatus::DeviceFault || app_.mode() == DeviceMode::Faulted) {
+      JsonObject fault = response.createNestedObject("fault");
+      fault["code"] = snapshot.faultCode;
+      fault["message"] = snapshot.faultMessage;
+      fault["recoverable"] = app_.canDiagnostics().recoverable;
+    }
+    if (result.failedKey != '\0') {
+      char failedKey[2] = {result.failedKey, '\0'};
       response["failedKey"] = failedKey;
     }
-    sendJson(accepted ? 200 : 409, response);
+    sendJson(200, response);
   }
 
   void handleCancelJob() {
@@ -115,10 +128,7 @@ class HttpControlServer {
   }
 
   void handleResetFault() {
-    if (!app_.resetFault()) {
-      sendError(409, "reset_fault_rejected", "Fault reset rejected");
-      return;
-    }
+    app_.resetFault();
     sendStatus();
   }
 
@@ -240,12 +250,12 @@ class HttpControlServer {
   }
 
   void sendStatus() {
-    StaticJsonDocument<2048> response;
+    StaticJsonDocument<3072> response;
     response["deviceId"] = config_.deviceId;
     response["firmwareVersion"] = config_.firmwareVersion;
     response["ipAddress"] = currentIp();
     response["mode"] = modeJson(app_.mode());
-    response["health"] = app_.mode() == DeviceMode::Faulted ? "fault" : "ok";
+    response["health"] = app_.mode() == DeviceMode::Faulted ? "fault" : (app_.healthWarning() ? "warning" : "ok");
     response["wifiRssi"] = WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0;
     response["servoReady"] = app_.servoReady();
     response["motionReady"] = app_.motionReady();
@@ -257,12 +267,19 @@ class HttpControlServer {
       writeJob(response.createNestedObject("currentJob"), snapshot);
     }
     writeMotorStates(response.createNestedArray("motors"));
+    writeCanDiagnostics(response.createNestedObject("canDiagnostics"), app_.canDiagnostics());
     if (app_.mode() == DeviceMode::Faulted) {
       JsonObject fault = response.createNestedObject("fault");
       fault["code"] = snapshot.faultCode;
       fault["message"] = snapshot.faultMessage;
-      fault["recoverable"] = true;
+      fault["recoverable"] = app_.canDiagnostics().recoverable;
     }
+    sendJson(200, response);
+  }
+
+  void sendCanDiagnostics() {
+    StaticJsonDocument<768> response;
+    writeCanDiagnostics(response.to<JsonObject>(), app_.canDiagnostics());
     sendJson(200, response);
   }
 
@@ -333,6 +350,24 @@ class HttpControlServer {
     }
   }
 
+  void writeCanDiagnostics(JsonObject json, const CanBusDiagnostics& diagnostics) {
+    json["driverReady"] = diagnostics.driverReady;
+    json["motionReady"] = app_.motionReady();
+    json["fatalFault"] = diagnostics.fatalFault;
+    json["recoverable"] = diagnostics.recoverable;
+    json["lastAlerts"] = diagnostics.lastAlerts;
+    json["txFailedCount"] = diagnostics.txFailedCount;
+    json["busErrorCount"] = diagnostics.busErrorCount;
+    json["rxQueueFullCount"] = diagnostics.rxQueueFullCount;
+    json["errPassiveCount"] = diagnostics.errPassiveCount;
+    json["busOffCount"] = diagnostics.busOffCount;
+    json["lastAlertAtMs"] = diagnostics.lastAlertAtMs;
+    json["lastFaultAtMs"] = diagnostics.lastFaultAtMs;
+    json["lastTxError"] = diagnostics.lastTxError;
+    json["lastFaultCode"] = diagnostics.lastFaultCode;
+    json["lastFaultMessage"] = diagnostics.lastFaultMessage;
+  }
+
   template <typename T>
   void sendJson(int status, T& doc) {
     String json;
@@ -398,6 +433,12 @@ class HttpControlServer {
         return "key_not_found";
       case PlanStatus::PlanFull:
         return "plan_full";
+      case PlanStatus::DeviceFault:
+        return "device_fault";
+      case PlanStatus::DeviceBusy:
+        return "device_busy";
+      case PlanStatus::DeviceNotReady:
+        return "device_not_ready";
       case PlanStatus::Ok:
       default:
         return "ok";

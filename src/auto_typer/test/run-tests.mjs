@@ -125,6 +125,14 @@ assert.equal(scaledRpm(1, 800, 1600, 50), 50);
 const httpServer = readFileSync(new URL("../http_control_server.h", import.meta.url), "utf8");
 assert.match(httpServer, /case JobState::None:[\s\S]*return "none";/, "JobState::None must serialize to none");
 assert.match(httpServer, /request\["point"\]/, "ProbeKeyRequest must read nested point");
+assert.match(httpServer, /sendJson\(200, response\);/, "Create job business rejections must return HTTP 200");
+assert.match(httpServer, /rejectionMessage/, "CreateJobResponse must include rejection details");
 assert.doesNotMatch(httpServer, /extractString|extractFloat|extractInt/, "HTTP handlers must not use ad-hoc JSON extractors");
+
+const motionExecutor = readFileSync(new URL("../motion/MotionExecutor.h", import.meta.url), "utf8");
+assert.doesNotMatch(motionExecutor, /bool feedbackSatisfied\(const MotionBlock&\)\s*\{\s*return false;\s*\}/, "feedbackSatisfied must use motor feedback");
+assert.doesNotMatch(motionExecutor, /estimatedMoveMs/, "MotionExecutor must not complete moves from estimated duration");
+assert.match(motionExecutor, /motion_feedback_timeout/, "Missing feedback must fault instead of completing");
+assert.match(motionExecutor, /y_pair_skew/, "Y pair skew must fault");
 
 console.log("firmware planner/kinematics regression tests passed");

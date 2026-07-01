@@ -45,6 +45,10 @@ export class DeviceClient {
     return this.postJson<DeviceStatus>(protocolRoutes.resetFault, {});
   }
 
+  async canDiagnostics() {
+    return this.getJson(protocolRoutes.canDiagnostics);
+  }
+
   async getKeymap(): Promise<KeymapDocument> {
     return this.getJson<KeymapDocument>(protocolRoutes.keymap);
   }

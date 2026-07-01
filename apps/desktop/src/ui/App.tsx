@@ -94,8 +94,13 @@ export function App() {
   async function submitJob() {
     try {
       const response = await client.createJob({ text: jobText, options: { startAtHome: true } });
-      appendLog(response.accepted ? `任务已创建 ${response.jobId}` : `任务拒绝 ${response.planStatus}`);
-      setStatus(await client.status());
+      appendLog(
+        response.accepted
+          ? `任务已创建 ${response.jobId}`
+          : `任务拒绝：${response.rejectionMessage ?? response.rejectionCode ?? response.planStatus}`,
+      );
+      const nextStatus = await client.status();
+      setStatus(nextStatus);
     } catch (error) {
       appendLog(error instanceof Error ? error.message : "提交任务失败");
     }
@@ -113,8 +118,9 @@ export function App() {
 
   async function resetFault() {
     try {
-      setStatus(await client.resetFault());
-      appendLog("已请求清除故障");
+      const next = await client.resetFault();
+      setStatus(next);
+      appendLog(next.mode === "faulted" ? `故障仍存在：${faultText(next)}` : "故障已清除");
     } catch (error) {
       appendLog(error instanceof Error ? error.message : "清除故障失败");
     }
@@ -267,6 +273,7 @@ export function App() {
                   <Send size={16} />
                   创建打印任务
                 </button>
+                {status.mode === "faulted" && <span className="inlineFault">{faultText(status)}</span>}
                 <button className="secondary" onClick={cancelJob} disabled={connection !== "connected"}>
                   <Square size={16} />
                   取消任务
@@ -382,6 +389,17 @@ function motorTargetLabel(motorId: number) {
   return motorTargets.find((target) => target.id === motorId)?.label ?? `电机 ${motorId}`;
 }
 
+function faultText(status: DeviceStatus) {
+  if (status.fault) {
+    return `${status.fault.code} ${status.fault.message}`.trim();
+  }
+  const diagnostics = status.canDiagnostics;
+  if (diagnostics?.lastFaultCode || diagnostics?.lastFaultMessage) {
+    return `${diagnostics.lastFaultCode} ${diagnostics.lastFaultMessage}`.trim();
+  }
+  return "未知故障";
+}
+
 function StatusPanel({ status, logLines }: { status: DeviceStatus; logLines: string[] }) {
   return (
     <div className="panel">
@@ -391,6 +409,8 @@ function StatusPanel({ status, logLines }: { status: DeviceStatus; logLines: str
       </div>
       <div className="stateRows">
         <StateRow label="固件" value={status.firmwareVersion} />
+        <StateRow label="模式" value={status.mode} />
+        <StateRow label="健康" value={status.health} />
         <StateRow label="舵机" value={status.servoReady ? "READY" : "WAIT"} />
         <StateRow label="运动" value={status.motionReady ? "READY" : "WAIT"} />
         <StateRow label="任务" value={status.currentJob?.state ?? "none"} />
@@ -398,6 +418,23 @@ function StatusPanel({ status, logLines }: { status: DeviceStatus; logLines: str
         <StateRow label="坐标" value={`${status.currentJob?.currentPoint.xMm.toFixed(1) ?? "0.0"}, ${status.currentJob?.currentPoint.yMm.toFixed(1) ?? "0.0"}`} />
         {status.fault && <StateRow label="故障" value={`${status.fault.code}: ${status.fault.message}`} />}
       </div>
+      {status.canDiagnostics && (
+        <div className="stateRows">
+          <StateRow label="CAN driver" value={status.canDiagnostics.driverReady ? "READY" : "WAIT"} />
+          <StateRow label="CAN motion" value={status.canDiagnostics.motionReady ? "READY" : "WAIT"} />
+          <StateRow label="CAN fatal" value={status.canDiagnostics.fatalFault ? "YES" : "NO"} />
+          <StateRow
+            label="CAN counts"
+            value={`tx ${status.canDiagnostics.txFailedCount} / bus ${status.canDiagnostics.busErrorCount} / rx ${status.canDiagnostics.rxQueueFullCount}`}
+          />
+          {(status.canDiagnostics.lastFaultCode || status.canDiagnostics.lastTxError) && (
+            <StateRow
+              label="CAN detail"
+              value={`${status.canDiagnostics.lastFaultCode || status.canDiagnostics.lastTxError} ${status.canDiagnostics.lastFaultMessage}`}
+            />
+          )}
+        </div>
+      )}
       {status.motors && status.motors.length > 0 && (
         <div className="stateRows">
           {status.motors.map((motor) => (

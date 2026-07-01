@@ -35,6 +35,7 @@ export interface DeviceStatus {
   keymapVersion: number;
   currentJob?: JobStatus;
   fault?: DeviceFault;
+  canDiagnostics?: CanBusDiagnostics;
   motors?: MotorState[];
 }
 
@@ -42,6 +43,24 @@ export interface DeviceFault {
   code: string;
   message: string;
   recoverable: boolean;
+}
+
+export interface CanBusDiagnostics {
+  driverReady: boolean;
+  motionReady: boolean;
+  fatalFault: boolean;
+  recoverable: boolean;
+  lastAlerts: number;
+  txFailedCount: number;
+  busErrorCount: number;
+  rxQueueFullCount: number;
+  errPassiveCount: number;
+  busOffCount: number;
+  lastAlertAtMs: number;
+  lastFaultAtMs: number;
+  lastTxError: string;
+  lastFaultCode: string;
+  lastFaultMessage: string;
 }
 
 export interface CreateJobRequest {
@@ -53,9 +72,12 @@ export interface CreateJobRequest {
 }
 
 export interface CreateJobResponse {
-  jobId: string;
+  jobId?: string;
   accepted: boolean;
-  planStatus: "ok" | "key_not_found" | "plan_full";
+  planStatus: "ok" | "key_not_found" | "plan_full" | "device_fault" | "device_busy" | "device_not_ready";
+  rejectionCode?: string;
+  rejectionMessage?: string;
+  fault?: DeviceFault;
   failedKey?: string;
   stepCount: number;
 }
@@ -137,6 +159,7 @@ export const protocolRoutes = {
   cancelJob: "/api/jobs/current/cancel",
   machineStop: "/api/machine/stop",
   resetFault: "/api/machine/reset-fault",
+  canDiagnostics: "/api/diagnostics/can",
   keymap: "/api/keymap",
   events: "/api/events",
   debugMotorMoveRelative: "/api/debug/motor/move-relative",

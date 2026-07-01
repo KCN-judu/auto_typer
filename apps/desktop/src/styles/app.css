@@ -332,12 +332,20 @@ textarea {
 
 .actionRow {
   display: flex;
+  align-items: center;
   gap: 8px;
   margin-top: 12px;
 }
 
 .actionRow.wrap {
   flex-wrap: wrap;
+}
+
+.inlineFault {
+  color: var(--fault);
+  font-size: 12px;
+  line-height: 1.35;
+  max-width: 360px;
 }
 
 .stateRows {

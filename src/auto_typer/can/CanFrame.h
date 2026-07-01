@@ -13,6 +13,26 @@ enum class CanBusFault : uint8_t {
   TxFailed,
   RxQueueFull,
   BusError,
+  ErrPassive,
+};
+
+struct CanBusDiagnostics {
+  bool driverReady;
+  bool motionReady;
+  uint32_t lastAlerts;
+  uint32_t txFailedCount;
+  uint32_t busErrorCount;
+  uint32_t rxQueueFullCount;
+  uint32_t errPassiveCount;
+  uint32_t busOffCount;
+  uint32_t lastFaultAtMs;
+  uint32_t lastAlertAtMs;
+  const char* lastTxError;
+  bool recoverable;
+  bool fatalFault;
+  CanBusFault lastFault;
+  const char* lastFaultCode;
+  const char* lastFaultMessage;
 };
 
 }  // namespace auto_typer
