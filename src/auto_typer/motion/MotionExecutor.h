@@ -226,12 +226,6 @@ class MotionExecutor {
     if (hasY && !yPair_.moveRelative(block.deltaSteps.yLeft, yRpm, block.profile.acceleration)) {
       return false;
     }
-    if (sync && !driver_.triggerSynchronousMotion(config_.topology.xMotorId)) {
-      return false;
-    }
-    if (hasY && !yPair_.trigger()) {
-      return false;
-    }
     return true;
   }
 

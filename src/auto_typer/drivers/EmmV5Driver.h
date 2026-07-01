@@ -55,6 +55,11 @@ class EmmV5Driver {
     return sendCommand(command, sizeof(command));
   }
 
+  bool triggerSynchronousMotionBroadcast() {
+    const uint8_t command[] = {0x00, 0xFF, 0x66, 0x6B};
+    return sendCommand(command, sizeof(command));
+  }
+
   bool stopNow(uint8_t motorId, bool sync = false) {
     const uint8_t command[] = {motorId, 0xFE, 0x98, static_cast<uint8_t>(sync), 0x6B};
     return sendCommand(command, sizeof(command), true);

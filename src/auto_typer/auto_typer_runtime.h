@@ -270,7 +270,7 @@ class AutoTyperApplication {
       const int32_t signedSteps = direction == MotorDirection::Cw ? static_cast<int32_t>(steps)
                                                                   : -static_cast<int32_t>(steps);
       YPairController yPair(config_, motion_);
-      return yPair.moveRelative(signedSteps, rpm, acceleration) && yPair.trigger();
+      return yPair.moveRelative(signedSteps, rpm, acceleration);
     }
     if (motorId == config_.topology.yLeftMotorId || motorId == config_.topology.yRightMotorId) {
       return false;

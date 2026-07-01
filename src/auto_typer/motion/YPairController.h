@@ -19,12 +19,12 @@ class YPairController {
     const MotorDirection rightDirection = leftDirection == MotorDirection::Cw ? MotorDirection::Ccw
                                                                               : MotorDirection::Cw;
     return driver_.moveRelative(config_.topology.yLeftMotorId, leftDirection, rpm, acceleration, steps, true) &&
-           driver_.moveRelative(config_.topology.yRightMotorId, rightDirection, rpm, acceleration, steps, true);
+           driver_.moveRelative(config_.topology.yRightMotorId, rightDirection, rpm, acceleration, steps, true) &&
+           driver_.triggerSynchronousMotionBroadcast();
   }
 
   bool trigger() {
-    return driver_.triggerSynchronousMotion(config_.topology.yLeftMotorId) &&
-           driver_.triggerSynchronousMotion(config_.topology.yRightMotorId);
+    return driver_.triggerSynchronousMotionBroadcast();
   }
 
   bool stop() {

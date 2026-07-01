@@ -229,6 +229,34 @@ assert.match(motionExecutor, /motionPollIntervalMs/, "Motion feedback polling mu
 assert.match(motionExecutor, /lastFeedbackPollMs_/, "Motion feedback polling must keep a poll timestamp");
 assert.match(motionExecutor, /inputPulseSteps/, "Motion completion must use input pulse steps");
 assert.doesNotMatch(motionExecutor, /observedPositionSteps/, "Realtime angle must not be stored as observedPositionSteps");
+assert.doesNotMatch(
+  motionExecutor,
+  /triggerSynchronousMotion\(config_\.topology\.(xMotorId|yLeftMotorId|yRightMotorId)\)/,
+  "Coordinated X/Y motion must use broadcast sync trigger, not per-motor FF 66",
+);
+
+const emmV5Driver = readFileSync(new URL("../drivers/EmmV5Driver.h", import.meta.url), "utf8");
+assert.match(emmV5Driver, /triggerSynchronousMotionBroadcast\(\)/, "EMM_V5 driver must expose broadcast sync trigger");
+assert.match(
+  emmV5Driver,
+  /\{\s*0x00,\s*0xFF,\s*0x66,\s*0x6B\s*\}/,
+  "Broadcast sync trigger must send address 0 with FF 66 6B",
+);
+
+const yPairController = readFileSync(new URL("../motion/YPairController.h", import.meta.url), "utf8");
+assert.match(yPairController, /triggerSynchronousMotionBroadcast\(\)/, "YPair move must use broadcast sync trigger");
+assert.doesNotMatch(
+  yPairController,
+  /triggerSynchronousMotion\(config_\.topology\.y(Left|Right)MotorId\)/,
+  "YPair move must not send per-motor FF 66 triggers",
+);
+
+const autoTyperRuntime = readFileSync(new URL("../auto_typer_runtime.h", import.meta.url), "utf8");
+assert.doesNotMatch(
+  autoTyperRuntime,
+  /yPair\.moveRelative\([\s\S]*?&&\s*yPair\.trigger\(\)/,
+  "YPair debug move must not add a second sync trigger",
+);
 
 const protocolTypes = readFileSync(new URL("../protocol/EmmV5ProtocolParser.h", import.meta.url), "utf8");
 assert.match(protocolTypes, /InputPulseFeedback/, "Parser event model must include input pulse feedback");
