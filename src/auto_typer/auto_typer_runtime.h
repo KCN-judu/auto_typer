@@ -503,12 +503,6 @@ class AutoTyperApplication {
     if (diagnostics.fatalFault) {
       return diagnostics.lastFaultMessage;
     }
-    if (diagnostics.rxQueueFullCount > 0) {
-      return "CAN RX queue has overflow warnings";
-    }
-    if (diagnostics.txFailedCount > 0 || diagnostics.busErrorCount > 0) {
-      return "CAN warning counters are non-zero";
-    }
     return "Required motor feedback is not ready";
   }
 

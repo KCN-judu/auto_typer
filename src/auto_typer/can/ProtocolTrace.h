@@ -30,14 +30,23 @@ class ProtocolTrace {
     }
   }
 
-  void addTx(const CanFrame& frame) {
-    ProtocolTraceItem item = frameItem(frame, "tx", "TxFrame");
+  void addTxQueued(const CanFrame& frame) {
+    ProtocolTraceItem item = frameItem(frame, "tx_queued", "TxQueued");
+    push(item);
+  }
+
+  void addTxSent(const CanFrame& frame) {
+    ProtocolTraceItem item = frameItem(frame, "tx_sent", "TxSent");
     push(item);
   }
 
   void addTxRetry(const CanFrame& frame) {
-    ProtocolTraceItem item = frameItem(frame, "tx", "TxRetry");
+    ProtocolTraceItem item = frameItem(frame, "tx_retry", "TxRetry");
     push(item);
+  }
+
+  void addTx(const CanFrame& frame) {
+    addTxQueued(frame);
   }
 
   void addRx(const CanFrame& frame, const EmmV5Event& event) {

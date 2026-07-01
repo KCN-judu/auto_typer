@@ -79,7 +79,7 @@ class EmmV5Driver {
     if (!tx_.enqueueBatch(frames, frameCount)) {
       return false;
     }
-    traceFrames(frames, frameCount);
+    traceQueuedFrames(frames, frameCount);
     return true;
   }
 
@@ -132,7 +132,7 @@ class EmmV5Driver {
     if (!tx_.enqueueBatch(frames, frameCount, highPriority)) {
       return false;
     }
-    traceFrames(frames, frameCount);
+    traceQueuedFrames(frames, frameCount);
     return true;
   }
 
@@ -191,12 +191,12 @@ class EmmV5Driver {
     return true;
   }
 
-  void traceFrames(const CanFrame* frames, size_t count) {
+  void traceQueuedFrames(const CanFrame* frames, size_t count) {
     if (trace_ == nullptr) {
       return;
     }
     for (size_t i = 0; i < count; ++i) {
-      trace_->addTx(frames[i]);
+      trace_->addTxQueued(frames[i]);
     }
   }
 

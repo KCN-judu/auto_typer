@@ -133,7 +133,7 @@ class CanBus {
   }
 
   bool motionReady() const {
-    return ready_ && !fatalFault_ && diagnostics_.txFailedCount == 0 && diagnostics_.busErrorCount == 0;
+    return ready_ && !fatalFault_;
   }
 
   CanBusFault fault() const {
@@ -251,7 +251,7 @@ class CanBus {
     fault_ = CanBusFault::None;
     diagnostics_.lastAlerts = 0;
     diagnostics_.driverReady = ready_;
-    diagnostics_.motionReady = ready_;
+    diagnostics_.motionReady = motionReady();
     diagnostics_.txFailedCount = 0;
     diagnostics_.txRetryCount = 0;
     diagnostics_.commandQueueFullCount = 0;

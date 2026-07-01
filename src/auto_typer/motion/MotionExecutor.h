@@ -62,7 +62,9 @@ class MotionExecutor {
     const MotionBlock& block = blocks_[currentBlock_];
     if (blockStartedAtMs_ == 0) {
       if (!beginBlock(block)) {
-        fail("motion_command_rejected", "Motion command rejected");
+        if (state_ != State::Faulted) {
+          fail("motion_command_rejected", "Motion command rejected");
+        }
         return;
       }
       blockStartedAtMs_ = millis();
@@ -203,6 +205,9 @@ class MotionExecutor {
     const bool hasY = ySteps > 0;
     if (!hasX && !hasY) {
       return true;
+    }
+    if (!validateMoveXYBaseline(block)) {
+      return false;
     }
     captureFeedbackTargets(block);
     const uint32_t primarySteps = xSteps > ySteps ? xSteps : ySteps;
@@ -412,12 +417,15 @@ class MotionExecutor {
   }
 
   bool commandResponseFault(const MotorState& state) {
-    if (state.lastConditionNotMetMs >= blockStartedAtMs_ && state.lastConditionNotMetCommand != 0) {
+    if (blockStartedAtMs_ == 0) {
+      return false;
+    }
+    if (state.lastConditionNotMetCommand != 0 && state.lastConditionNotMetMs >= blockStartedAtMs_) {
       stopAll();
       fail("motion_condition_not_met", "Motor rejected motion conditions");
       return true;
     }
-    if (state.lastMalformedMs >= blockStartedAtMs_ && state.commandMalformed) {
+    if (state.lastMalformedCommand != 0 && state.lastMalformedMs >= blockStartedAtMs_) {
       stopAll();
       fail("motion_command_malformed", "Motor reported malformed command");
       return true;
@@ -427,6 +435,32 @@ class MotionExecutor {
 
   static uint32_t absoluteSigned(int32_t value) {
     return value < 0 ? static_cast<uint32_t>(-value) : static_cast<uint32_t>(value);
+  }
+
+  static constexpr uint32_t kBaselineFreshMs = 1500;
+
+  bool hasFreshInputPulse(uint8_t motorId, uint32_t nowMs) const {
+    const MotorState state = feedback_.get(motorId);
+    return state.hasInputPulse && state.lastInputPulseMs != 0 && nowMs - state.lastInputPulseMs <= kBaselineFreshMs;
+  }
+
+  bool validateMoveXYBaseline(const MotionBlock& block) {
+    const uint32_t nowMs = millis();
+    if (block.deltaSteps.x != 0 && !hasFreshInputPulse(config_.topology.xMotorId, nowMs)) {
+      fail("motor_feedback_baseline_missing", "X motor input pulse baseline missing");
+      return false;
+    }
+    if (block.deltaSteps.yLeft != 0 || block.deltaSteps.yRight != 0) {
+      if (!hasFreshInputPulse(config_.topology.yLeftMotorId, nowMs)) {
+        fail("motor_feedback_baseline_missing", "Y left motor input pulse baseline missing");
+        return false;
+      }
+      if (!hasFreshInputPulse(config_.topology.yRightMotorId, nowMs)) {
+        fail("motor_feedback_baseline_missing", "Y right motor input pulse baseline missing");
+        return false;
+      }
+    }
+    return true;
   }
 
   const TypingConfig& config_;

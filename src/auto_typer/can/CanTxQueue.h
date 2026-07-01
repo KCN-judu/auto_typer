@@ -89,6 +89,9 @@ class CanTxQueue {
         }
         return;
       }
+      if (trace_ != nullptr) {
+        trace_->addTxSent(pendingFrame_.frame);
+      }
       pendingValid_ = false;
       bus_.setPendingFrameValid(false);
       ++sent;
