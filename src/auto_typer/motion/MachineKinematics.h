@@ -52,4 +52,10 @@ inline uint32_t absoluteSteps(int32_t steps) {
   return static_cast<uint32_t>(value >= 0 ? value : -value);
 }
 
+inline int32_t signedStepsForDirection(uint32_t steps, MotorDirection direction) {
+  const int64_t signedSteps = direction == MotorDirection::Cw ? static_cast<int64_t>(steps)
+                                                              : -static_cast<int64_t>(steps);
+  return static_cast<int32_t>(signedSteps);
+}
+
 }  // namespace auto_typer

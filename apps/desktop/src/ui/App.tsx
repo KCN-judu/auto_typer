@@ -86,7 +86,7 @@ export function App() {
       const nextStatus = await client.status();
       const nextKeymap = await client.getKeymap();
       setStatus(nextStatus);
-      setKeymap(currentFeiyu200Keymap(nextKeymap));
+      setKeymap(currentFeiyu200Keymap(sanitizeKeymap(nextKeymap)));
       setConnection("connected");
       appendLog(`已连接 ${nextStatus.deviceId} ${nextStatus.ipAddress}`);
       await window.autoTyper?.writeStore({ lastDeviceUrl: deviceUrl, recentJobs: [] });
@@ -204,8 +204,8 @@ export function App() {
 
   async function syncKeymap() {
     try {
-      const nextKeymap = currentFeiyu200Keymap(keymap);
-      setKeymap(currentFeiyu200Keymap(await client.putKeymap(nextKeymap)));
+      const nextKeymap = sanitizeKeymap(keymap);
+      setKeymap(sanitizeKeymap(await client.putKeymap(nextKeymap)));
       appendLog("映射表已同步到 ESP32");
     } catch (error) {
       appendLog(error instanceof Error ? error.message : "映射表同步失败");
@@ -308,7 +308,7 @@ export function App() {
                 </button>
               </div>
             </div>
-            <StatusPanel status={status} logLines={logLines} />
+            <TaskStatusPanel status={status} logLines={logLines} />
           </section>
         )}
 
@@ -376,7 +376,7 @@ export function App() {
 
         {view === "settings" && (
           <section className="panelGrid">
-            <StatusPanel status={status} logLines={logLines} />
+            <TaskStatusPanel status={status} logLines={logLines} />
             <div className="panel">
               <div className="panelHeader">
                 <h2>映射表</h2>
@@ -428,15 +428,14 @@ function faultText(status: DeviceStatus) {
   return "未知故障";
 }
 
-function StatusPanel({ status, logLines }: { status: DeviceStatus; logLines: string[] }) {
+function TaskStatusPanel({ status, logLines }: { status: DeviceStatus; logLines: string[] }) {
   return (
     <div className="panel">
       <div className="panelHeader">
-        <h2>设备状态</h2>
+        <h2>任务状态</h2>
         <span>{status.health}</span>
       </div>
       <div className="stateRows">
-        <StateRow label="固件" value={status.firmwareVersion} />
         <StateRow label="模式" value={status.mode} />
         <StateRow label="健康" value={status.health} />
         <StateRow label="舵机" value={status.servoReady ? "READY" : "WAIT"} />
@@ -446,46 +445,6 @@ function StatusPanel({ status, logLines }: { status: DeviceStatus; logLines: str
         <StateRow label="坐标" value={`${status.currentJob?.currentPoint.xMm.toFixed(1) ?? "0.0"}, ${status.currentJob?.currentPoint.yMm.toFixed(1) ?? "0.0"}`} />
         {status.fault && <StateRow label="故障" value={`${status.fault.code}: ${status.fault.message}`} />}
       </div>
-      {status.canDiagnostics && (
-        <div className="stateRows">
-          <StateRow label="CAN driver" value={status.canDiagnostics.driverReady ? "READY" : "WAIT"} />
-          <StateRow label="CAN motion" value={status.canDiagnostics.motionReady ? "READY" : "WAIT"} />
-          <StateRow label="CAN fatal" value={status.canDiagnostics.fatalFault ? "YES" : "NO"} />
-          <StateRow
-            label="CAN counts"
-            value={`tx ${status.canDiagnostics.txFailedCount} / retry ${status.canDiagnostics.txRetryCount} / queue ${status.canDiagnostics.commandQueueFullCount} / bus ${status.canDiagnostics.busErrorCount} / rx ${status.canDiagnostics.rxQueueFullCount}`}
-          />
-          <StateRow label="CAN pending" value={status.canDiagnostics.pendingFrameValid ? "YES" : "NO"} />
-          {(status.canDiagnostics.lastFaultCode ||
-            status.canDiagnostics.lastTxError ||
-            status.canDiagnostics.lastCommandQueueError) && (
-            <StateRow
-              label="CAN detail"
-              value={`${status.canDiagnostics.lastFaultCode || status.canDiagnostics.lastTxError || status.canDiagnostics.lastCommandQueueError} ${status.canDiagnostics.lastFaultMessage}`}
-            />
-          )}
-        </div>
-      )}
-      {status.motors && status.motors.length > 0 && (
-        <div className="stateRows">
-          {status.motors.map((motor) => (
-            <StateRow
-              key={motor.id}
-              label={`${motorRoleLabel(motor)} M${motor.id}`}
-              value={`${motor.readiness} / ${motor.inputPulseSteps} pulses / ${motor.velocityRpm.toFixed(1)} rpm`}
-            />
-          ))}
-          {status.motors.some((motor) => motor.lastErrorCode) && (
-            <StateRow
-              label="电机错误"
-              value={status.motors
-                .filter((motor) => motor.lastErrorCode)
-                .map((motor) => `M${motor.id}:${motor.lastErrorCode}`)
-                .join(" ")}
-            />
-          )}
-        </div>
-      )}
       <div className="logBox">
         {logLines.map((line) => (
           <div key={line}>{line}</div>

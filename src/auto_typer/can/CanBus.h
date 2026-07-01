@@ -76,7 +76,6 @@ class CanBus {
       ++diagnostics_.txFailedCount;
       diagnostics_.lastTxError = txErrorText(result);
       diagnostics_.lastAlertAtMs = millis();
-      registerSoftFault(CanBusFault::TxFailed, "can_tx_failed", "CAN transmit failed");
       return false;
     }
     return true;
@@ -111,11 +110,9 @@ class CanBus {
     }
     if ((alerts & TWAI_ALERT_TX_FAILED) != 0) {
       ++diagnostics_.txFailedCount;
-      registerSoftFault(CanBusFault::TxFailed, "can_tx_failed", "CAN transmit failed");
     }
     if ((alerts & TWAI_ALERT_BUS_ERROR) != 0) {
       ++diagnostics_.busErrorCount;
-      registerSoftFault(CanBusFault::BusError, "can_bus_error", "CAN bus error threshold exceeded");
     }
     return alerts;
   }
@@ -189,9 +186,6 @@ class CanBus {
   }
 
  private:
-  static constexpr uint32_t kSoftFaultWindowMs = 1000;
-  static constexpr uint8_t kSoftFaultThreshold = 10;
-
   static twai_timing_config_t timingForBitrate(uint32_t bitrate) {
     switch (bitrate) {
       case 250000:
@@ -216,22 +210,6 @@ class CanBus {
         return "driver_failed";
       default:
         return "unknown";
-    }
-  }
-
-  void registerSoftFault(CanBusFault fault, const char* code, const char* message) {
-    const uint32_t nowMs = millis();
-    if (firstSoftFaultAtMs_ == 0 || nowMs - firstSoftFaultAtMs_ > kSoftFaultWindowMs) {
-      firstSoftFaultAtMs_ = nowMs;
-      softFaultWindowCount_ = 1;
-    } else {
-      ++softFaultWindowCount_;
-    }
-    if (!softFaultEscalationEnabled_) {
-      return;
-    }
-    if (softFaultWindowCount_ >= kSoftFaultThreshold) {
-      setFatalFault(fault, code, message);
     }
   }
 
@@ -290,7 +268,8 @@ class CanBus {
         uint32_t alerts = 0;
         if (twai_read_alerts(&alerts, pdMS_TO_TICKS(20)) == ESP_OK &&
             (alerts & TWAI_ALERT_BUS_RECOVERED) != 0) {
-          return twai_start() == ESP_OK || twai_start() == ESP_ERR_INVALID_STATE;
+          const esp_err_t startResult = twai_start();
+          return startResult == ESP_OK || startResult == ESP_ERR_INVALID_STATE;
         }
       }
     }

@@ -129,7 +129,7 @@ class EmmCanMotionHal {
     return sendCommand(command, sizeof(command));
   }
 
-  bool requestPosition(uint8_t motorId) const {
+  bool requestRealtimeAngle(uint8_t motorId) const {
     const uint8_t command[] = {motorId, 0x36, 0x6B};
     return sendCommand(command, sizeof(command));
   }

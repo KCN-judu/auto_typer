@@ -83,6 +83,15 @@ export function sanitizeKeymap(keymap: KeymapDocument): KeymapDocument {
 }
 
 export function currentFeiyu200Keymap(base?: Partial<KeymapDocument>): KeymapDocument {
+  if (base?.bindings && base.bindings.length > 0) {
+    return sanitizeKeymap({
+      version: base.version ?? 1,
+      machine: "feiyu200",
+      updatedAt: base.updatedAt ?? new Date().toISOString(),
+      bindings: base.bindings,
+    });
+  }
+
   const bindings: KeyBinding[] = [];
 
   feiyu200PhysicalRows.forEach((rowKeys, row) => {
@@ -109,12 +118,12 @@ export function currentFeiyu200Keymap(base?: Partial<KeymapDocument>): KeymapDoc
     },
   });
 
-  return {
+  return sanitizeKeymap({
     version: base?.version ?? 1,
     machine: "feiyu200",
     updatedAt: base?.updatedAt ?? new Date().toISOString(),
-    bindings: bindings.sort(compareBindings),
-  };
+    bindings,
+  });
 }
 
 export function normalizeKey(key: string): string {

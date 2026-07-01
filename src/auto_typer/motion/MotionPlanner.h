@@ -53,14 +53,16 @@ inline MotionBlockPlan planMotionBlocks(const TypingPlan& typingPlan, const Typi
         break;
       case TypingStepKind::CharacterRelease:
         block.kind = MotionBlockKind::CharacterRelease;
-        block.deltaSteps.lineFeed = static_cast<int32_t>(config.lineFeed.characterReleaseSteps);
+        block.deltaSteps.lineFeed =
+            signedStepsForDirection(config.lineFeed.characterReleaseSteps, config.lineFeed.releaseDirection);
         block.profile.maxRpm = config.lineFeed.rpm;
         block.profile.acceleration = config.lineFeed.acceleration;
         block.profile.settleMs = config.lineFeed.characterReleaseSettleMs;
         break;
       case TypingStepKind::LineFeed:
         block.kind = MotionBlockKind::LineFeed;
-        block.deltaSteps.lineFeed = static_cast<int32_t>(config.lineFeed.returnTotalSteps);
+        block.deltaSteps.lineFeed =
+            signedStepsForDirection(config.lineFeed.returnTotalSteps, config.lineFeed.returnDirection);
         block.profile.maxRpm = config.lineFeed.rpm;
         block.profile.acceleration = config.lineFeed.acceleration;
         block.profile.settleMs = config.lineFeed.settleMs;

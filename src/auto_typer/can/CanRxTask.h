@@ -73,6 +73,7 @@ class MotorFeedbackStore {
         state.hasStatus = true;
         state.statusFlags = event.statusFlags;
         state.lastStatusMs = event.timeMs;
+        applyStatusFlags(state, event);
         break;
       case EmmV5EventKind::None:
       case EmmV5EventKind::UnknownFrame:
@@ -99,6 +100,13 @@ class MotorFeedbackStore {
 
  private:
   static constexpr uint8_t kCapacity = 32;
+
+  static void applyStatusFlags(MotorState& state, const EmmV5Event& event) {
+    state.driverFault = false;
+    // TODO(kcn): Map documented EMM_V5 status bits when authoritative bit definitions are added to the repo.
+    (void)state;
+    (void)event;
+  }
 
   uint8_t slotFor(uint8_t id) const {
     return id % kCapacity;

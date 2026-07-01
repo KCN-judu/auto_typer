@@ -20,7 +20,7 @@ namespace auto_typer {
 
 class AutoTyperApplication {
  public:
-  struct RequiredMotorCheck {
+  struct RequiredActuatorCheck {
     bool ready;
     const char* code;
     const char* message;
@@ -193,7 +193,7 @@ class AutoTyperApplication {
       return result;
     }
 
-    const RequiredMotorCheck required = checkRequiredMotors(activeBlocks_);
+    const RequiredActuatorCheck required = checkRequiredActuators(activeBlocks_);
     if (!required.ready) {
       jobState_ = JobState::None;
       result.planStatus = PlanStatus::DeviceNotReady;
@@ -296,8 +296,10 @@ class AutoTyperApplication {
     if (motorId == config_.topology.yLeftMotorId || motorId == config_.topology.yRightMotorId) {
       return false;
     }
-    return motion_.moveRelative(motorId, direction, rpm, acceleration, steps, sync) &&
-           (!sync || motion_.triggerSynchronousMotion(motorId));
+    if (sync) {
+      return false;
+    }
+    return motion_.moveRelative(motorId, direction, rpm, acceleration, steps, false);
   }
 
   bool debugMotorStop(uint8_t motorId, bool sync) {
@@ -398,7 +400,8 @@ class AutoTyperApplication {
   }
 
   bool healthWarning() const {
-    return !faulted_ && canBus_.diagnostics().lastAlerts != 0;
+    const CanBusDiagnostics diagnostics = canBus_.diagnostics();
+    return !faulted_ && diagnostics.lastAlertAtMs != 0 && millis() - diagnostics.lastAlertAtMs <= kRecentAlertWindowMs;
   }
 
   bool healthNotReady() const {
@@ -506,10 +509,11 @@ class AutoTyperApplication {
     return "Required motor feedback is not ready";
   }
 
-  RequiredMotorCheck checkRequiredMotors(const MotionBlockPlan& blocks) const {
+  RequiredActuatorCheck checkRequiredActuators(const MotionBlockPlan& blocks) const {
     bool needsX = false;
     bool needsY = false;
     bool needsLineFeed = false;
+    bool needsServo = false;
     for (size_t i = 0; i < blocks.count; ++i) {
       const MotionBlock& block = blocks.blocks[i];
       if (block.deltaSteps.x != 0) {
@@ -521,6 +525,9 @@ class AutoTyperApplication {
       if (block.deltaSteps.lineFeed != 0) {
         needsLineFeed = true;
       }
+      if (block.kind == MotionBlockKind::ServoPress || block.kind == MotionBlockKind::ServoRelease) {
+        needsServo = true;
+      }
     }
     if (needsX && !requiredMotorReady(config_.topology.xMotorId)) {
       return {false, "x_motor_not_ready", "X motor is not ready"};
@@ -531,6 +538,9 @@ class AutoTyperApplication {
     }
     if (needsLineFeed && !requiredMotorReady(config_.topology.lineFeedMotorId)) {
       return {false, "line_feed_not_ready", "Line feed motor is not ready"};
+    }
+    if (needsServo && !servo_.ready()) {
+      return {false, "servo_not_ready", "Servo controller is not ready"};
     }
     return {true, "", ""};
   }
@@ -666,6 +676,7 @@ class AutoTyperApplication {
   static constexpr uint8_t kTrackedMotorCount = 4;
   static constexpr uint32_t kFeedbackFreshMs = 1500;
   static constexpr uint32_t kProbeOfflineMs = 250;
+  static constexpr uint32_t kRecentAlertWindowMs = 5000;
   uint32_t lastMotorProbeMs_[kTrackedMotorCount];
 };
 

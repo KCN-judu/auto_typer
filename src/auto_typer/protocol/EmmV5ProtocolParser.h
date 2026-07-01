@@ -74,31 +74,12 @@ class EmmV5ProtocolParser {
       return event;
     }
 
-    if (event.dlc >= 3 && event.raw[0] == 0x00 && event.raw[1] == 0xEE) {
-      event.kind = EmmV5EventKind::CommandMalformed;
-      event.command = 0x00;
-      event.status = 0xEE;
+    if (event.command == 0x32 && event.dlc >= 7) {
+      const uint32_t rawPulse = readU32(&event.raw[2]);
+      event.kind = EmmV5EventKind::InputPulseFeedback;
+      event.inputPulseSteps = event.raw[1] == 0 ? static_cast<int32_t>(rawPulse) : -static_cast<int32_t>(rawPulse);
       return event;
     }
-    if (event.dlc >= 3 && event.raw[0] == 0xFD && event.raw[1] == 0x9F) {
-      event.kind = EmmV5EventKind::MotionReached;
-      event.command = 0xFD;
-      event.status = 0x9F;
-      return event;
-    }
-    if (event.dlc >= 3 && event.raw[1] == 0x02) {
-      event.kind = EmmV5EventKind::CommandAcked;
-      event.command = event.raw[0];
-      event.status = 0x02;
-      return event;
-    }
-    if (event.dlc >= 3 && event.raw[1] == 0xE2) {
-      event.kind = EmmV5EventKind::CommandConditionNotMet;
-      event.command = event.raw[0];
-      event.status = 0xE2;
-      return event;
-    }
-
     if (event.command == 0x35 && event.dlc >= 5) {
       const uint16_t rawRpm = (static_cast<uint16_t>(event.raw[2]) << 8) | event.raw[3];
       event.kind = EmmV5EventKind::VelocityFeedback;
@@ -111,12 +92,6 @@ class EmmV5ProtocolParser {
       event.angleRaw65536 = event.raw[1] == 0 ? static_cast<int32_t>(rawAngle) : -static_cast<int32_t>(rawAngle);
       return event;
     }
-    if (event.command == 0x32 && event.dlc >= 7) {
-      const uint32_t rawPulse = readU32(&event.raw[2]);
-      event.kind = EmmV5EventKind::InputPulseFeedback;
-      event.inputPulseSteps = event.raw[1] == 0 ? static_cast<int32_t>(rawPulse) : -static_cast<int32_t>(rawPulse);
-      return event;
-    }
     if (event.command == 0x3A) {
       event.kind = EmmV5EventKind::StatusFlagsFeedback;
       event.statusFlags = readStatusFlags(&event.raw[1], event.dlc > 2 ? event.dlc - 2 : 0);
@@ -125,6 +100,30 @@ class EmmV5ProtocolParser {
     if (event.command == 0x3B) {
       event.kind = EmmV5EventKind::HomeStatusFeedback;
       event.statusFlags = readStatusFlags(&event.raw[1], event.dlc > 2 ? event.dlc - 2 : 0);
+      return event;
+    }
+    if (event.dlc == 3 && event.raw[0] == 0x00 && event.raw[1] == 0xEE) {
+      event.kind = EmmV5EventKind::CommandMalformed;
+      event.command = 0x00;
+      event.status = 0xEE;
+      return event;
+    }
+    if (event.dlc == 3 && event.raw[0] == 0xFD && event.raw[1] == 0x9F) {
+      event.kind = EmmV5EventKind::MotionReached;
+      event.command = 0xFD;
+      event.status = 0x9F;
+      return event;
+    }
+    if (event.dlc == 3 && event.raw[0] == 0xFD && event.raw[1] == 0x02) {
+      event.kind = EmmV5EventKind::CommandAcked;
+      event.command = 0xFD;
+      event.status = 0x02;
+      return event;
+    }
+    if (event.dlc == 3 && event.raw[0] == 0xFD && event.raw[1] == 0xE2) {
+      event.kind = EmmV5EventKind::CommandConditionNotMet;
+      event.command = 0xFD;
+      event.status = 0xE2;
       return event;
     }
 

@@ -189,9 +189,9 @@ class MotionExecutor {
       case MotionBlockKind::Wait:
         return true;
       case MotionBlockKind::CharacterRelease:
-        return startLineFeed(block, config_.lineFeed.releaseDirection);
+        return startLineFeed(block);
       case MotionBlockKind::LineFeed:
-        return startLineFeed(block, config_.lineFeed.returnDirection);
+        return startLineFeed(block);
       case MotionBlockKind::MoveXY:
         return startMoveXY(block);
     }
@@ -249,14 +249,17 @@ class MotionExecutor {
     return true;
   }
 
-  bool startLineFeed(const MotionBlock& block, MotorDirection direction) {
+  bool startLineFeed(const MotionBlock& block) {
     const uint32_t steps = absoluteSteps(block.deltaSteps.lineFeed);
     if (steps == 0) {
       return true;
     }
+    if (!validateLineFeedBaseline()) {
+      return false;
+    }
     captureFeedbackTargets(block);
     return driver_.moveRelative(config_.topology.lineFeedMotorId,
-                                direction,
+                                directionForSignedSteps(block.deltaSteps.lineFeed),
                                 block.profile.maxRpm,
                                 block.profile.acceleration,
                                 steps,
@@ -420,6 +423,13 @@ class MotionExecutor {
     if (blockStartedAtMs_ == 0) {
       return false;
     }
+    if (state.driverFault && state.lastStatusMs >= blockStartedAtMs_) {
+      stopAll();
+      fail(state.lastErrorCode != nullptr && state.lastErrorCode[0] != '\0' ? state.lastErrorCode : "driver_fault",
+           state.lastErrorMessage != nullptr && state.lastErrorMessage[0] != '\0' ? state.lastErrorMessage
+                                                                                   : "Motor driver reported a fault");
+      return true;
+    }
     if (state.lastConditionNotMetCommand != 0 && state.lastConditionNotMetMs >= blockStartedAtMs_) {
       stopAll();
       fail("motion_condition_not_met", "Motor rejected motion conditions");
@@ -459,6 +469,15 @@ class MotionExecutor {
         fail("motor_feedback_baseline_missing", "Y right motor input pulse baseline missing");
         return false;
       }
+    }
+    return true;
+  }
+
+  bool validateLineFeedBaseline() {
+    const uint32_t nowMs = millis();
+    if (!hasFreshInputPulse(config_.topology.lineFeedMotorId, nowMs)) {
+      fail("line_feed_baseline_missing", "LineFeed motor input pulse baseline missing");
+      return false;
     }
     return true;
   }

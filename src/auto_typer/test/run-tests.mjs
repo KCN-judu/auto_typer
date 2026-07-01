@@ -87,6 +87,10 @@ function scaledRpm(axisSteps, primarySteps, maxRpm, minRpm) {
   return Math.max(minRpm, Math.ceil((maxRpm * axisSteps) / primarySteps));
 }
 
+function signedStepsForDirection(steps, direction) {
+  return direction === "cw" ? steps : -steps;
+}
+
 function parseEmmV5Frame({ canId, extd = true, rtr = false, data }) {
   const event = {
     kind: "None",
@@ -114,17 +118,9 @@ function parseEmmV5Frame({ canId, extd = true, rtr = false, data }) {
   if (data[event.dlc - 1] !== 0x6b) {
     return { ...event, kind: "InvalidFrame", errorCode: "bad_checksum" };
   }
-  if (event.dlc >= 3 && data[0] === 0x00 && data[1] === 0xee) {
-    return { ...event, kind: "CommandMalformed", command: 0x00, status: 0xee };
-  }
-  if (event.dlc >= 3 && data[0] === 0xfd && data[1] === 0x9f) {
-    return { ...event, kind: "MotionReached", command: 0xfd, status: 0x9f };
-  }
-  if (event.dlc >= 3 && data[1] === 0x02) {
-    return { ...event, kind: "CommandAcked", command: data[0], status: 0x02 };
-  }
-  if (event.dlc >= 3 && data[1] === 0xe2) {
-    return { ...event, kind: "CommandConditionNotMet", command: data[0], status: 0xe2 };
+  if (data[0] === 0x32 && event.dlc >= 7) {
+    const raw = ((data[2] << 24) >>> 0) | (data[3] << 16) | (data[4] << 8) | data[5];
+    return { ...event, kind: "InputPulseFeedback", inputPulseSteps: data[1] === 0 ? raw : -raw };
   }
   if (data[0] === 0x35 && event.dlc >= 5) {
     const rpm = (data[2] << 8) | data[3];
@@ -134,10 +130,6 @@ function parseEmmV5Frame({ canId, extd = true, rtr = false, data }) {
     const raw = ((data[2] << 24) >>> 0) | (data[3] << 16) | (data[4] << 8) | data[5];
     return { ...event, kind: "RealtimeAngleFeedback", angleRaw65536: data[1] === 0 ? raw : -raw };
   }
-  if (data[0] === 0x32 && event.dlc >= 7) {
-    const raw = ((data[2] << 24) >>> 0) | (data[3] << 16) | (data[4] << 8) | data[5];
-    return { ...event, kind: "InputPulseFeedback", inputPulseSteps: data[1] === 0 ? raw : -raw };
-  }
   if (data[0] === 0x3a || data[0] === 0x3b) {
     let flags = 0;
     for (const byte of data.slice(1, -1).slice(0, 4)) {
@@ -145,7 +137,35 @@ function parseEmmV5Frame({ canId, extd = true, rtr = false, data }) {
     }
     return { ...event, kind: data[0] === 0x3a ? "StatusFlagsFeedback" : "HomeStatusFeedback", statusFlags: flags };
   }
+  if (event.dlc === 3 && data[0] === 0x00 && data[1] === 0xee) {
+    return { ...event, kind: "CommandMalformed", command: 0x00, status: 0xee };
+  }
+  if (event.dlc === 3 && data[0] === 0xfd && data[1] === 0x9f) {
+    return { ...event, kind: "MotionReached", command: 0xfd, status: 0x9f };
+  }
+  if (event.dlc === 3 && data[0] === 0xfd && data[1] === 0x02) {
+    return { ...event, kind: "CommandAcked", command: 0xfd, status: 0x02 };
+  }
+  if (event.dlc === 3 && data[0] === 0xfd && data[1] === 0xe2) {
+    return { ...event, kind: "CommandConditionNotMet", command: 0xfd, status: 0xe2 };
+  }
   return { ...event, kind: "UnknownFrame" };
+}
+
+function planCharacterReleaseDelta(direction, steps) {
+  return signedStepsForDirection(steps, direction);
+}
+
+function planLineFeedDelta(direction, steps) {
+  return signedStepsForDirection(steps, direction);
+}
+
+function lineFeedTarget(initialPulse, signedDelta) {
+  return initialPulse + signedDelta;
+}
+
+function canMotionReady({ ready, fatalFault }) {
+  return ready && !fatalFault;
 }
 
 const config = {
@@ -182,6 +202,12 @@ assert.deepEqual(xyDeltaSteps({ xMm: 0, yMm: 0 }, { xMm: 10, yMm: 5 }, config.ca
 });
 assert.equal(scaledRpm(400, 800, 1600, 50), 800);
 assert.equal(scaledRpm(1, 800, 1600, 50), 50);
+assert.equal(planCharacterReleaseDelta("cw", 180), 180);
+assert.equal(planCharacterReleaseDelta("ccw", 180), -180);
+assert.equal(planLineFeedDelta("cw", 16440), 16440);
+assert.equal(planLineFeedDelta("ccw", 16440), -16440);
+assert.equal(lineFeedTarget(5000, -180), 4820);
+assert.equal(lineFeedTarget(-200, 16440), 16240);
 
 assert.deepEqual(
   pick(parseEmmV5Frame({ canId: 0x0100, data: [0xfd, 0x02, 0x6b] }), ["motorId", "kind", "command"]),
@@ -189,7 +215,7 @@ assert.deepEqual(
 );
 assert.deepEqual(
   pick(parseEmmV5Frame({ canId: 0x0200, data: [0xf3, 0xe2, 0x6b] }), ["motorId", "kind"]),
-  { motorId: 2, kind: "CommandConditionNotMet" },
+  { motorId: 2, kind: "UnknownFrame" },
 );
 assert.deepEqual(
   pick(parseEmmV5Frame({ canId: 0x0200, data: [0xfd, 0xe2, 0x6b] }), ["motorId", "kind", "command"]),
@@ -206,6 +232,14 @@ assert.equal(
   parseEmmV5Frame({ canId: 0x0100, data: [0x32, 0x01, 0x00, 0x00, 0x0c, 0x80, 0x6b] }).inputPulseSteps,
   -3200,
 );
+assert.equal(
+  parseEmmV5Frame({ canId: 0x0100, data: [0x35, 0x02, 0x00, 0x10, 0x00, 0x6b] }).kind,
+  "VelocityFeedback",
+);
+assert.equal(
+  parseEmmV5Frame({ canId: 0x0100, data: [0x32, 0x02, 0x00, 0x00, 0x01, 0x00, 0x6b] }).kind,
+  "InputPulseFeedback",
+);
 assert.deepEqual(
   pick(parseEmmV5Frame({ canId: 0x0100, extd: false, data: [0xfd, 0x02, 0x6b] }), ["kind", "errorCode", "motorId"]),
   { kind: "InvalidFrame", errorCode: "not_extended_frame", motorId: 0 },
@@ -218,6 +252,9 @@ assert.deepEqual(
   pick(parseEmmV5Frame({ canId: 0x0107, data: [0x77, 0x01, 0x6b] }), ["motorId", "packetIndex", "kind"]),
   { motorId: 1, packetIndex: 7, kind: "UnknownFrame" },
 );
+assert.equal(canMotionReady({ ready: true, fatalFault: false }), true);
+assert.equal(canMotionReady({ ready: true, fatalFault: true }), false);
+assert.equal(canMotionReady({ ready: false, fatalFault: false }), false);
 
 const httpServer = readFileSync(new URL("../http_control_server.h", import.meta.url), "utf8");
 assert.match(httpServer, /case JobState::None:[\s\S]*return "none";/, "JobState::None must serialize to none");
@@ -243,11 +280,12 @@ assert.match(
   "Startup motor preparation must only run the best-effort probe",
 );
 assert.doesNotMatch(autoTyperRuntime, /deviceReadyWarning_/, "Readiness warning must not be sticky state");
-assert.match(autoTyperRuntime, /checkRequiredMotors/, "Job acceptance must explicitly check required motors");
-assert.match(autoTyperRuntime, /x_motor_not_ready|y_pair_not_ready|line_feed_not_ready/, "Required motor failure must reject the job");
+assert.match(autoTyperRuntime, /checkRequiredActuators/, "Job acceptance must explicitly check required actuators");
+assert.match(autoTyperRuntime, /x_motor_not_ready|y_pair_not_ready|line_feed_not_ready|servo_not_ready/, "Required actuator failure must reject the job");
 assert.match(autoTyperRuntime, /hasInputPulse/, "Required motor readiness must require pulse feedback");
 assert.match(autoTyperRuntime, /lastConditionNotMetMs/, "Startup E2 must leave the device not ready for jobs");
 assert.match(autoTyperRuntime, /lastMalformedMs/, "Startup EE must leave the device not ready for jobs");
+assert.match(autoTyperRuntime, /kRecentAlertWindowMs/, "Health warning must use a recent alert window");
 
 const protocol = readFileSync(new URL("../../../shared/protocol/auto-typer-protocol.ts", import.meta.url), "utf8");
 assert.match(protocol, /not_ready/, "Shared protocol must include not_ready health");
@@ -264,6 +302,8 @@ assert.doesNotMatch(motionExecutor, /requestPosition\(/, "Motion feedback pollin
 assert.match(motionExecutor, /motionPollIntervalMs/, "Motion feedback polling must be rate limited");
 assert.match(motionExecutor, /lastFeedbackPollMs_/, "Motion feedback polling must keep a poll timestamp");
 assert.match(motionExecutor, /inputPulseSteps/, "Motion completion must use input pulse steps");
+assert.match(motionExecutor, /validateLineFeedBaseline/, "Line feed moves must require a fresh pulse baseline");
+assert.match(motionExecutor, /line_feed_baseline_missing/, "Missing line feed baseline must fail with a clear error");
 assert.doesNotMatch(motionExecutor, /observedPositionSteps/, "Realtime angle must not be stored as observedPositionSteps");
 assert.doesNotMatch(
   motionExecutor,
@@ -278,6 +318,8 @@ assert.match(
 
 const emmV5Driver = readFileSync(new URL("../drivers/EmmV5Driver.h", import.meta.url), "utf8");
 assert.match(emmV5Driver, /triggerSynchronousMotionBroadcast\(\)/, "EMM_V5 driver must expose broadcast sync trigger");
+assert.match(emmV5Driver, /requestRealtimeAngle/, "EMM_V5 realtime-angle request must be named explicitly");
+assert.doesNotMatch(emmV5Driver, /requestPosition\(/, "EMM_V5 realtime angle request must not be exposed as requestPosition");
 assert.match(
   emmV5Driver,
   /\{\s*0x00,\s*0xFF,\s*0x66,\s*0x6B\s*\}/,
@@ -313,8 +355,8 @@ assert.doesNotMatch(
 
 assert.doesNotMatch(
   autoTyperRuntime,
-  /yPair\.moveRelative\([\s\S]*?&&\s*yPair\.trigger\(\)/,
-  "YPair debug move must not add a second sync trigger",
+  /triggerSynchronousMotionBroadcast\(\)/,
+  "Single-motor debug moves must not issue an extra broadcast sync trigger",
 );
 
 const canTxQueue = readFileSync(new URL("../can/CanTxQueue.h", import.meta.url), "utf8");
@@ -443,6 +485,8 @@ assert.deepEqual(fatalQueue.sent, ["stop"], "Fatal CAN fault must still attempt 
 const protocolTypes = readFileSync(new URL("../protocol/EmmV5ProtocolParser.h", import.meta.url), "utf8");
 assert.match(protocolTypes, /InputPulseFeedback/, "Parser event model must include input pulse feedback");
 assert.match(protocolTypes, /RealtimeAngleFeedback/, "Parser event model must keep realtime angle separate");
+assert.match(protocolTypes, /event\.command == 0x32/, "Parser must prioritize 0x32 input pulse telemetry");
+assert.match(protocolTypes, /event\.dlc == 3 && event\.raw\[0\] == 0xFD && event\.raw\[1\] == 0x02/, "Parser ACK detection must be constrained to short FD ACK frames");
 
 const protocolTrace = readFileSync(new URL("../can/ProtocolTrace.h", import.meta.url), "utf8");
 assert.match(protocolTrace, /kCapacity\s*=\s*128/, "Protocol trace must retain at least 128 frames");
@@ -453,11 +497,31 @@ const eventStore = readFileSync(new URL("../can/EmmV5EventStore.h", import.meta.
 assert.match(eventStore, /UnknownFrame[\s\S]*\+\+unknownFrameCount_/, "Unknown frames must be retained in diagnostics");
 assert.match(eventStore, /InvalidFrame[\s\S]*\+\+invalidFrameCount_/, "Invalid frames must be retained in diagnostics");
 
+const canBus = readFileSync(new URL("../can/CanBus.h", import.meta.url), "utf8");
+assert.doesNotMatch(canBus, /registerSoftFault/, "Soft CAN faults must not escalate into fatal faults");
+assert.match(canBus, /TWAI_ALERT_BUS_OFF/, "CAN bus-off must still be handled as fatal");
+assert.match(canBus, /const esp_err_t startResult = twai_start\(\);/, "CAN bus recovery must not call twai_start twice");
+
+const machineKinematics = readFileSync(new URL("../motion/MachineKinematics.h", import.meta.url), "utf8");
+assert.match(machineKinematics, /signedStepsForDirection/, "Machine kinematics must expose signed direction helper");
+
+const motionPlanner = readFileSync(new URL("../motion/MotionPlanner.h", import.meta.url), "utf8");
+assert.match(motionPlanner, /signedStepsForDirection\(config\.lineFeed\.characterReleaseSteps, config\.lineFeed\.releaseDirection\)/, "Character release must plan signed line-feed delta");
+assert.match(motionPlanner, /signedStepsForDirection\(config\.lineFeed\.returnTotalSteps, config\.lineFeed\.returnDirection\)/, "Line feed must plan signed return delta");
+
 const sharedProtocol = readFileSync(new URL("../../../shared/protocol/auto-typer-protocol.ts", import.meta.url), "utf8");
 assert.match(sharedProtocol, /dataHex: string/, "Shared protocol must type protocol trace hex data");
 assert.match(sharedProtocol, /unknownFrameCount: number/, "Shared protocol must type parser diagnostics");
 assert.match(sharedProtocol, /commandQueueFullCount: number/, "Shared protocol must type command queue full diagnostics");
 assert.match(sharedProtocol, /lastCommandQueueError: string/, "Shared protocol must type last command queue error");
+
+const keymapDomain = readFileSync(new URL("../../../apps/desktop/src/domain/keymap.ts", import.meta.url), "utf8");
+assert.match(keymapDomain, /if \(base\?\.bindings && base\.bindings\.length > 0\)/, "Desktop keymap must preserve existing device bindings");
+assert.match(keymapDomain, /return sanitizeKeymap\(\{[\s\S]*bindings: base\.bindings/, "Desktop keymap preservation path must sanitize existing bindings");
+
+const appTsx = readFileSync(new URL("../../../apps/desktop/src/ui/App.tsx", import.meta.url), "utf8");
+assert.match(appTsx, /sanitizeKeymap\(await client\.putKeymap\(nextKeymap\)\)/, "Keymap sync must upload and store sanitized current bindings");
+assert.match(appTsx, /<TaskStatusPanel status=\{status\} logLines=\{logLines\} \/>/, "Print Task page must use simplified task status panel");
 
 function pick(object, keys) {
   return Object.fromEntries(keys.map((key) => [key, object[key]]));
