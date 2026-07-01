@@ -34,6 +34,11 @@ class ProtocolTrace {
     push(item);
   }
 
+  void addTxRetry(const CanFrame& frame) {
+    ProtocolTraceItem item = frameItem(frame, "tx", "TxRetry");
+    push(item);
+  }
+
   void addRx(const CanFrame& frame, const EmmV5Event& event) {
     ProtocolTraceItem item = frameItem(frame, "rx", event.errorCode != nullptr && event.errorCode[0] != '\0'
                                                         ? event.errorCode

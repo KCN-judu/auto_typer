@@ -258,6 +258,125 @@ assert.doesNotMatch(
   "YPair debug move must not add a second sync trigger",
 );
 
+const canTxQueue = readFileSync(new URL("../can/CanTxQueue.h", import.meta.url), "utf8");
+assert.match(canTxQueue, /pendingValid_/, "CAN TX queue must keep a pending frame after transmit failure");
+assert.match(canTxQueue, /pendingFrame_/, "CAN TX queue must store the frame being retried");
+assert.match(canTxQueue, /recordTxRetry\(\)/, "CAN TX retry must increment diagnostics");
+assert.match(canTxQueue, /addTxRetry/, "CAN TX retry must be visible in protocol trace");
+assert.match(
+  canTxQueue,
+  /if\s*\(\s*!bus_\.transmit\(pendingFrame_\.frame\)\s*\)[\s\S]*?return;/,
+  "CAN TX failure must retain pending frame for the next tick",
+);
+assert.match(
+  canTxQueue,
+  /pendingValid_\s*=\s*false;[\s\S]*?setPendingFrameValid\(false\);[\s\S]*?\+\+sent;/,
+  "CAN TX pending frame must clear only after transmit success",
+);
+assert.match(
+  canTxQueue,
+  /hasFatalFault\(\)[\s\S]*?!pendingFrame_\.highPriority[\s\S]*?pendingValid_\s*=\s*false/,
+  "Fatal CAN fault must drop ordinary pending frames",
+);
+assert.match(
+  canTxQueue,
+  /hasFatalFault\(\)[\s\S]*?!item\.highPriority[\s\S]*?continue;/,
+  "Fatal CAN fault must skip ordinary queued frames so stop frames can pass",
+);
+
+function simulateCanTxQueue({ frames, failAttempts = new Set(), fatalFault = false }) {
+  const queue = [...frames];
+  const sent = [];
+  const retries = [];
+  const dropped = [];
+  let pendingValid = false;
+  let pendingFrame = undefined;
+  let attempt = 0;
+
+  function loadNextPendingFrame() {
+    while (queue.length > 0) {
+      const item = queue.shift();
+      if (fatalFault && !item.highPriority) {
+        dropped.push(item.frame.id);
+        continue;
+      }
+      pendingFrame = item;
+      pendingValid = true;
+      return true;
+    }
+    return false;
+  }
+
+  function tick(maxFrames = 4) {
+    let sentThisTick = 0;
+    while (sentThisTick < maxFrames) {
+      if (fatalFault && pendingValid && !pendingFrame.highPriority) {
+        dropped.push(pendingFrame.frame.id);
+        pendingValid = false;
+      }
+      if (!pendingValid && !loadNextPendingFrame()) {
+        return;
+      }
+      attempt += 1;
+      if (failAttempts.has(attempt)) {
+        retries.push(pendingFrame.frame.id);
+        return;
+      }
+      sent.push(pendingFrame.frame.id);
+      pendingValid = false;
+      sentThisTick += 1;
+    }
+  }
+
+  return {
+    tick,
+    sent,
+    retries,
+    dropped,
+    pendingId: () => (pendingValid ? pendingFrame.frame.id : undefined),
+  };
+}
+
+const retryQueue = simulateCanTxQueue({
+  frames: [{ frame: { id: "0x0100", data: [0xfd, 0x01] }, highPriority: false }],
+  failAttempts: new Set([1]),
+});
+retryQueue.tick();
+assert.equal(retryQueue.pendingId(), "0x0100", "Failed CAN TX must remain pending");
+assert.deepEqual(retryQueue.retries, ["0x0100"], "Failed CAN TX must be counted as retry");
+retryQueue.tick();
+assert.deepEqual(retryQueue.sent, ["0x0100"], "Next tick must resend the same CAN frame");
+assert.equal(retryQueue.pendingId(), undefined, "Successful retry must clear pending frame");
+
+const multiFrameQueue = simulateCanTxQueue({
+  frames: [
+    { frame: { id: "0x0100", data: [0xfd, 0x01] }, highPriority: false },
+    { frame: { id: "0x0101", data: [0xfd, 0x02] }, highPriority: false },
+    { frame: { id: "0x0102", data: [0xfd, 0x03] }, highPriority: false },
+  ],
+  failAttempts: new Set([2]),
+});
+multiFrameQueue.tick();
+assert.deepEqual(multiFrameQueue.sent, ["0x0100"], "Frames before a TX failure should remain sent in order");
+assert.equal(multiFrameQueue.pendingId(), "0x0101", "Middle FD packet must remain pending after TX failure");
+multiFrameQueue.tick();
+assert.deepEqual(
+  multiFrameQueue.sent,
+  ["0x0100", "0x0101", "0x0102"],
+  "Multi-frame FD commands must not lose or reorder packets after a TX failure",
+);
+
+const fatalQueue = simulateCanTxQueue({
+  frames: [
+    { frame: { id: "normal" }, highPriority: false },
+    { frame: { id: "stop" }, highPriority: true },
+  ],
+  fatalFault: true,
+});
+fatalQueue.tick();
+assert.deepEqual(fatalQueue.dropped, ["normal"], "Fatal CAN fault may drop ordinary queued frames");
+assert.deepEqual(fatalQueue.sent, ["stop"], "Fatal CAN fault must still attempt high-priority stop frames");
+
 const protocolTypes = readFileSync(new URL("../protocol/EmmV5ProtocolParser.h", import.meta.url), "utf8");
 assert.match(protocolTypes, /InputPulseFeedback/, "Parser event model must include input pulse feedback");
 assert.match(protocolTypes, /RealtimeAngleFeedback/, "Parser event model must keep realtime angle separate");

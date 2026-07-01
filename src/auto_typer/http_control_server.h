@@ -398,10 +398,12 @@ class HttpControlServer {
     json["recoverable"] = diagnostics.recoverable;
     json["lastAlerts"] = diagnostics.lastAlerts;
     json["txFailedCount"] = diagnostics.txFailedCount;
+    json["txRetryCount"] = diagnostics.txRetryCount;
     json["busErrorCount"] = diagnostics.busErrorCount;
     json["rxQueueFullCount"] = diagnostics.rxQueueFullCount;
     json["errPassiveCount"] = diagnostics.errPassiveCount;
     json["busOffCount"] = diagnostics.busOffCount;
+    json["pendingFrameValid"] = diagnostics.pendingFrameValid;
     json["lastAlertAtMs"] = diagnostics.lastAlertAtMs;
     json["lastFaultAtMs"] = diagnostics.lastFaultAtMs;
     json["lastTxError"] = diagnostics.lastTxError;

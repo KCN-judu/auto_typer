@@ -21,13 +21,17 @@ struct CanBusDiagnostics {
   bool motionReady;
   uint32_t lastAlerts;
   uint32_t txFailedCount;
+  uint32_t txRetryCount;
+  uint32_t commandQueueFullCount;
   uint32_t busErrorCount;
   uint32_t rxQueueFullCount;
   uint32_t errPassiveCount;
   uint32_t busOffCount;
+  bool pendingFrameValid;
   uint32_t lastFaultAtMs;
   uint32_t lastAlertAtMs;
   const char* lastTxError;
+  const char* lastCommandQueueError;
   bool recoverable;
   bool fatalFault;
   CanBusFault lastFault;

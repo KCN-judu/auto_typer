@@ -20,6 +20,7 @@ class CanBus {
         softFaultWindowCount_(0),
         softFaultEscalationEnabled_(true) {
     diagnostics_.lastTxError = "";
+    diagnostics_.lastCommandQueueError = "";
     diagnostics_.lastFaultCode = "";
     diagnostics_.lastFaultMessage = "";
     diagnostics_.recoverable = true;
@@ -149,6 +150,21 @@ class CanBus {
     return snapshot;
   }
 
+  void recordTxRetry() {
+    ++diagnostics_.txRetryCount;
+    diagnostics_.lastAlertAtMs = millis();
+  }
+
+  void recordCommandQueueFull() {
+    ++diagnostics_.commandQueueFullCount;
+    diagnostics_.lastCommandQueueError = "command_queue_full";
+    diagnostics_.lastAlertAtMs = millis();
+  }
+
+  void setPendingFrameValid(bool valid) {
+    diagnostics_.pendingFrameValid = valid;
+  }
+
   void setSoftFaultEscalationEnabled(bool enabled) {
     softFaultEscalationEnabled_ = enabled;
     if (!enabled) {
@@ -237,13 +253,17 @@ class CanBus {
     diagnostics_.driverReady = ready_;
     diagnostics_.motionReady = ready_;
     diagnostics_.txFailedCount = 0;
+    diagnostics_.txRetryCount = 0;
+    diagnostics_.commandQueueFullCount = 0;
     diagnostics_.busErrorCount = 0;
     diagnostics_.rxQueueFullCount = 0;
     diagnostics_.errPassiveCount = 0;
     diagnostics_.busOffCount = 0;
+    diagnostics_.pendingFrameValid = false;
     diagnostics_.lastFaultAtMs = 0;
     diagnostics_.lastAlertAtMs = 0;
     diagnostics_.lastTxError = "";
+    diagnostics_.lastCommandQueueError = "";
     diagnostics_.recoverable = true;
     diagnostics_.fatalFault = false;
     diagnostics_.lastFault = CanBusFault::None;

@@ -52,10 +52,12 @@ export interface CanBusDiagnostics {
   recoverable: boolean;
   lastAlerts: number;
   txFailedCount: number;
+  txRetryCount: number;
   busErrorCount: number;
   rxQueueFullCount: number;
   errPassiveCount: number;
   busOffCount: number;
+  pendingFrameValid: boolean;
   lastAlertAtMs: number;
   lastFaultAtMs: number;
   lastTxError: string;

@@ -425,8 +425,9 @@ function StatusPanel({ status, logLines }: { status: DeviceStatus; logLines: str
           <StateRow label="CAN fatal" value={status.canDiagnostics.fatalFault ? "YES" : "NO"} />
           <StateRow
             label="CAN counts"
-            value={`tx ${status.canDiagnostics.txFailedCount} / bus ${status.canDiagnostics.busErrorCount} / rx ${status.canDiagnostics.rxQueueFullCount}`}
+            value={`tx ${status.canDiagnostics.txFailedCount} / retry ${status.canDiagnostics.txRetryCount} / bus ${status.canDiagnostics.busErrorCount} / rx ${status.canDiagnostics.rxQueueFullCount}`}
           />
+          <StateRow label="CAN pending" value={status.canDiagnostics.pendingFrameValid ? "YES" : "NO"} />
           {(status.canDiagnostics.lastFaultCode || status.canDiagnostics.lastTxError) && (
             <StateRow
               label="CAN detail"
