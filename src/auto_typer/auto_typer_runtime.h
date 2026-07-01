@@ -203,24 +203,25 @@ class AutoTyperApplication {
     return motion_.stopNow(motorId, sync);
   }
 
-  bool debugServo(PressAction action) {
+  bool debugServo(PressAction action, uint16_t dwellMs = 0) {
     if (jobState_ == JobState::Running || jobState_ == JobState::Queued) {
       return false;
     }
+    const bool useCustomDwell = dwellMs > 0;
     switch (action) {
       case PressAction::Press:
-        return servo_.press();
+        return useCustomDwell ? servo_.apply(PressAction::Press, dwellMs) : servo_.press();
       case PressAction::Release:
       default:
-        return servo_.release();
+        return useCustomDwell ? servo_.apply(PressAction::Release, dwellMs) : servo_.release();
     }
   }
 
-  bool debugServoNeutral() {
+  bool debugServoNeutral(uint16_t dwellMs = 0) {
     if (jobState_ == JobState::Running || jobState_ == JobState::Queued) {
       return false;
     }
-    return servo_.neutral();
+    return dwellMs > 0 ? servo_.neutral(dwellMs) : servo_.neutral();
   }
 
   bool upsertKeyBinding(char key, MachinePointMm point) {

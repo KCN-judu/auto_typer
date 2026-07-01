@@ -24,16 +24,19 @@ class ServoPressHal {
   }
 
   bool apply(PressAction action) {
+    return apply(action, action == PressAction::Release ? config_.releaseMs : config_.pressMs);
+  }
+
+  bool apply(PressAction action, uint16_t dwellMs) {
     if (!ensureReady()) {
       return false;
     }
     const ServoMotion motion =
         action == PressAction::Release ? config_.semantics.releaseMotion : config_.semantics.pressMotion;
-    const uint16_t pulseUs = pulseFor(motion);
-    for (uint8_t i = 0; i < config_.channelCount; ++i) {
-      driver_.writeMicroseconds(config_.channels[i], pulseUs);
-    }
-    delay(action == PressAction::Release ? config_.releaseMs : config_.pressMs);
+    writeMotion(motion);
+    delay(dwellMs);
+    writeMotion(ServoMotion::Neutral);
+    delay(config_.settleMs);
     disableOutputs();
     return true;
   }
@@ -48,6 +51,10 @@ class ServoPressHal {
 
   bool neutral() {
     return applyMotion(ServoMotion::Neutral, config_.settleMs);
+  }
+
+  bool neutral(uint16_t dwellMs) {
+    return applyMotion(ServoMotion::Neutral, dwellMs);
   }
 
   bool ready() const {
@@ -69,10 +76,7 @@ class ServoPressHal {
     if (!ensureReady()) {
       return false;
     }
-    const uint16_t pulseUs = pulseFor(motion);
-    for (uint8_t i = 0; i < config_.channelCount; ++i) {
-      driver_.writeMicroseconds(config_.channels[i], pulseUs);
-    }
+    writeMotion(motion);
     delay(dwellMs);
     disableOutputs();
     return true;
@@ -80,6 +84,13 @@ class ServoPressHal {
 
   bool ensureReady() {
     return ready_ || begin();
+  }
+
+  void writeMotion(ServoMotion motion) {
+    const uint16_t pulseUs = pulseFor(motion);
+    for (uint8_t i = 0; i < config_.channelCount; ++i) {
+      driver_.writeMicroseconds(config_.channels[i], pulseUs);
+    }
   }
 
   uint16_t pulseFor(ServoMotion motion) const {

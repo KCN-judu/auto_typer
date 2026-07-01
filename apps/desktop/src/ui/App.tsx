@@ -54,6 +54,7 @@ export function App() {
   const [logLines, setLogLines] = useState<string[]>(["等待连接 ESP32"]);
   const [selectedKey, setSelectedKey] = useState("a");
   const [probePoint, setProbePoint] = useState({ xMm: 10.5, yMm: 45 });
+  const [servoDurationMs, setServoDurationMs] = useState(200);
   const [motor, setMotor] = useState({
     motorId: 23,
     direction: "cw" as MotorDirection,
@@ -148,8 +149,8 @@ export function App() {
 
   async function applyServo(command: ServoCommand) {
     try {
-      setStatus(await client.applyServo({ command }));
-      appendLog(`舵机 ${command}`);
+      setStatus(await client.applyServo({ command, durationMs: servoDurationMs }));
+      appendLog(`舵机 ${command} ${servoDurationMs}ms`);
     } catch (error) {
       appendLog(error instanceof Error ? error.message : "舵机命令失败");
     }
@@ -302,6 +303,9 @@ export function App() {
                 <button className="secondary" disabled={!canDebug} onClick={() => applyServo("release")}>释放</button>
                 <button className="primary" disabled={!canDebug} onClick={() => applyServo("press")}>按压</button>
                 <button className="secondary" disabled={!canDebug} onClick={() => applyServo("neutral")}>中位</button>
+              </div>
+              <div className="servoTune">
+                <label>运动时长 ms<input type="number" min="1" max="65535" value={servoDurationMs} onChange={(e) => setServoDurationMs(Number(e.target.value))} /></label>
               </div>
               <div className="formGrid">
                 <label>按键<input value={selectedKey} onChange={(e) => setSelectedKey(e.target.value.slice(0, 1))} /></label>

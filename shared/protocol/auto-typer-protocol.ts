@@ -95,6 +95,7 @@ export interface MotorStopRequest {
 
 export interface ServoApplyRequest {
   command: ServoCommand;
+  durationMs?: number;
 }
 
 export interface ProbeKeyRequest {

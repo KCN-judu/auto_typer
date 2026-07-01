@@ -59,9 +59,7 @@ inline TypingPlan planText(const char* text,
   plan.failedKey = '\0';
   plan.count = 0;
 
-  if (!appendStep(plan, {TypingStepKind::Release, config.homePoint, config.servo.releaseMs})) {
-    return plan;
-  }
+  bool servoReleased = true;
 
   MachinePointMm current = config.homePoint;
   for (size_t i = 0; text[i] != '\0'; ++i) {
@@ -69,8 +67,11 @@ inline TypingPlan planText(const char* text,
       if (text[i] == '\r' && text[i + 1] == '\n') {
         ++i;
       }
-      if (!appendStep(plan, {TypingStepKind::Release, current, config.servo.releaseMs})) {
-        return plan;
+      if (!servoReleased) {
+        if (!appendStep(plan, {TypingStepKind::Release, current, config.servo.releaseMs})) {
+          return plan;
+        }
+        servoReleased = true;
       }
       if (!appendStep(plan, {TypingStepKind::LineFeed, current, 0})) {
         return plan;
@@ -86,8 +87,11 @@ inline TypingPlan planText(const char* text,
       return plan;
     }
 
-    if (!appendStep(plan, {TypingStepKind::Release, current, config.servo.releaseMs})) {
-      return plan;
+    if (!servoReleased) {
+      if (!appendStep(plan, {TypingStepKind::Release, current, config.servo.releaseMs})) {
+        return plan;
+      }
+      servoReleased = true;
     }
     if (!appendStep(plan, {TypingStepKind::MoveTo, target, 0})) {
       return plan;
@@ -98,9 +102,11 @@ inline TypingPlan planText(const char* text,
     if (!appendStep(plan, {TypingStepKind::Press, target, config.servo.pressMs})) {
       return plan;
     }
+    servoReleased = false;
     if (!appendStep(plan, {TypingStepKind::Release, target, config.servo.releaseMs})) {
       return plan;
     }
+    servoReleased = true;
     if (!appendStep(plan, {TypingStepKind::CharacterRelease, target, 0})) {
       return plan;
     }

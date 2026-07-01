@@ -145,14 +145,16 @@ class HttpControlServer {
   }
 
   void handleServoApply() {
-    const String command = extractString(server_.arg("plain"), "command");
+    const String body = server_.arg("plain");
+    const String command = extractString(body, "command");
+    const uint16_t dwellMs = extractUint16(body, "durationMs", 0);
     bool ok = false;
     if (command == "press") {
-      ok = app_.debugServo(PressAction::Press);
+      ok = app_.debugServo(PressAction::Press, dwellMs);
     } else if (command == "release") {
-      ok = app_.debugServo(PressAction::Release);
+      ok = app_.debugServo(PressAction::Release, dwellMs);
     } else if (command == "neutral") {
-      ok = app_.debugServoNeutral();
+      ok = app_.debugServoNeutral(dwellMs);
     }
     if (!ok) {
       sendError(409, "servo_rejected", "Servo command rejected");
@@ -286,11 +288,53 @@ class HttpControlServer {
     if (start < 0) {
       return "";
     }
-    const int end = json.indexOf('"', start + 1);
-    if (end < 0) {
-      return "";
+    String value;
+    bool escaped = false;
+    for (int i = start + 1; i < json.length(); ++i) {
+      const char current = json[i];
+      if (escaped) {
+        appendJsonEscapedChar(value, current);
+        escaped = false;
+        continue;
+      }
+      if (current == '\\') {
+        escaped = true;
+        continue;
+      }
+      if (current == '"') {
+        return value;
+      }
+      value += current;
     }
-    return json.substring(start + 1, end);
+    return "";
+  }
+
+  static void appendJsonEscapedChar(String& value, char escaped) {
+    switch (escaped) {
+      case '"':
+      case '\\':
+      case '/':
+        value += escaped;
+        break;
+      case 'b':
+        value += '\b';
+        break;
+      case 'f':
+        value += '\f';
+        break;
+      case 'n':
+        value += '\n';
+        break;
+      case 'r':
+        value += '\r';
+        break;
+      case 't':
+        value += '\t';
+        break;
+      default:
+        value += escaped;
+        break;
+    }
   }
 
   static long extractInt(const String& json, const char* key, long fallback) {
@@ -301,6 +345,17 @@ class HttpControlServer {
     }
     start += marker.length();
     return json.substring(start).toInt();
+  }
+
+  static uint16_t extractUint16(const String& json, const char* key, uint16_t fallback) {
+    const long value = extractInt(json, key, fallback);
+    if (value < 0) {
+      return fallback;
+    }
+    if (value > 65535) {
+      return 65535;
+    }
+    return static_cast<uint16_t>(value);
   }
 
   static float extractFloat(const String& json, const char* key, float fallback) {
