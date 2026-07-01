@@ -232,13 +232,30 @@ struct MotionBlock {
 
 struct MotorState {
   uint8_t id;
-  bool enabled;
-  bool fault;
-  bool moving;
-  int32_t estimatedPositionSteps;
-  int32_t observedPositionSteps;
+  bool hasVelocity;
+  bool hasRealtimeAngle;
+  bool hasInputPulse;
+  bool hasStatus;
   float velocityRpm;
-  uint32_t lastFeedbackMs;
+  int32_t realtimeAngleRaw65536;
+  int32_t inputPulseSteps;
+  uint32_t statusFlags;
+  bool driverFault;
+  bool conditionNotMet;
+  bool commandMalformed;
+  uint8_t lastAckCommand;
+  uint8_t lastConditionNotMetCommand;
+  uint8_t lastMalformedCommand;
+  uint32_t lastAckMs;
+  uint32_t lastConditionNotMetMs;
+  uint32_t lastMalformedMs;
+  bool motionReached;
+  uint32_t lastMotionReachedMs;
+  uint32_t lastVelocityMs;
+  uint32_t lastRealtimeAngleMs;
+  uint32_t lastInputPulseMs;
+  uint32_t lastStatusMs;
+  uint32_t lastAnyFrameMs;
 };
 
 struct SubmitJobResult {

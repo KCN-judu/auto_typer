@@ -87,6 +87,67 @@ function scaledRpm(axisSteps, primarySteps, maxRpm, minRpm) {
   return Math.max(minRpm, Math.ceil((maxRpm * axisSteps) / primarySteps));
 }
 
+function parseEmmV5Frame({ canId, extd = true, rtr = false, data }) {
+  const event = {
+    kind: "None",
+    motorId: 0,
+    packetIndex: 0,
+    command: data[0] ?? 0,
+    status: 0,
+    raw: data.slice(0, 8),
+    dlc: Math.min(data.length, 8),
+    canId,
+    velocityRpm: 0,
+    angleRaw65536: 0,
+    inputPulseSteps: 0,
+    statusFlags: 0,
+    errorCode: "",
+  };
+  if (!extd) {
+    return { ...event, kind: "InvalidFrame", errorCode: "not_extended_frame" };
+  }
+  if (rtr || event.dlc === 0) {
+    return { ...event, kind: "InvalidFrame", errorCode: "non_data_frame" };
+  }
+  event.motorId = (canId >> 8) & 0xff;
+  event.packetIndex = canId & 0xff;
+  if (data[event.dlc - 1] !== 0x6b) {
+    return { ...event, kind: "InvalidFrame", errorCode: "bad_checksum" };
+  }
+  if (event.dlc >= 3 && data[0] === 0x00 && data[1] === 0xee) {
+    return { ...event, kind: "CommandMalformed", command: 0x00, status: 0xee };
+  }
+  if (event.dlc >= 3 && data[0] === 0xfd && data[1] === 0x9f) {
+    return { ...event, kind: "MotionReached", command: 0xfd, status: 0x9f };
+  }
+  if (event.dlc >= 3 && data[1] === 0x02) {
+    return { ...event, kind: "CommandAcked", command: data[0], status: 0x02 };
+  }
+  if (event.dlc >= 3 && data[1] === 0xe2) {
+    return { ...event, kind: "CommandConditionNotMet", command: data[0], status: 0xe2 };
+  }
+  if (data[0] === 0x35 && event.dlc >= 5) {
+    const rpm = (data[2] << 8) | data[3];
+    return { ...event, kind: "VelocityFeedback", velocityRpm: data[1] === 0 ? rpm : -rpm };
+  }
+  if (data[0] === 0x36 && event.dlc >= 7) {
+    const raw = ((data[2] << 24) >>> 0) | (data[3] << 16) | (data[4] << 8) | data[5];
+    return { ...event, kind: "RealtimeAngleFeedback", angleRaw65536: data[1] === 0 ? raw : -raw };
+  }
+  if (data[0] === 0x32 && event.dlc >= 7) {
+    const raw = ((data[2] << 24) >>> 0) | (data[3] << 16) | (data[4] << 8) | data[5];
+    return { ...event, kind: "InputPulseFeedback", inputPulseSteps: data[1] === 0 ? raw : -raw };
+  }
+  if (data[0] === 0x3a || data[0] === 0x3b) {
+    let flags = 0;
+    for (const byte of data.slice(1, -1).slice(0, 4)) {
+      flags = (flags << 8) | byte;
+    }
+    return { ...event, kind: data[0] === 0x3a ? "StatusFlagsFeedback" : "HomeStatusFeedback", statusFlags: flags };
+  }
+  return { ...event, kind: "UnknownFrame" };
+}
+
 const config = {
   homePoint: { xMm: 0, yMm: 0 },
   servo: { settleMs: 80, pressMs: 600, releaseMs: 300 },
@@ -122,6 +183,34 @@ assert.deepEqual(xyDeltaSteps({ xMm: 0, yMm: 0 }, { xMm: 10, yMm: 5 }, config.ca
 assert.equal(scaledRpm(400, 800, 1600, 50), 800);
 assert.equal(scaledRpm(1, 800, 1600, 50), 50);
 
+assert.deepEqual(
+  pick(parseEmmV5Frame({ canId: 0x0100, data: [0xfd, 0x02, 0x6b] }), ["motorId", "kind", "command"]),
+  { motorId: 1, kind: "CommandAcked", command: 0xfd },
+);
+assert.deepEqual(
+  pick(parseEmmV5Frame({ canId: 0x0200, data: [0xf3, 0xe2, 0x6b] }), ["motorId", "kind"]),
+  { motorId: 2, kind: "CommandConditionNotMet" },
+);
+assert.equal(parseEmmV5Frame({ canId: 0x0300, data: [0x00, 0xee, 0x6b] }).kind, "CommandMalformed");
+assert.equal(parseEmmV5Frame({ canId: 0x0100, data: [0xfd, 0x9f, 0x6b] }).kind, "MotionReached");
+assert.equal(parseEmmV5Frame({ canId: 0x0100, data: [0x35, 0x01, 0x05, 0xdc, 0x6b] }).velocityRpm, -1500);
+assert.equal(
+  parseEmmV5Frame({ canId: 0x0100, data: [0x36, 0x01, 0x00, 0x01, 0x00, 0x00, 0x6b] }).angleRaw65536,
+  -65536,
+);
+assert.equal(
+  parseEmmV5Frame({ canId: 0x0100, data: [0x32, 0x01, 0x00, 0x00, 0x0c, 0x80, 0x6b] }).inputPulseSteps,
+  -3200,
+);
+assert.deepEqual(
+  pick(parseEmmV5Frame({ canId: 0x0100, extd: false, data: [0xfd, 0x02, 0x6b] }), ["kind", "errorCode", "motorId"]),
+  { kind: "InvalidFrame", errorCode: "not_extended_frame", motorId: 0 },
+);
+assert.deepEqual(
+  pick(parseEmmV5Frame({ canId: 0x0100, data: [0xfd, 0x02, 0x00] }), ["kind", "errorCode"]),
+  { kind: "InvalidFrame", errorCode: "bad_checksum" },
+);
+
 const httpServer = readFileSync(new URL("../http_control_server.h", import.meta.url), "utf8");
 assert.match(httpServer, /case JobState::None:[\s\S]*return "none";/, "JobState::None must serialize to none");
 assert.match(httpServer, /request\["point"\]/, "ProbeKeyRequest must read nested point");
@@ -134,5 +223,19 @@ assert.doesNotMatch(motionExecutor, /bool feedbackSatisfied\(const MotionBlock&\
 assert.doesNotMatch(motionExecutor, /estimatedMoveMs/, "MotionExecutor must not complete moves from estimated duration");
 assert.match(motionExecutor, /motion_feedback_timeout/, "Missing feedback must fault instead of completing");
 assert.match(motionExecutor, /y_pair_skew/, "Y pair skew must fault");
+assert.match(motionExecutor, /requestInputPulseCount/, "Motion feedback polling must request input pulse count");
+assert.doesNotMatch(motionExecutor, /requestPosition\(/, "Motion feedback polling must not use realtime angle as position steps");
+assert.match(motionExecutor, /motionPollIntervalMs/, "Motion feedback polling must be rate limited");
+assert.match(motionExecutor, /lastFeedbackPollMs_/, "Motion feedback polling must keep a poll timestamp");
+assert.match(motionExecutor, /inputPulseSteps/, "Motion completion must use input pulse steps");
+assert.doesNotMatch(motionExecutor, /observedPositionSteps/, "Realtime angle must not be stored as observedPositionSteps");
+
+const protocolTypes = readFileSync(new URL("../protocol/EmmV5ProtocolParser.h", import.meta.url), "utf8");
+assert.match(protocolTypes, /InputPulseFeedback/, "Parser event model must include input pulse feedback");
+assert.match(protocolTypes, /RealtimeAngleFeedback/, "Parser event model must keep realtime angle separate");
+
+function pick(object, keys) {
+  return Object.fromEntries(keys.map((key) => [key, object[key]]));
+}
 
 console.log("firmware planner/kinematics regression tests passed");

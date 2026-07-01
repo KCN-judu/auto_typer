@@ -58,6 +58,7 @@ class HttpControlServer {
     server_.on("/api/machine/stop", HTTP_POST, [this]() { handleEmergencyStop(); });
     server_.on("/api/machine/reset-fault", HTTP_POST, [this]() { handleResetFault(); });
     server_.on("/api/diagnostics/can", HTTP_GET, [this]() { sendCanDiagnostics(); });
+    server_.on("/api/diagnostics/protocol-trace", HTTP_GET, [this]() { sendProtocolTrace(); });
     server_.on("/api/keymap", HTTP_GET, [this]() { sendKeymap(); });
     server_.on("/api/keymap", HTTP_PUT, [this]() { handlePutKeymap(); });
     server_.on("/api/debug/motor/move-relative", HTTP_POST, [this]() { handleMotorMove(); });
@@ -283,6 +284,29 @@ class HttpControlServer {
     sendJson(200, response);
   }
 
+  void sendProtocolTrace() {
+    ProtocolTraceItem items[ProtocolTrace::capacity()];
+    const size_t count = app_.protocolTraceSnapshot(items, ProtocolTrace::capacity());
+    DynamicJsonDocument response(24576);
+    JsonArray trace = response.createNestedArray("trace");
+    for (size_t i = 0; i < count; ++i) {
+      JsonObject item = trace.createNestedObject();
+      item["timeMs"] = items[i].timeMs;
+      item["dir"] = items[i].dir;
+      item["canId"] = items[i].canId;
+      item["extd"] = items[i].extd;
+      item["dlc"] = items[i].dlc;
+      JsonArray data = item.createNestedArray("data");
+      for (uint8_t b = 0; b < items[i].dlc; ++b) {
+        data.add(items[i].data[b]);
+      }
+      item["parsed"] = items[i].parsed;
+      item["motorId"] = items[i].motorId;
+      item["packetIndex"] = items[i].packetIndex;
+    }
+    sendJson(200, response);
+  }
+
   void sendJob() {
     StaticJsonDocument<1024> response;
     const JobSnapshot snapshot = app_.snapshot();
@@ -340,13 +364,30 @@ class HttpControlServer {
       const MotorState state = app_.motorState(id);
       JsonObject motor = motors.createNestedObject();
       motor["id"] = id;
-      motor["enabled"] = state.enabled;
-      motor["fault"] = state.fault;
-      motor["moving"] = state.moving;
-      motor["estimatedPositionSteps"] = state.estimatedPositionSteps;
-      motor["observedPositionSteps"] = state.observedPositionSteps;
+      motor["hasVelocity"] = state.hasVelocity;
+      motor["hasRealtimeAngle"] = state.hasRealtimeAngle;
+      motor["hasInputPulse"] = state.hasInputPulse;
+      motor["hasStatus"] = state.hasStatus;
       motor["velocityRpm"] = state.velocityRpm;
-      motor["lastFeedbackMs"] = state.lastFeedbackMs;
+      motor["realtimeAngleRaw65536"] = state.realtimeAngleRaw65536;
+      motor["inputPulseSteps"] = state.inputPulseSteps;
+      motor["statusFlags"] = state.statusFlags;
+      motor["driverFault"] = state.driverFault;
+      motor["conditionNotMet"] = state.conditionNotMet;
+      motor["commandMalformed"] = state.commandMalformed;
+      motor["lastAckCommand"] = state.lastAckCommand;
+      motor["lastConditionNotMetCommand"] = state.lastConditionNotMetCommand;
+      motor["lastMalformedCommand"] = state.lastMalformedCommand;
+      motor["lastAckMs"] = state.lastAckMs;
+      motor["lastConditionNotMetMs"] = state.lastConditionNotMetMs;
+      motor["lastMalformedMs"] = state.lastMalformedMs;
+      motor["motionReached"] = state.motionReached;
+      motor["lastMotionReachedMs"] = state.lastMotionReachedMs;
+      motor["lastVelocityMs"] = state.lastVelocityMs;
+      motor["lastRealtimeAngleMs"] = state.lastRealtimeAngleMs;
+      motor["lastInputPulseMs"] = state.lastInputPulseMs;
+      motor["lastStatusMs"] = state.lastStatusMs;
+      motor["lastAnyFrameMs"] = state.lastAnyFrameMs;
     }
   }
 

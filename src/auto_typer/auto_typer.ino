@@ -3,8 +3,10 @@
 #include "auto_typer_config.h"
 #include "auto_typer_runtime.h"
 #include "can/CanBus.h"
+#include "can/EmmV5EventStore.h"
 #include "can/CanRxTask.h"
 #include "can/CanTxQueue.h"
+#include "can/ProtocolTrace.h"
 #include "drivers/EmmV5Driver.h"
 #include "hal_display.h"
 #include "hal_servo_press.h"
@@ -19,10 +21,12 @@ DisplayHal gDisplay(kConfig.oled);
 CanBus gCanBus(kConfig.canBus);
 CanTxQueue gCanTx(gCanBus);
 MotorFeedbackStore gFeedback;
-CanRxTask gCanRx(gCanBus, gFeedback);
-EmmV5Driver gMotion(gCanTx);
+EmmV5EventStore gEvents;
+ProtocolTrace gTrace;
+CanRxTask gCanRx(gCanBus, gFeedback, gEvents, gTrace);
+EmmV5Driver gMotion(gCanTx, &gTrace);
 ServoPressHal gServo(kConfig.servo);
-AutoTyperApplication gApp(kConfig, gDisplay, gCanBus, gCanTx, gCanRx, gMotion, gServo, gFeedback, Serial);
+AutoTyperApplication gApp(kConfig, gDisplay, gCanBus, gCanTx, gCanRx, gMotion, gServo, gFeedback, gTrace, Serial);
 HttpControlServer gHttp(kConfig, gApp, Serial);
 
 }  // namespace

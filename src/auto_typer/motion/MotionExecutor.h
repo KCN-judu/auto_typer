@@ -34,7 +34,7 @@ class MotionExecutor {
         activeTextIndex_(0),
         activeFeedback_{},
         completionSampleCount_(0),
-        lastFeedbackRequestMs_(0) {}
+        lastFeedbackPollMs_(0) {}
 
   bool start(const MotionBlock* blocks, size_t count) {
     if (state_ == State::Running || state_ == State::Cancelling) {
@@ -68,7 +68,7 @@ class MotionExecutor {
       blockStartedAtMs_ = millis();
       settleStartedAtMs_ = 0;
       completionSampleCount_ = 0;
-      lastFeedbackRequestMs_ = 0;
+      lastFeedbackPollMs_ = 0;
     }
     if (isBlockComplete(block)) {
       finishBlock(block);
@@ -282,24 +282,24 @@ class MotionExecutor {
 
   void requestFeedback(const MotionBlock& block) {
     const uint32_t nowMs = millis();
-    if (lastFeedbackRequestMs_ != 0 && nowMs - lastFeedbackRequestMs_ < config_.motionRuntime.motionPollIntervalMs) {
+    if (lastFeedbackPollMs_ != 0 && nowMs - lastFeedbackPollMs_ < config_.motionRuntime.motionPollIntervalMs) {
       return;
     }
-    lastFeedbackRequestMs_ = nowMs;
+    lastFeedbackPollMs_ = nowMs;
     if (block.kind == MotionBlockKind::MoveXY) {
       if (block.deltaSteps.x != 0) {
-        driver_.requestPosition(config_.topology.xMotorId);
+        driver_.requestInputPulseCount(config_.topology.xMotorId);
         driver_.requestVelocity(config_.topology.xMotorId);
       }
       if (block.deltaSteps.yLeft != 0) {
-        driver_.requestPosition(config_.topology.yLeftMotorId);
+        driver_.requestInputPulseCount(config_.topology.yLeftMotorId);
         driver_.requestVelocity(config_.topology.yLeftMotorId);
-        driver_.requestPosition(config_.topology.yRightMotorId);
+        driver_.requestInputPulseCount(config_.topology.yRightMotorId);
         driver_.requestVelocity(config_.topology.yRightMotorId);
       }
     }
     if (block.kind == MotionBlockKind::LineFeed || block.kind == MotionBlockKind::CharacterRelease) {
-      driver_.requestPosition(config_.topology.lineFeedMotorId);
+      driver_.requestInputPulseCount(config_.topology.lineFeedMotorId);
       driver_.requestVelocity(config_.topology.lineFeedMotorId);
     }
   }
@@ -307,6 +307,9 @@ class MotionExecutor {
   bool feedbackSatisfied(const MotionBlock& block) {
     const uint32_t nowMs = millis();
     if (block.kind == MotionBlockKind::MoveXY) {
+      if (block.deltaSteps.x != 0 && commandResponseFault(config_.topology.xMotorId)) {
+        return false;
+      }
       if (block.deltaSteps.x != 0 &&
           !motorAtTarget(config_.topology.xMotorId, activeFeedback_.targetX, nowMs)) {
         return false;
@@ -314,6 +317,9 @@ class MotionExecutor {
       if (block.deltaSteps.yLeft != 0) {
         const MotorState left = feedback_.get(config_.topology.yLeftMotorId);
         const MotorState right = feedback_.get(config_.topology.yRightMotorId);
+        if (commandResponseFault(left) || commandResponseFault(right)) {
+          return false;
+        }
         if (feedbackFresh(left, nowMs) && feedbackFresh(right, nowMs) && yPairSkewExceeded(left, right)) {
           stopAll();
           fail("y_pair_skew", "Y pair skew exceeded tolerance");
@@ -327,6 +333,9 @@ class MotionExecutor {
       return true;
     }
     if (block.kind == MotionBlockKind::LineFeed || block.kind == MotionBlockKind::CharacterRelease) {
+      if (commandResponseFault(config_.topology.lineFeedMotorId)) {
+        return false;
+      }
       return motorAtTarget(config_.topology.lineFeedMotorId, activeFeedback_.targetLineFeed, nowMs);
     }
     return true;
@@ -355,14 +364,14 @@ class MotionExecutor {
     const MotorState yLeft = feedback_.get(config_.topology.yLeftMotorId);
     const MotorState yRight = feedback_.get(config_.topology.yRightMotorId);
     const MotorState lineFeed = feedback_.get(config_.topology.lineFeedMotorId);
-    activeFeedback_.initialX = x.observedPositionSteps;
-    activeFeedback_.initialYLeft = yLeft.observedPositionSteps;
-    activeFeedback_.initialYRight = yRight.observedPositionSteps;
-    activeFeedback_.initialLineFeed = lineFeed.observedPositionSteps;
-    activeFeedback_.targetX = x.observedPositionSteps + block.deltaSteps.x;
-    activeFeedback_.targetYLeft = yLeft.observedPositionSteps + block.deltaSteps.yLeft;
-    activeFeedback_.targetYRight = yRight.observedPositionSteps + block.deltaSteps.yRight;
-    activeFeedback_.targetLineFeed = lineFeed.observedPositionSteps + block.deltaSteps.lineFeed;
+    activeFeedback_.initialX = x.inputPulseSteps;
+    activeFeedback_.initialYLeft = yLeft.inputPulseSteps;
+    activeFeedback_.initialYRight = yRight.inputPulseSteps;
+    activeFeedback_.initialLineFeed = lineFeed.inputPulseSteps;
+    activeFeedback_.targetX = x.inputPulseSteps + block.deltaSteps.x;
+    activeFeedback_.targetYLeft = yLeft.inputPulseSteps + block.deltaSteps.yLeft;
+    activeFeedback_.targetYRight = yRight.inputPulseSteps + block.deltaSteps.yRight;
+    activeFeedback_.targetLineFeed = lineFeed.inputPulseSteps + block.deltaSteps.lineFeed;
   }
 
   bool motorAtTarget(uint8_t motorId, int32_t target, uint32_t nowMs) const {
@@ -370,22 +379,41 @@ class MotionExecutor {
   }
 
   bool motorAtTarget(const MotorState& state, int32_t target, uint32_t nowMs) const {
-    if (state.fault || state.lastFeedbackMs == 0 || nowMs - state.lastFeedbackMs > 300) {
+    if (state.driverFault || !state.hasInputPulse || !state.hasVelocity || state.lastInputPulseMs == 0 ||
+        state.lastVelocityMs == 0 || nowMs - state.lastInputPulseMs > 300 || nowMs - state.lastVelocityMs > 300) {
       return false;
     }
-    const uint32_t error = absoluteSigned(state.observedPositionSteps - target);
+    const uint32_t error = absoluteSigned(state.inputPulseSteps - target);
     return error <= config_.motionRuntime.positionToleranceSteps &&
            fabs(state.velocityRpm) <= config_.motionRuntime.idleVelocityThresholdRpm;
   }
 
   bool feedbackFresh(const MotorState& state, uint32_t nowMs) const {
-    return state.lastFeedbackMs != 0 && nowMs - state.lastFeedbackMs <= 300;
+    return state.hasInputPulse && state.lastInputPulseMs != 0 && nowMs - state.lastInputPulseMs <= 300;
   }
 
   bool yPairSkewExceeded(const MotorState& left, const MotorState& right) const {
-    const int32_t skew = (left.observedPositionSteps - activeFeedback_.initialYLeft) +
-                         (right.observedPositionSteps - activeFeedback_.initialYRight);
+    const int32_t skew = (left.inputPulseSteps - activeFeedback_.initialYLeft) +
+                         (right.inputPulseSteps - activeFeedback_.initialYRight);
     return absoluteSigned(skew) > config_.motionRuntime.ySkewToleranceSteps;
+  }
+
+  bool commandResponseFault(uint8_t motorId) {
+    return commandResponseFault(feedback_.get(motorId));
+  }
+
+  bool commandResponseFault(const MotorState& state) {
+    if (state.lastConditionNotMetMs >= blockStartedAtMs_ && state.lastConditionNotMetCommand != 0) {
+      stopAll();
+      fail("motion_condition_not_met", "Motor rejected motion conditions");
+      return true;
+    }
+    if (state.lastMalformedMs >= blockStartedAtMs_ && state.commandMalformed) {
+      stopAll();
+      fail("motion_command_malformed", "Motor reported malformed command");
+      return true;
+    }
+    return false;
   }
 
   static uint32_t absoluteSigned(int32_t value) {
@@ -409,7 +437,7 @@ class MotionExecutor {
   size_t activeTextIndex_;
   ActiveFeedbackTargets activeFeedback_;
   uint8_t completionSampleCount_;
-  uint32_t lastFeedbackRequestMs_;
+  uint32_t lastFeedbackPollMs_;
 };
 
 }  // namespace auto_typer

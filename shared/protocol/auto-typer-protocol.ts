@@ -97,13 +97,46 @@ export interface JobStatus {
 
 export interface MotorState {
   id: number;
-  enabled: boolean;
-  fault: boolean;
-  moving: boolean;
-  estimatedPositionSteps: number;
-  observedPositionSteps: number;
+  hasVelocity: boolean;
+  hasRealtimeAngle: boolean;
+  hasInputPulse: boolean;
+  hasStatus: boolean;
   velocityRpm: number;
-  lastFeedbackMs: number;
+  realtimeAngleRaw65536: number;
+  inputPulseSteps: number;
+  statusFlags: number;
+  driverFault: boolean;
+  conditionNotMet: boolean;
+  commandMalformed: boolean;
+  lastAckCommand: number;
+  lastConditionNotMetCommand: number;
+  lastMalformedCommand: number;
+  lastAckMs: number;
+  lastConditionNotMetMs: number;
+  lastMalformedMs: number;
+  motionReached: boolean;
+  lastMotionReachedMs: number;
+  lastVelocityMs: number;
+  lastRealtimeAngleMs: number;
+  lastInputPulseMs: number;
+  lastStatusMs: number;
+  lastAnyFrameMs: number;
+}
+
+export interface ProtocolTraceItem {
+  timeMs: number;
+  dir: "tx" | "rx";
+  canId: number;
+  extd: boolean;
+  dlc: number;
+  data: number[];
+  parsed: string;
+  motorId: number;
+  packetIndex: number;
+}
+
+export interface ProtocolTraceResponse {
+  trace: ProtocolTraceItem[];
 }
 
 export interface ApiErrorBody {
@@ -160,6 +193,7 @@ export const protocolRoutes = {
   machineStop: "/api/machine/stop",
   resetFault: "/api/machine/reset-fault",
   canDiagnostics: "/api/diagnostics/can",
+  protocolTrace: "/api/diagnostics/protocol-trace",
   keymap: "/api/keymap",
   events: "/api/events",
   debugMotorMoveRelative: "/api/debug/motor/move-relative",

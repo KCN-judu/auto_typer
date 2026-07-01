@@ -1,6 +1,34 @@
 import type { DeviceStatus, KeymapDocument } from "../../../../shared/protocol/auto-typer-protocol";
 import { currentFeiyu200Keymap } from "./keymap";
 
+const mockMotor = (id: number) => ({
+  id,
+  hasVelocity: true,
+  hasRealtimeAngle: false,
+  hasInputPulse: true,
+  hasStatus: true,
+  velocityRpm: 0,
+  realtimeAngleRaw65536: 0,
+  inputPulseSteps: 0,
+  statusFlags: 0,
+  driverFault: false,
+  conditionNotMet: false,
+  commandMalformed: false,
+  lastAckCommand: 0,
+  lastConditionNotMetCommand: 0,
+  lastMalformedCommand: 0,
+  lastAckMs: 0,
+  lastConditionNotMetMs: 0,
+  lastMalformedMs: 0,
+  motionReached: false,
+  lastMotionReachedMs: 0,
+  lastVelocityMs: 0,
+  lastRealtimeAngleMs: 0,
+  lastInputPulseMs: 0,
+  lastStatusMs: 0,
+  lastAnyFrameMs: 0,
+});
+
 export const mockStatus: DeviceStatus = {
   deviceId: "esp32-s3-auto-typer",
   firmwareVersion: "0.1.0",
@@ -30,10 +58,10 @@ export const mockStatus: DeviceStatus = {
     lastFaultMessage: "",
   },
   motors: [
-    { id: 1, enabled: true, fault: false, moving: false, estimatedPositionSteps: 0, observedPositionSteps: 0, velocityRpm: 0, lastFeedbackMs: 0 },
-    { id: 2, enabled: true, fault: false, moving: false, estimatedPositionSteps: 0, observedPositionSteps: 0, velocityRpm: 0, lastFeedbackMs: 0 },
-    { id: 3, enabled: true, fault: false, moving: false, estimatedPositionSteps: 0, observedPositionSteps: 0, velocityRpm: 0, lastFeedbackMs: 0 },
-    { id: 4, enabled: true, fault: false, moving: false, estimatedPositionSteps: 0, observedPositionSteps: 0, velocityRpm: 0, lastFeedbackMs: 0 },
+    mockMotor(1),
+    mockMotor(2),
+    mockMotor(3),
+    mockMotor(4),
   ],
 };
 

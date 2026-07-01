@@ -5,6 +5,8 @@
 #include "freertos/semphr.h"
 
 #include "CanBus.h"
+#include "EmmV5EventStore.h"
+#include "ProtocolTrace.h"
 
 namespace auto_typer {
 
@@ -16,36 +18,62 @@ class MotorFeedbackStore {
     }
   }
 
-  void updateVelocity(uint8_t id, float rpm, uint32_t nowMs) {
+  void apply(const EmmV5Event& event) {
+    if (event.kind == EmmV5EventKind::InvalidFrame || event.motorId == 0) {
+      return;
+    }
     if (!lock()) {
       return;
     }
-    MotorState& state = stateFor(id);
-    state.id = id;
-    state.velocityRpm = rpm;
-    state.lastFeedbackMs = nowMs;
-    unlock();
-  }
-
-  void updatePosition(uint8_t id, int32_t steps, uint32_t nowMs) {
-    if (!lock()) {
-      return;
+    MotorState& state = stateFor(event.motorId);
+    state.id = event.motorId;
+    state.lastAnyFrameMs = event.timeMs;
+    switch (event.kind) {
+      case EmmV5EventKind::CommandAcked:
+        state.lastAckCommand = event.command;
+        state.lastAckMs = event.timeMs;
+        break;
+      case EmmV5EventKind::CommandConditionNotMet:
+        state.conditionNotMet = true;
+        state.lastConditionNotMetCommand = event.command;
+        state.lastConditionNotMetMs = event.timeMs;
+        break;
+      case EmmV5EventKind::CommandMalformed:
+        state.commandMalformed = true;
+        state.lastMalformedCommand = event.command;
+        state.lastMalformedMs = event.timeMs;
+        break;
+      case EmmV5EventKind::MotionReached:
+        state.motionReached = true;
+        state.lastMotionReachedMs = event.timeMs;
+        break;
+      case EmmV5EventKind::VelocityFeedback:
+        state.hasVelocity = true;
+        state.velocityRpm = event.velocityRpm;
+        state.lastVelocityMs = event.timeMs;
+        break;
+      case EmmV5EventKind::RealtimeAngleFeedback:
+        state.hasRealtimeAngle = true;
+        state.realtimeAngleRaw65536 = event.angleRaw65536;
+        state.lastRealtimeAngleMs = event.timeMs;
+        break;
+      case EmmV5EventKind::InputPulseFeedback:
+        state.hasInputPulse = true;
+        state.inputPulseSteps = event.inputPulseSteps;
+        state.lastInputPulseMs = event.timeMs;
+        break;
+      case EmmV5EventKind::StatusFlagsFeedback:
+      case EmmV5EventKind::HomeStatusFeedback:
+        state.hasStatus = true;
+        state.statusFlags = event.statusFlags;
+        state.lastStatusMs = event.timeMs;
+        break;
+      case EmmV5EventKind::None:
+      case EmmV5EventKind::UnknownFrame:
+      case EmmV5EventKind::InvalidFrame:
+      default:
+        break;
     }
-    MotorState& state = stateFor(id);
-    state.id = id;
-    state.observedPositionSteps = steps;
-    state.lastFeedbackMs = nowMs;
-    unlock();
-  }
-
-  void updateFault(uint8_t id, bool fault, uint32_t nowMs) {
-    if (!lock()) {
-      return;
-    }
-    MotorState& state = stateFor(id);
-    state.id = id;
-    state.fault = fault;
-    state.lastFeedbackMs = nowMs;
     unlock();
   }
 
@@ -90,52 +118,28 @@ class MotorFeedbackStore {
 
 class CanRxTask {
  public:
-  CanRxTask(CanBus& bus, MotorFeedbackStore& feedback) : bus_(bus), feedback_(feedback) {}
+  CanRxTask(CanBus& bus, MotorFeedbackStore& feedback, EmmV5EventStore& events, ProtocolTrace& trace)
+      : bus_(bus), feedback_(feedback), events_(events), trace_(trace) {}
 
   void tick(size_t maxFrames = 16) {
     bus_.readAlerts(0);
     CanFrame frame{};
     size_t received = 0;
     while (received < maxFrames && bus_.receive(frame, 0)) {
-      parseFrame(frame);
+      EmmV5Event event = parser_.parse(frame);
+      trace_.addRx(frame, event);
+      events_.push(event);
+      feedback_.apply(event);
       ++received;
     }
   }
 
  private:
-  void parseFrame(const CanFrame& frame) {
-    if (frame.data_length_code == 0) {
-      return;
-    }
-    const uint8_t motorId = frame.extd ? static_cast<uint8_t>((frame.identifier >> 8) & 0xFF) : 0;
-    const uint8_t command = frame.data[0];
-    const uint32_t nowMs = millis();
-    if (command == 0x35 && frame.data_length_code >= 4) {
-      const uint16_t rawRpm = (static_cast<uint16_t>(frame.data[2]) << 8) | frame.data[3];
-      float rpm = static_cast<float>(rawRpm);
-      if (frame.data[1] != 0) {
-        rpm = -rpm;
-      }
-      feedback_.updateVelocity(motorId, rpm, nowMs);
-      return;
-    }
-    if (command == 0x36 && frame.data_length_code >= 6) {
-      const uint32_t rawPosition = (static_cast<uint32_t>(frame.data[2]) << 24) |
-                                   (static_cast<uint32_t>(frame.data[3]) << 16) |
-                                   (static_cast<uint32_t>(frame.data[4]) << 8) |
-                                   static_cast<uint32_t>(frame.data[5]);
-      const int32_t signedPosition = frame.data[1] == 0 ? static_cast<int32_t>(rawPosition)
-                                                        : -static_cast<int32_t>(rawPosition);
-      feedback_.updatePosition(motorId, signedPosition, nowMs);
-      return;
-    }
-    if (command == 0x3A || command == 0x3B) {
-      feedback_.updateFault(motorId, false, nowMs);
-    }
-  }
-
   CanBus& bus_;
   MotorFeedbackStore& feedback_;
+  EmmV5EventStore& events_;
+  ProtocolTrace& trace_;
+  EmmV5ProtocolParser parser_;
 };
 
 }  // namespace auto_typer

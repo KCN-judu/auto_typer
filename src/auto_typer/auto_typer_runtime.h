@@ -6,6 +6,7 @@
 #include "auto_typer_config.h"
 #include "can/CanRxTask.h"
 #include "can/CanTxQueue.h"
+#include "can/ProtocolTrace.h"
 #include "drivers/EmmV5Driver.h"
 #include "hal_display.h"
 #include "hal_servo_press.h"
@@ -27,6 +28,7 @@ class AutoTyperApplication {
                        EmmV5Driver& motion,
                        ServoPressHal& servo,
                        MotorFeedbackStore& feedback,
+                       ProtocolTrace& protocolTrace,
                        Print& log)
       : config_(config),
         display_(display),
@@ -36,6 +38,7 @@ class AutoTyperApplication {
         motion_(motion),
         servo_(servo),
         feedback_(feedback),
+        protocolTrace_(protocolTrace),
         executor_(config, motion, servo, feedback),
         log_(log),
         keymapCount_(0),
@@ -378,6 +381,10 @@ class AutoTyperApplication {
     return canBus_.diagnostics();
   }
 
+  size_t protocolTraceSnapshot(ProtocolTraceItem* out, size_t maxItems) const {
+    return protocolTrace_.snapshot(out, maxItems);
+  }
+
  private:
   void buildKeymap() {
     keymapCount_ = buildFeiyu200Keymap(keymap_, sizeof(keymap_) / sizeof(keymap_[0]));
@@ -409,7 +416,7 @@ class AutoTyperApplication {
         deviceReadyWarning_ = true;
       }
       motion_.requestStatusFlags(motor);
-      motion_.requestPosition(motor);
+      motion_.requestInputPulseCount(motor);
     }
     const uint32_t startedAt = millis();
     while (millis() - startedAt < 800) {
@@ -419,12 +426,12 @@ class AutoTyperApplication {
     }
     for (uint8_t motor : motors) {
       const MotorState state = feedback_.get(motor);
-      if (state.fault) {
+      if (state.driverFault) {
         setFault("motor_fault", "Motor reported a fault");
         showError();
         return;
       }
-      if (state.lastFeedbackMs == 0) {
+      if (state.lastAnyFrameMs == 0) {
         deviceReadyWarning_ = true;
       }
     }
@@ -464,7 +471,7 @@ class AutoTyperApplication {
     };
     for (uint8_t motor : motors) {
       motion_.requestStatusFlags(motor);
-      motion_.requestPosition(motor);
+      motion_.requestInputPulseCount(motor);
       motion_.requestVelocity(motor);
     }
   }
@@ -479,7 +486,7 @@ class AutoTyperApplication {
     deviceReadyWarning_ = false;
     for (uint8_t motor : motors) {
       const MotorState state = feedback_.get(motor);
-      if (state.lastFeedbackMs == 0) {
+      if (state.lastAnyFrameMs == 0) {
         deviceReadyWarning_ = true;
       }
     }
@@ -521,6 +528,7 @@ class AutoTyperApplication {
   EmmV5Driver& motion_;
   ServoPressHal& servo_;
   MotorFeedbackStore& feedback_;
+  ProtocolTrace& protocolTrace_;
   MotionExecutor executor_;
   Print& log_;
   KeymapStore keymapStore_;

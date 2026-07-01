@@ -441,7 +441,7 @@ function StatusPanel({ status, logLines }: { status: DeviceStatus; logLines: str
             <StateRow
               key={motor.id}
               label={`M${motor.id}`}
-              value={`${motor.observedPositionSteps} steps / ${motor.velocityRpm.toFixed(1)} rpm`}
+              value={`${motor.inputPulseSteps} pulses / ${motor.velocityRpm.toFixed(1)} rpm`}
             />
           ))}
         </div>

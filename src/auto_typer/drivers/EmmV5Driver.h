@@ -3,12 +3,13 @@
 #include <Arduino.h>
 
 #include "../can/CanTxQueue.h"
+#include "../can/ProtocolTrace.h"
 
 namespace auto_typer {
 
 class EmmV5Driver {
  public:
-  explicit EmmV5Driver(CanTxQueue& tx) : tx_(tx) {}
+  explicit EmmV5Driver(CanTxQueue& tx, ProtocolTrace* trace = nullptr) : tx_(tx), trace_(trace) {}
 
   bool setClosedLoopControlMode(uint8_t motorId) {
     const uint8_t command[] = {motorId, 0x46, 0x69, 0x00, 0x02, 0x6B};
@@ -69,6 +70,11 @@ class EmmV5Driver {
     return sendCommand(command, sizeof(command));
   }
 
+  bool requestInputPulseCount(uint8_t motorId) {
+    const uint8_t command[] = {motorId, 0x32, 0x6B};
+    return sendCommand(command, sizeof(command));
+  }
+
   bool requestStatusFlags(uint8_t motorId) {
     const uint8_t command[] = {motorId, 0x3A, 0x6B};
     return sendCommand(command, sizeof(command));
@@ -94,6 +100,9 @@ class EmmV5Driver {
         frame.data[i + 1] = command[offset + 2];
         ++offset;
       }
+      if (trace_ != nullptr) {
+        trace_->addTx(frame);
+      }
       if (!tx_.enqueue(frame, highPriority)) {
         return false;
       }
@@ -103,6 +112,7 @@ class EmmV5Driver {
   }
 
   CanTxQueue& tx_;
+  ProtocolTrace* trace_;
 };
 
 }  // namespace auto_typer

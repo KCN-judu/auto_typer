@@ -132,8 +132,7 @@ class CanBus {
   }
 
   bool motionReady() const {
-    return ready_ && !fatalFault_ && diagnostics_.txFailedCount == 0 && diagnostics_.busErrorCount == 0 &&
-           diagnostics_.rxQueueFullCount == 0;
+    return ready_ && !fatalFault_ && diagnostics_.txFailedCount == 0 && diagnostics_.busErrorCount == 0;
   }
 
   CanBusFault fault() const {
