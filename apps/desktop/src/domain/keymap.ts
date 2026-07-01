@@ -10,9 +10,9 @@ export const poetryFeiyu200Keys = "1234567890-qwertyuiopasdfghjkl;'zxcvbnm,.- ".
 export const poetryFeiyu200KeyCount = poetryFeiyu200Keys.length;
 
 const poetryKeyOrder = new Map(poetryFeiyu200Keys.map((key, index) => [key, index]));
-const feiyu200KeyPitchX = 14.5;
-const feiyu200RowOffsets = [0, 7, 10.5, 17, 43.5] as const;
-const feiyu200RowY = [75, 60, 45, 40, 15] as const;
+const feiyu200KeyPitchX = 19;
+const feiyu200RowOffsets = [0, 42.5, 25, 57.5, 137.5] as const;
+const feiyu200RowY = [106, 87, 68, 49, 30] as const;
 const feiyu200PhysicalRows = ["1234567890-=", "qwertyuiop[]", "asdfghjkl;'", "zxcvbnm,./"] as const;
 
 export function emptyKeymap(): KeymapDocument {
