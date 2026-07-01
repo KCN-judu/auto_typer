@@ -75,7 +75,7 @@ class AutoTyperApplication {
       showError();
       return;
     }
-    if (!executeLineFeed()) {
+    if (!executeInitialLineFeed()) {
       log_.println("Initial carriage return failed");
       showError();
       return;
@@ -184,7 +184,7 @@ class AutoTyperApplication {
       return false;
     }
     if (isYMotorGroup(motorId)) {
-      return moveYMotorGroup(direction, rpm, acceleration, steps);
+      return moveYMotorGroup(direction, rpm, acceleration, steps, 0);
     }
     if (motorId == config_.topology.xMotorId) {
       return moveXMotor(direction, rpm, acceleration, steps, sync, 0);
@@ -192,7 +192,7 @@ class AutoTyperApplication {
     if (motorId == config_.topology.lineFeedMotorId) {
       return moveLineFeedMotor(direction, rpm, acceleration, steps, sync, 0);
     }
-    return motion_.moveRelative(motorId, direction, rpm, acceleration, steps, sync);
+    return moveUntrackedMotor(motorId, direction, rpm, acceleration, steps, sync, 0);
   }
 
   bool debugMotorStop(uint8_t motorId, bool sync) {
@@ -366,30 +366,103 @@ class AutoTyperApplication {
     return true;
   }
 
+  enum class MotorIdlePollResult : uint8_t {
+    Waiting,
+    Completed,
+    Failed,
+  };
+
+  struct MotorIdleWaitState {
+    uint8_t motorId;
+    uint32_t steps;
+    uint16_t rpm;
+    uint32_t startedAtMs;
+    uint32_t timeoutMs;
+    uint32_t earliestCompletionMs;
+    uint8_t idleSamples;
+    bool completed;
+    bool usingEstimatedWait;
+    bool loggedEstimatedFallback;
+  };
+
   bool executeMove(const MachinePointMm& target) {
     const MovePlan move = planMoveTo(currentPoint_, target, config_.calibration);
-    if (move.x.steps > 0) {
-      if (!moveXMotor(move.x.direction,
-                      config_.xProfile.rpm,
-                      config_.xProfile.acceleration,
-                      move.x.steps,
-                      false,
-                      config_.xProfile.settleMs)) {
-        return false;
-      }
-    }
+    return executeCombinedXYMove(move);
+  }
 
-    if (move.y.steps > 0) {
-      if (!moveYMotorGroup(move.y.direction, config_.yProfile.rpm, config_.yProfile.acceleration, move.y.steps)) {
-        return false;
-      }
-      waitForMove(move.y.steps, config_.yProfile.rpm, config_.yProfile.settleMs);
+  bool moveYMotorGroup(MotorDirection direction,
+                       uint16_t rpm,
+                       uint8_t acceleration,
+                       uint32_t steps,
+                       uint16_t settleMs) {
+    motion_.drainRx();
+    if (!startYMotorGroup(direction, rpm, acceleration, steps)) {
+      return false;
     }
-
+    if (!triggerYMotorGroup()) {
+      stopYMotorGroup();
+      return false;
+    }
+    if (!waitForMotorIdle(config_.topology.yLeftMotorId, steps, rpm, settleMs) ||
+        !waitForMotorIdle(config_.topology.yRightMotorId, steps, rpm, settleMs)) {
+      stopYMotorGroup();
+      return false;
+    }
+    trackSignedMotorMove(yMotorPositionSteps_, direction, steps);
     return true;
   }
 
-  bool moveYMotorGroup(MotorDirection direction, uint16_t rpm, uint8_t acceleration, uint32_t steps) {
+  bool executeCombinedXYMove(const MovePlan& move) {
+    const bool hasX = move.x.steps > 0;
+    const bool hasY = move.y.steps > 0;
+    if (!hasX && !hasY) {
+      return true;
+    }
+
+    motion_.drainRx();
+    const bool synchronizeX = hasX && hasY;
+    if (hasX && !startXMotor(move.x.direction,
+                             config_.xProfile.rpm,
+                             config_.xProfile.acceleration,
+                             move.x.steps,
+                             synchronizeX)) {
+      return false;
+    }
+    if (hasY && !startYMotorGroup(move.y.direction,
+                                  config_.yProfile.rpm,
+                                  config_.yProfile.acceleration,
+                                  move.y.steps)) {
+      if (hasX) {
+        motion_.stopNow(config_.topology.xMotorId);
+      }
+      return false;
+    }
+
+    bool triggered = true;
+    if (hasX && synchronizeX) {
+      triggered = motion_.triggerSynchronousMotion(config_.topology.xMotorId);
+    }
+    if (hasY) {
+      triggered = triggerYMotorGroup() && triggered;
+    }
+    if (!triggered) {
+      if (hasX) {
+        motion_.stopNow(config_.topology.xMotorId);
+      }
+      if (hasY) {
+        stopYMotorGroup();
+      }
+      return false;
+    }
+
+    return waitForCombinedXYMove(move, hasX, hasY);
+  }
+
+  bool startXMotor(MotorDirection direction, uint16_t rpm, uint8_t acceleration, uint32_t steps, bool sync) {
+    return motion_.moveRelative(config_.topology.xMotorId, direction, rpm, acceleration, steps, sync);
+  }
+
+  bool startYMotorGroup(MotorDirection direction, uint16_t rpm, uint8_t acceleration, uint32_t steps) {
     const MotorDirection pairedDirection = invertDirection(direction);
     if (!motion_.moveRelative(config_.topology.yLeftMotorId,
                               direction,
@@ -407,12 +480,17 @@ class AutoTyperApplication {
                               true)) {
       return false;
     }
-    const bool triggered = motion_.triggerSynchronousMotion(config_.topology.yLeftMotorId) &&
-                           motion_.triggerSynchronousMotion(config_.topology.yRightMotorId);
-    if (triggered) {
-      trackSignedMotorMove(yMotorPositionSteps_, direction, steps);
-    }
-    return triggered;
+    return true;
+  }
+
+  bool triggerYMotorGroup() {
+    return motion_.triggerSynchronousMotion(config_.topology.yLeftMotorId) &&
+           motion_.triggerSynchronousMotion(config_.topology.yRightMotorId);
+  }
+
+  void stopYMotorGroup() {
+    motion_.stopNow(config_.topology.yLeftMotorId);
+    motion_.stopNow(config_.topology.yRightMotorId);
   }
 
   static bool isYMotorGroup(uint8_t motorId) {
@@ -429,12 +507,16 @@ class AutoTyperApplication {
                   uint32_t steps,
                   bool sync,
                   uint16_t settleMs) {
-    const bool sent = motion_.moveRelative(config_.topology.xMotorId, direction, rpm, acceleration, steps, sync);
-    if (!sent) {
+    if (!moveTrackedMotor(config_.topology.xMotorId,
+                          direction,
+                          rpm,
+                          acceleration,
+                          steps,
+                          sync,
+                          settleMs,
+                          xMotorPositionSteps_)) {
       return false;
     }
-    trackSignedMotorMove(xMotorPositionSteps_, direction, steps);
-    waitForMove(steps, rpm, settleMs);
     return true;
   }
 
@@ -459,6 +541,30 @@ class AutoTyperApplication {
       return false;
     }
     currentPoint_.xMm = config_.homePoint.xMm;
+    return true;
+  }
+
+  bool executeInitialLineFeed() {
+    constexpr uint16_t kInitialLineFeedReturnExtraSettleMs = 1500;
+    if (config_.lineFeed.returnTotalSteps > 0 &&
+        !moveLineFeedMotor(config_.lineFeed.returnDirection,
+                           config_.lineFeed.rpm,
+                           config_.lineFeed.acceleration,
+                           config_.lineFeed.returnTotalSteps,
+                           false,
+                           config_.lineFeed.settleMs + kInitialLineFeedReturnExtraSettleMs)) {
+      return false;
+    }
+    currentPoint_.xMm = config_.homePoint.xMm;
+    if (config_.lineFeed.returnReleaseSteps > 0 &&
+        !moveLineFeedMotor(config_.lineFeed.releaseDirection,
+                           config_.lineFeed.rpm,
+                           config_.lineFeed.acceleration,
+                           config_.lineFeed.returnReleaseSteps,
+                           false,
+                           config_.lineFeed.settleMs)) {
+      return false;
+    }
     return true;
   }
 
@@ -489,8 +595,13 @@ class AutoTyperApplication {
     if (!sent) {
       return false;
     }
+    if (sync && !motion_.triggerSynchronousMotion(config_.topology.lineFeedMotorId)) {
+      return false;
+    }
+    if (!waitForMotorIdle(config_.topology.lineFeedMotorId, steps, rpm, settleMs)) {
+      return false;
+    }
     trackSignedMotorMove(lineFeedMotorPositionSteps_, direction, steps);
-    waitForMove(steps, rpm, settleMs);
     return true;
   }
 
@@ -516,9 +627,6 @@ class AutoTyperApplication {
   }
 
   bool returnToInitialPosition() {
-    if (!servo_.release()) {
-      return false;
-    }
     if (!conservativeReturnXMotor()) {
       return false;
     }
@@ -563,10 +671,9 @@ class AutoTyperApplication {
       return true;
     }
     const MotorDirection direction = delta > 0 ? MotorDirection::Ccw : MotorDirection::Cw;
-    if (!moveYMotorGroup(direction, config_.yReturn.rpm, config_.yReturn.acceleration, steps)) {
+    if (!moveYMotorGroup(direction, config_.yReturn.rpm, config_.yReturn.acceleration, steps, config_.yReturn.settleMs)) {
       return false;
     }
-    waitForMove(steps, config_.yReturn.rpm, config_.yReturn.settleMs);
     return true;
   }
 
@@ -595,8 +702,240 @@ class AutoTyperApplication {
     return steps > errorSteps ? steps - errorSteps : 0;
   }
 
-  void waitForMove(uint32_t steps, uint16_t rpm, uint16_t settleMs) const {
+  bool moveTrackedMotor(uint8_t motorId,
+                        MotorDirection direction,
+                        uint16_t rpm,
+                        uint8_t acceleration,
+                        uint32_t steps,
+                        bool sync,
+                        uint16_t settleMs,
+                        int32_t& positionSteps) {
+    if (!moveUntrackedMotor(motorId, direction, rpm, acceleration, steps, sync, settleMs)) {
+      return false;
+    }
+    trackSignedMotorMove(positionSteps, direction, steps);
+    return true;
+  }
+
+  bool moveUntrackedMotor(uint8_t motorId,
+                          MotorDirection direction,
+                          uint16_t rpm,
+                          uint8_t acceleration,
+                          uint32_t steps,
+                          bool sync,
+                          uint16_t settleMs) {
+    motion_.drainRx();
+    if (!motion_.moveRelative(motorId, direction, rpm, acceleration, steps, sync)) {
+      return false;
+    }
+    if (sync && !motion_.triggerSynchronousMotion(motorId)) {
+      return false;
+    }
+    return waitForMotorIdle(motorId, steps, rpm, settleMs);
+  }
+
+  bool waitForMotorIdle(uint8_t motorId, uint32_t steps, uint16_t rpm, uint16_t settleMs) {
+    MotorIdleWaitState state = makeMotorIdleWaitState(motorId, steps, rpm);
+    while (true) {
+      const MotorIdlePollResult result = pollMotorIdle(state);
+      if (result == MotorIdlePollResult::Completed) {
+        if (settleMs > 0) {
+          delay(settleMs);
+        }
+        return true;
+      }
+      if (result == MotorIdlePollResult::Waiting) {
+        continue;
+      }
+      log_.print("Motor wait failed id=");
+      log_.print(motorId);
+      log_.print(" status=");
+      log_.println(waitStatusText(EmmCanMotionHal::WaitStatus::Timeout));
+      return false;
+    }
+  }
+
+  bool waitForCombinedXYMove(const MovePlan& move, bool hasX, bool hasY) {
+    constexpr uint32_t kNoSettleStarted = UINT32_MAX;
+
+    MotorIdleWaitState xWait = makeMotorIdleWaitState(config_.topology.xMotorId, move.x.steps, config_.xProfile.rpm);
+    MotorIdleWaitState yLeftWait =
+        makeMotorIdleWaitState(config_.topology.yLeftMotorId, move.y.steps, config_.yProfile.rpm);
+    MotorIdleWaitState yRightWait =
+        makeMotorIdleWaitState(config_.topology.yRightMotorId, move.y.steps, config_.yProfile.rpm);
+
+    bool xMotorDone = !hasX;
+    bool yLeftMotorDone = !hasY;
+    bool yRightMotorDone = !hasY;
+    bool xTaskDone = !hasX;
+    bool yTaskDone = !hasY;
+    uint32_t xSettleStartedAt = kNoSettleStarted;
+    uint32_t ySettleStartedAt = kNoSettleStarted;
+
+    while (!xTaskDone || !yTaskDone) {
+      bool madeProgress = false;
+
+      if (hasX && !xMotorDone) {
+        const MotorIdlePollResult result = pollMotorIdle(xWait);
+        if (result == MotorIdlePollResult::Failed) {
+          stopIncompleteXYTasks(hasX, xMotorDone, hasY, yLeftMotorDone && yRightMotorDone);
+          log_.print("Motor wait failed id=");
+          log_.print(config_.topology.xMotorId);
+          log_.print(" status=");
+          log_.println(waitStatusText(EmmCanMotionHal::WaitStatus::Timeout));
+          return false;
+        }
+        if (result == MotorIdlePollResult::Completed) {
+          xMotorDone = true;
+          xSettleStartedAt = millis();
+          madeProgress = true;
+        }
+      }
+
+      if (hasY && !yLeftMotorDone) {
+        const MotorIdlePollResult result = pollMotorIdle(yLeftWait);
+        if (result == MotorIdlePollResult::Failed) {
+          stopIncompleteXYTasks(hasX, xMotorDone, hasY, yLeftMotorDone && yRightMotorDone);
+          log_.print("Motor wait failed id=");
+          log_.print(config_.topology.yLeftMotorId);
+          log_.print(" status=");
+          log_.println(waitStatusText(EmmCanMotionHal::WaitStatus::Timeout));
+          return false;
+        }
+        if (result == MotorIdlePollResult::Completed) {
+          yLeftMotorDone = true;
+          madeProgress = true;
+        }
+      }
+
+      if (hasY && !yRightMotorDone) {
+        const MotorIdlePollResult result = pollMotorIdle(yRightWait);
+        if (result == MotorIdlePollResult::Failed) {
+          stopIncompleteXYTasks(hasX, xMotorDone, hasY, yLeftMotorDone && yRightMotorDone);
+          log_.print("Motor wait failed id=");
+          log_.print(config_.topology.yRightMotorId);
+          log_.print(" status=");
+          log_.println(waitStatusText(EmmCanMotionHal::WaitStatus::Timeout));
+          return false;
+        }
+        if (result == MotorIdlePollResult::Completed) {
+          yRightMotorDone = true;
+          madeProgress = true;
+        }
+      }
+
+      if (hasY && yLeftMotorDone && yRightMotorDone && ySettleStartedAt == kNoSettleStarted) {
+        ySettleStartedAt = millis();
+        madeProgress = true;
+      }
+
+      if (hasX && !xTaskDone && xSettleStartedAt != kNoSettleStarted &&
+          millis() - xSettleStartedAt >= config_.xProfile.settleMs) {
+        xTaskDone = true;
+        trackSignedMotorMove(xMotorPositionSteps_, move.x.direction, move.x.steps);
+        madeProgress = true;
+      }
+
+      if (hasY && !yTaskDone && ySettleStartedAt != kNoSettleStarted &&
+          millis() - ySettleStartedAt >= config_.yProfile.settleMs) {
+        yTaskDone = true;
+        trackSignedMotorMove(yMotorPositionSteps_, move.y.direction, move.y.steps);
+        madeProgress = true;
+      }
+
+      if (!madeProgress && (xMotorDone || !hasX) && (yLeftMotorDone || !hasY) && (yRightMotorDone || !hasY)) {
+        delay(1);
+      }
+    }
+
+    return true;
+  }
+
+  MotorIdleWaitState makeMotorIdleWaitState(uint8_t motorId, uint32_t steps, uint16_t rpm) const {
+    return {motorId, steps, rpm, millis(), motorWaitTimeoutMs(steps, rpm), moveDurationMs(steps, rpm), 0, false, false, false};
+  }
+
+  MotorIdlePollResult pollMotorIdle(MotorIdleWaitState& state) {
+    constexpr uint32_t kPollIntervalMs = 25;
+    constexpr uint8_t kRequiredIdleSamples = 3;
+    constexpr float kIdleVelocityRpm = 1.0f;
+
+    if (state.completed) {
+      return MotorIdlePollResult::Completed;
+    }
+
+    const uint32_t elapsedMs = millis() - state.startedAtMs;
+    if (state.usingEstimatedWait) {
+      if (elapsedMs >= state.earliestCompletionMs) {
+        state.completed = true;
+        return MotorIdlePollResult::Completed;
+      }
+      return MotorIdlePollResult::Waiting;
+    }
+
+    if (elapsedMs >= state.timeoutMs) {
+      return MotorIdlePollResult::Failed;
+    }
+
+    if (!motion_.requestVelocity(state.motorId)) {
+      switchMotorWaitToEstimated(state);
+      return MotorIdlePollResult::Waiting;
+    }
+    delay(kPollIntervalMs);
+
+    const EmmCanMotionHal::MotorFeedback feedback = motion_.pollFeedback(state.motorId);
+    if (feedback.transportError) {
+      switchMotorWaitToEstimated(state);
+      return MotorIdlePollResult::Waiting;
+    }
+    if (!feedback.hasVelocity) {
+      state.idleSamples = 0;
+      return MotorIdlePollResult::Waiting;
+    }
+
+    const uint32_t elapsedAfterPollMs = millis() - state.startedAtMs;
+    const float velocity = feedback.velocityRpm < 0.0f ? -feedback.velocityRpm : feedback.velocityRpm;
+    if (velocity <= kIdleVelocityRpm && elapsedAfterPollMs >= state.earliestCompletionMs) {
+      ++state.idleSamples;
+      if (state.idleSamples >= kRequiredIdleSamples) {
+        state.completed = true;
+        return MotorIdlePollResult::Completed;
+      }
+    } else {
+      state.idleSamples = 0;
+    }
+    return MotorIdlePollResult::Waiting;
+  }
+
+  void switchMotorWaitToEstimated(MotorIdleWaitState& state) {
+    state.usingEstimatedWait = true;
+    if (!state.loggedEstimatedFallback) {
+      log_.print("Motor feedback unavailable id=");
+      log_.print(state.motorId);
+      log_.println("; using estimated wait");
+      state.loggedEstimatedFallback = true;
+    }
+  }
+
+  void stopIncompleteXYTasks(bool hasX, bool xMotorDone, bool hasY, bool yMotorDone) {
+    if (hasX && !xMotorDone) {
+      motion_.stopNow(config_.topology.xMotorId);
+    }
+    if (hasY && !yMotorDone) {
+      stopYMotorGroup();
+    }
+  }
+
+  void waitForEstimatedMove(uint32_t steps, uint16_t rpm, uint16_t settleMs) const {
     delay(moveDurationMs(steps, rpm) + settleMs);
+  }
+
+  uint32_t motorWaitTimeoutMs(uint32_t steps, uint16_t rpm) const {
+    constexpr uint32_t kMinimumTimeoutMs = 1500;
+    constexpr uint32_t kTimeoutSlackMs = 2500;
+    const uint32_t estimatedMs = moveDurationMs(steps, rpm);
+    const uint64_t timeoutMs = static_cast<uint64_t>(estimatedMs) * 4ULL + kTimeoutSlackMs;
+    return timeoutMs < kMinimumTimeoutMs ? kMinimumTimeoutMs : static_cast<uint32_t>(timeoutMs);
   }
 
   uint32_t moveDurationMs(uint32_t steps, uint16_t rpm) const {
@@ -606,6 +945,18 @@ class AutoTyperApplication {
     const uint64_t numerator = static_cast<uint64_t>(steps) * 60000ULL;
     const uint64_t denominator = static_cast<uint64_t>(rpm) * config_.calibration.stepsPerRev;
     return static_cast<uint32_t>((numerator + denominator - 1ULL) / denominator);
+  }
+
+  static const char* waitStatusText(EmmCanMotionHal::WaitStatus status) {
+    switch (status) {
+      case EmmCanMotionHal::WaitStatus::Completed:
+        return "completed";
+      case EmmCanMotionHal::WaitStatus::TransportError:
+        return "transport_error";
+      case EmmCanMotionHal::WaitStatus::Timeout:
+      default:
+        return "timeout";
+    }
   }
 
   void showError() {
