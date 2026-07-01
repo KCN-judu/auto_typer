@@ -1,0 +1,275 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   Keymap – Machine Coordinate Visualization
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+:root {
+  --km-node: #255c7d;
+  --km-node-muted: #c9bfaa;
+  --km-node-highlight: #3d7ea6;
+  --km-node-selected: #9b5a2e;
+  --km-head: #2f7d57;
+  --km-grid: #e8e3da;
+  --km-label: #24211b;
+  --km-label-muted: #9e9688;
+}
+
+/* ── Page Layout ── */
+.kmPage {
+  display: grid;
+  grid-template-columns: 1fr 240px;
+  gap: 14px;
+  align-content: start;
+  height: calc(100vh - 160px);
+}
+
+.kmMain {
+  display: grid;
+  gap: 12px;
+  align-content: start;
+  min-height: 0;
+}
+
+.kmToolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.kmSearchInput {
+  height: 36px;
+  padding: 0 12px;
+  width: 220px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fffdf8;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+}
+
+.kmSearchInput:focus {
+  border-color: var(--blueprint);
+  box-shadow: 0 0 0 3px rgba(37, 92, 125, 0.12);
+}
+
+.kmSearchHint {
+  font-size: 11px;
+  color: var(--ink-muted);
+}
+
+/* ── SVG Canvas ── */
+.kmCanvasWrap {
+  border: 1px solid var(--dash-card-border);
+  border-radius: 10px;
+  background: var(--dash-card);
+  box-shadow: var(--dash-card-shadow);
+  overflow: hidden;
+  min-height: 0;
+  position: relative;
+}
+
+.kmCanvasSvg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* ── Key Nodes ── */
+.kmNode {
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+
+.kmNode.muted {
+  opacity: 0.25;
+}
+
+.kmNodeDot {
+  fill: var(--km-node);
+  stroke: none;
+  transition: fill 0.12s ease, r 0.12s ease;
+}
+
+.kmNode:hover .kmNodeDot,
+.kmNode.highlight .kmNodeDot {
+  fill: var(--km-node-highlight);
+}
+
+.kmNode.selected .kmNodeDot {
+  fill: var(--km-node-selected);
+}
+
+.kmNodeLabel {
+  fill: var(--km-label);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 3.5px;
+  font-weight: 600;
+  pointer-events: none;
+  user-select: none;
+}
+
+.kmNode.muted .kmNodeLabel {
+  fill: var(--km-label-muted);
+}
+
+.kmNode:hover .kmNodeLabel,
+.kmNode.highlight .kmNodeLabel {
+  fill: var(--km-node-highlight);
+  font-weight: 700;
+}
+
+.kmNode.selected .kmNodeLabel {
+  fill: var(--km-node-selected);
+  font-weight: 700;
+}
+
+/* ── Head Position ── */
+.kmHeadCrosshair {
+  stroke: var(--km-head);
+  stroke-width: 0.5;
+  stroke-dasharray: 1.5 1;
+  opacity: 0.8;
+}
+
+.kmHeadDot {
+  fill: var(--km-head);
+  stroke: white;
+  stroke-width: 0.4;
+}
+
+/* ── Grid Lines ── */
+.kmGridLine {
+  stroke: var(--km-grid);
+  stroke-width: 0.2;
+}
+
+/* ── Axis Indicator ── */
+.kmAxisLabel {
+  fill: var(--km-label-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 2.8px;
+  font-weight: 600;
+}
+
+/* ── Sidebar / Inspector ── */
+.kmSidebar {
+  display: grid;
+  gap: 14px;
+  align-content: start;
+}
+
+.kmInspector {
+  border: 1px solid var(--dash-card-border);
+  border-radius: 10px;
+  background: var(--dash-card);
+  padding: 16px;
+  box-shadow: var(--dash-card-shadow);
+  display: grid;
+  gap: 10px;
+  align-content: start;
+}
+
+.kmInspectorTitle {
+  font-size: 14px;
+  font-weight: 650;
+  margin: 0;
+}
+
+.kmInspectorEmpty {
+  font-size: 12px;
+  color: var(--ink-muted);
+}
+
+.kmInspectorGrid {
+  display: grid;
+  gap: 8px;
+}
+
+.kmInspectorRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.kmInspectorLabel {
+  font-size: 11px;
+  color: var(--ink-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.kmInspectorValue {
+  font-size: 13px;
+  font-weight: 600;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.kmInspectorChar {
+  font-size: 24px;
+  font-weight: 720;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--km-node-selected);
+  text-align: center;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--dash-card-border);
+}
+
+/* ── Legend ── */
+.kmLegend {
+  border: 1px solid var(--dash-card-border);
+  border-radius: 10px;
+  background: var(--dash-card);
+  padding: 14px 16px;
+  box-shadow: var(--dash-card-shadow);
+  display: grid;
+  gap: 8px;
+}
+
+.kmLegendTitle {
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--ink-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin: 0;
+}
+
+.kmLegendItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+
+.kmLegendDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.kmLegendDot.normal {
+  background: var(--km-node);
+}
+
+.kmLegendDot.highlight {
+  background: var(--km-node-highlight);
+}
+
+.kmLegendDot.selected {
+  background: var(--km-node-selected);
+}
+
+.kmLegendDot.head {
+  background: var(--km-head);
+}
+
+/* ── Empty State ── */
+.kmEmpty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 300px;
+  color: var(--ink-muted);
+  font-size: 14px;
+}

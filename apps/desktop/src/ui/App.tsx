@@ -5,7 +5,9 @@ import {
   ChevronRight,
   Crosshair,
   Gauge,
+  Grid3X3,
   Keyboard,
+  LayoutDashboard,
   PlugZap,
   Radio,
   Save,
@@ -35,8 +37,10 @@ import {
   validateKeymap,
 } from "../domain/keymap";
 import { mockKeymap, mockStatus } from "../domain/mockDevice";
+import { DashboardPage } from "./dashboard/DashboardPage";
+import { KeymapPage } from "./keymap/KeymapPage";
 
-type View = "job" | "debug" | "settings";
+type View = "dashboard" | "job" | "debug" | "settings" | "keymap";
 type ConnectionState = "disconnected" | "connecting" | "connected" | "fault";
 
 const motorTargets = [
@@ -46,7 +50,7 @@ const motorTargets = [
 ] as const;
 
 export function App() {
-  const [view, setView] = useState<View>("job");
+  const [view, setView] = useState<View>("dashboard");
   const [deviceUrl, setDeviceUrl] = useState("http://192.168.4.42");
   const [connection, setConnection] = useState<ConnectionState>("disconnected");
   const [status, setStatus] = useState<DeviceStatus>(mockStatus);
@@ -228,7 +232,9 @@ export function App() {
         </div>
 
         <nav className="navList">
+          <NavButton active={view === "dashboard"} icon={<LayoutDashboard />} label="设备仪表盘" onClick={() => setView("dashboard")} />
           <NavButton active={view === "job"} icon={<Keyboard />} label="打印任务" onClick={() => setView("job")} />
+          <NavButton active={view === "keymap"} icon={<Grid3X3 />} label="映射表" onClick={() => setView("keymap")} />
           <NavButton active={view === "debug"} icon={<Wrench />} label="调试入口" onClick={() => setView("debug")} />
           <NavButton active={view === "settings"} icon={<Settings />} label="设备设置" onClick={() => setView("settings")} />
         </nav>
@@ -246,7 +252,7 @@ export function App() {
         <header className="topbar">
           <div>
             <div className="eyebrow">LAN CONTROL</div>
-            <h1>{view === "job" ? "打印任务" : view === "debug" ? "调试工作台" : "设备设置"}</h1>
+            <h1>{view === "dashboard" ? "设备仪表盘" : view === "job" ? "打印任务" : view === "debug" ? "调试工作台" : view === "keymap" ? "映射表" : "设备设置"}</h1>
           </div>
           <div className="connectionBox">
             <input value={deviceUrl} onChange={(event) => setDeviceUrl(event.target.value)} />
@@ -273,6 +279,14 @@ export function App() {
           <Metric icon={<Gauge />} label="Wi-Fi" value={`${status.wifiRssi} dBm`} tone="connected" />
           <Metric icon={<Crosshair />} label="映射" value={`v${keymap.version}`} tone={keymapIssues.some((issue) => issue.level === "error") ? "fault" : "connected"} />
         </section>
+
+        {view === "dashboard" && (
+          <DashboardPage status={status} connectionState={connection} />
+        )}
+
+        {view === "keymap" && (
+          <KeymapPage keymap={keymap} status={status} />
+        )}
 
         {view === "job" && (
           <section className="panelGrid">
