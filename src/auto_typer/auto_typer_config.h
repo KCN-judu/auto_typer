@@ -39,8 +39,8 @@ inline TypingConfig defaultTypingConfig() {
   config.topology = {1, 2, 3, 4};
   config.calibration = {2.0f, 20, 3200};
 
-  config.xProfile = {800, 10, 120};
-  config.yProfile = {800, 10, 120};
+  config.xProfile = {3000, 255, 120};
+  config.yProfile = {3000, 255, 120};
   config.xReturn = {true, 200, 3, 200, 180};
   config.yReturn = {true, 200, 3, 100, 180};
   config.lineFeed = {500, 10, 16440, MotorDirection::Cw, 6400, 180, MotorDirection::Ccw, 400, 80};

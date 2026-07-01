@@ -545,7 +545,7 @@ class AutoTyperApplication {
   }
 
   bool executeInitialLineFeed() {
-    constexpr uint16_t kInitialLineFeedReturnExtraSettleMs = 1500;
+    constexpr uint16_t kInitialLineFeedReturnExtraSettleMs = 250;
     if (config_.lineFeed.returnTotalSteps > 0 &&
         !moveLineFeedMotor(config_.lineFeed.returnDirection,
                            config_.lineFeed.rpm,
