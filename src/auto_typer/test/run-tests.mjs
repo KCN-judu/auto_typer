@@ -191,6 +191,10 @@ assert.deepEqual(
   pick(parseEmmV5Frame({ canId: 0x0200, data: [0xf3, 0xe2, 0x6b] }), ["motorId", "kind"]),
   { motorId: 2, kind: "CommandConditionNotMet" },
 );
+assert.deepEqual(
+  pick(parseEmmV5Frame({ canId: 0x0200, data: [0xfd, 0xe2, 0x6b] }), ["motorId", "kind", "command"]),
+  { motorId: 2, kind: "CommandConditionNotMet", command: 0xfd },
+);
 assert.equal(parseEmmV5Frame({ canId: 0x0300, data: [0x00, 0xee, 0x6b] }).kind, "CommandMalformed");
 assert.equal(parseEmmV5Frame({ canId: 0x0100, data: [0xfd, 0x9f, 0x6b] }).kind, "MotionReached");
 assert.equal(parseEmmV5Frame({ canId: 0x0100, data: [0x35, 0x01, 0x05, 0xdc, 0x6b] }).velocityRpm, -1500);
@@ -210,13 +214,45 @@ assert.deepEqual(
   pick(parseEmmV5Frame({ canId: 0x0100, data: [0xfd, 0x02, 0x00] }), ["kind", "errorCode"]),
   { kind: "InvalidFrame", errorCode: "bad_checksum" },
 );
+assert.deepEqual(
+  pick(parseEmmV5Frame({ canId: 0x0107, data: [0x77, 0x01, 0x6b] }), ["motorId", "packetIndex", "kind"]),
+  { motorId: 1, packetIndex: 7, kind: "UnknownFrame" },
+);
 
 const httpServer = readFileSync(new URL("../http_control_server.h", import.meta.url), "utf8");
 assert.match(httpServer, /case JobState::None:[\s\S]*return "none";/, "JobState::None must serialize to none");
 assert.match(httpServer, /request\["point"\]/, "ProbeKeyRequest must read nested point");
 assert.match(httpServer, /sendJson\(200, response\);/, "Create job business rejections must return HTTP 200");
 assert.match(httpServer, /rejectionMessage/, "CreateJobResponse must include rejection details");
+assert.match(httpServer, /diagnostics\/protocol-trace/, "Protocol trace diagnostics route must be registered");
+assert.match(httpServer, /machine\/probe-motors/, "Motor probe route must be registered");
+assert.match(httpServer, /not_ready/, "HTTP status must expose not_ready health");
+assert.match(httpServer, /motorReadinessJson/, "Motor status must serialize readiness");
+assert.match(httpServer, /motorRoleJson/, "Motor status must serialize motor roles");
+assert.match(httpServer, /item\["dataHex"\]/, "Protocol trace API must expose hex data");
+assert.match(httpServer, /writeProtocolDiagnostics/, "Protocol trace API must expose parser diagnostics");
+assert.match(httpServer, /commandQueueFullCount/, "CAN diagnostics API must expose command queue full count");
+assert.match(httpServer, /lastCommandQueueError/, "CAN diagnostics API must expose last command queue error");
 assert.doesNotMatch(httpServer, /extractString|extractFloat|extractInt/, "HTTP handlers must not use ad-hoc JSON extractors");
+
+const autoTyperRuntime = readFileSync(new URL("../auto_typer_runtime.h", import.meta.url), "utf8");
+assert.match(autoTyperRuntime, /prepareMotorsBestEffort/, "Startup motor preparation must be best effort");
+assert.match(
+  autoTyperRuntime,
+  /void prepareMotorsBestEffort\(\)\s*\{\s*probeMotorsBestEffort\(150\);\s*\}/,
+  "Startup motor preparation must only run the best-effort probe",
+);
+assert.doesNotMatch(autoTyperRuntime, /deviceReadyWarning_/, "Readiness warning must not be sticky state");
+assert.match(autoTyperRuntime, /checkRequiredMotors/, "Job acceptance must explicitly check required motors");
+assert.match(autoTyperRuntime, /x_motor_not_ready|y_pair_not_ready|line_feed_not_ready/, "Required motor failure must reject the job");
+assert.match(autoTyperRuntime, /hasInputPulse/, "Required motor readiness must require pulse feedback");
+assert.match(autoTyperRuntime, /lastConditionNotMetMs/, "Startup E2 must leave the device not ready for jobs");
+assert.match(autoTyperRuntime, /lastMalformedMs/, "Startup EE must leave the device not ready for jobs");
+
+const protocol = readFileSync(new URL("../../../shared/protocol/auto-typer-protocol.ts", import.meta.url), "utf8");
+assert.match(protocol, /not_ready/, "Shared protocol must include not_ready health");
+assert.match(protocol, /MotorReadiness/, "Shared protocol must include motor readiness");
+assert.match(protocol, /probeMotors/, "Shared protocol must include probe motors route");
 
 const motionExecutor = readFileSync(new URL("../motion/MotionExecutor.h", import.meta.url), "utf8");
 assert.doesNotMatch(motionExecutor, /bool feedbackSatisfied\(const MotionBlock&\)\s*\{\s*return false;\s*\}/, "feedbackSatisfied must use motor feedback");
@@ -234,6 +270,11 @@ assert.doesNotMatch(
   /triggerSynchronousMotion\(config_\.topology\.(xMotorId|yLeftMotorId|yRightMotorId)\)/,
   "Coordinated X/Y motion must use broadcast sync trigger, not per-motor FF 66",
 );
+assert.match(
+  motionExecutor,
+  /moveRelativeBatch\(commands,\s*sizeof\(commands\) \/ sizeof\(commands\[0\]\),\s*true\)/,
+  "Coordinated X/Y motion must atomically enqueue X, Y pair, and broadcast trigger",
+);
 
 const emmV5Driver = readFileSync(new URL("../drivers/EmmV5Driver.h", import.meta.url), "utf8");
 assert.match(emmV5Driver, /triggerSynchronousMotionBroadcast\(\)/, "EMM_V5 driver must expose broadcast sync trigger");
@@ -242,16 +283,34 @@ assert.match(
   /\{\s*0x00,\s*0xFF,\s*0x66,\s*0x6B\s*\}/,
   "Broadcast sync trigger must send address 0 with FF 66 6B",
 );
+assert.match(emmV5Driver, /MoveRelativeCommand/, "EMM_V5 driver must expose a batchable move descriptor");
+assert.match(emmV5Driver, /moveRelativeBatch/, "EMM_V5 driver must support atomic grouped moves");
+assert.match(emmV5Driver, /appendCommandFrames/, "EMM_V5 commands must be fully encoded before enqueue");
+assert.match(
+  emmV5Driver,
+  /enqueueBatch\(frames,\s*frameCount/,
+  "EMM_V5 driver must enqueue encoded command frames as a batch",
+);
+assert.doesNotMatch(
+  emmV5Driver,
+  /while\s*\(\s*offset\s*<\s*payloadLen\s*\)[\s\S]*?tx_\.enqueue\(/,
+  "EMM_V5 driver must not enqueue frames while encoding a command",
+);
 
 const yPairController = readFileSync(new URL("../motion/YPairController.h", import.meta.url), "utf8");
 assert.match(yPairController, /triggerSynchronousMotionBroadcast\(\)/, "YPair move must use broadcast sync trigger");
+assert.match(yPairController, /moveRelativeBatch/, "YPair move must submit motor 2, motor 3, and trigger atomically");
 assert.doesNotMatch(
   yPairController,
   /triggerSynchronousMotion\(config_\.topology\.y(Left|Right)MotorId\)/,
   "YPair move must not send per-motor FF 66 triggers",
 );
+assert.doesNotMatch(
+  yPairController,
+  /driver_\.moveRelative\([\s\S]*?&&[\s\S]*?driver_\.moveRelative\(/,
+  "YPair move must not enqueue left and right FD commands independently",
+);
 
-const autoTyperRuntime = readFileSync(new URL("../auto_typer_runtime.h", import.meta.url), "utf8");
 assert.doesNotMatch(
   autoTyperRuntime,
   /yPair\.moveRelative\([\s\S]*?&&\s*yPair\.trigger\(\)/,
@@ -259,6 +318,10 @@ assert.doesNotMatch(
 );
 
 const canTxQueue = readFileSync(new URL("../can/CanTxQueue.h", import.meta.url), "utf8");
+assert.match(canTxQueue, /availableForWrite\(\)/, "CAN TX queue must expose available write capacity");
+assert.match(canTxQueue, /enqueueBatch/, "CAN TX queue must support atomic batch enqueue");
+assert.match(canTxQueue, /uxQueueSpacesAvailable\(queue_\)\s*<\s*count/, "CAN TX batch enqueue must preflight capacity");
+assert.match(canTxQueue, /recordCommandQueueFull\(\)/, "CAN TX batch enqueue must record command_queue_full");
 assert.match(canTxQueue, /pendingValid_/, "CAN TX queue must keep a pending frame after transmit failure");
 assert.match(canTxQueue, /pendingFrame_/, "CAN TX queue must store the frame being retried");
 assert.match(canTxQueue, /recordTxRetry\(\)/, "CAN TX retry must increment diagnostics");
@@ -380,6 +443,21 @@ assert.deepEqual(fatalQueue.sent, ["stop"], "Fatal CAN fault must still attempt 
 const protocolTypes = readFileSync(new URL("../protocol/EmmV5ProtocolParser.h", import.meta.url), "utf8");
 assert.match(protocolTypes, /InputPulseFeedback/, "Parser event model must include input pulse feedback");
 assert.match(protocolTypes, /RealtimeAngleFeedback/, "Parser event model must keep realtime angle separate");
+
+const protocolTrace = readFileSync(new URL("../can/ProtocolTrace.h", import.meta.url), "utf8");
+assert.match(protocolTrace, /kCapacity\s*=\s*128/, "Protocol trace must retain at least 128 frames");
+assert.match(protocolTrace, /dataHex\[24\]/, "Protocol trace items must include fixed hex data storage");
+assert.match(protocolTrace, /writeDataHex/, "Protocol trace must format raw data as hex");
+
+const eventStore = readFileSync(new URL("../can/EmmV5EventStore.h", import.meta.url), "utf8");
+assert.match(eventStore, /UnknownFrame[\s\S]*\+\+unknownFrameCount_/, "Unknown frames must be retained in diagnostics");
+assert.match(eventStore, /InvalidFrame[\s\S]*\+\+invalidFrameCount_/, "Invalid frames must be retained in diagnostics");
+
+const sharedProtocol = readFileSync(new URL("../../../shared/protocol/auto-typer-protocol.ts", import.meta.url), "utf8");
+assert.match(sharedProtocol, /dataHex: string/, "Shared protocol must type protocol trace hex data");
+assert.match(sharedProtocol, /unknownFrameCount: number/, "Shared protocol must type parser diagnostics");
+assert.match(sharedProtocol, /commandQueueFullCount: number/, "Shared protocol must type command queue full diagnostics");
+assert.match(sharedProtocol, /lastCommandQueueError: string/, "Shared protocol must type last command queue error");
 
 function pick(object, keys) {
   return Object.fromEntries(keys.map((key) => [key, object[key]]));

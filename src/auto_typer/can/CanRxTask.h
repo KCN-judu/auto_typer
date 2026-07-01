@@ -37,11 +37,15 @@ class MotorFeedbackStore {
         state.conditionNotMet = true;
         state.lastConditionNotMetCommand = event.command;
         state.lastConditionNotMetMs = event.timeMs;
+        state.lastErrorCode = "condition_not_met";
+        state.lastErrorMessage = "Motor reported command condition not met";
         break;
       case EmmV5EventKind::CommandMalformed:
         state.commandMalformed = true;
         state.lastMalformedCommand = event.command;
         state.lastMalformedMs = event.timeMs;
+        state.lastErrorCode = "command_malformed";
+        state.lastErrorMessage = "Motor reported malformed command";
         break;
       case EmmV5EventKind::MotionReached:
         state.motionReached = true;

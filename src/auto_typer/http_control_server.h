@@ -57,6 +57,7 @@ class HttpControlServer {
     server_.on("/api/jobs/current/cancel", HTTP_POST, [this]() { handleCancelJob(); });
     server_.on("/api/machine/stop", HTTP_POST, [this]() { handleEmergencyStop(); });
     server_.on("/api/machine/reset-fault", HTTP_POST, [this]() { handleResetFault(); });
+    server_.on("/api/machine/probe-motors", HTTP_POST, [this]() { handleProbeMotors(); });
     server_.on("/api/diagnostics/can", HTTP_GET, [this]() { sendCanDiagnostics(); });
     server_.on("/api/diagnostics/protocol-trace", HTTP_GET, [this]() { sendProtocolTrace(); });
     server_.on("/api/keymap", HTTP_GET, [this]() { sendKeymap(); });
@@ -130,6 +131,14 @@ class HttpControlServer {
 
   void handleResetFault() {
     app_.resetFault();
+    sendStatus();
+  }
+
+  void handleProbeMotors() {
+    if (!app_.probeMotors()) {
+      sendError(409, "probe_rejected", "Motor probe rejected while device is busy");
+      return;
+    }
     sendStatus();
   }
 
@@ -251,12 +260,13 @@ class HttpControlServer {
   }
 
   void sendStatus() {
-    StaticJsonDocument<3072> response;
+    StaticJsonDocument<4096> response;
     response["deviceId"] = config_.deviceId;
     response["firmwareVersion"] = config_.firmwareVersion;
     response["ipAddress"] = currentIp();
     response["mode"] = modeJson(app_.mode());
-    response["health"] = app_.mode() == DeviceMode::Faulted ? "fault" : (app_.healthWarning() ? "warning" : "ok");
+    response["health"] =
+        app_.mode() == DeviceMode::Faulted ? "fault" : (app_.healthNotReady() ? "not_ready" : (app_.healthWarning() ? "warning" : "ok"));
     response["wifiRssi"] = WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0;
     response["servoReady"] = app_.servoReady();
     response["motionReady"] = app_.motionReady();
@@ -300,10 +310,12 @@ class HttpControlServer {
       for (uint8_t b = 0; b < items[i].dlc; ++b) {
         data.add(items[i].data[b]);
       }
+      item["dataHex"] = items[i].dataHex;
       item["parsed"] = items[i].parsed;
       item["motorId"] = items[i].motorId;
       item["packetIndex"] = items[i].packetIndex;
     }
+    writeProtocolDiagnostics(response.createNestedObject("diagnostics"), app_.protocolDiagnostics());
     sendJson(200, response);
   }
 
@@ -364,10 +376,15 @@ class HttpControlServer {
       const MotorState state = app_.motorState(id);
       JsonObject motor = motors.createNestedObject();
       motor["id"] = id;
+      motor["role"] = motorRoleJson(state.role);
+      motor["readiness"] = motorReadinessJson(state.readiness);
       motor["hasVelocity"] = state.hasVelocity;
       motor["hasRealtimeAngle"] = state.hasRealtimeAngle;
       motor["hasInputPulse"] = state.hasInputPulse;
       motor["hasStatus"] = state.hasStatus;
+      motor["hasRecentStatus"] = state.hasRecentStatus;
+      motor["hasRecentInputPulse"] = state.hasRecentInputPulse;
+      motor["hasRecentVelocity"] = state.hasRecentVelocity;
       motor["velocityRpm"] = state.velocityRpm;
       motor["realtimeAngleRaw65536"] = state.realtimeAngleRaw65536;
       motor["inputPulseSteps"] = state.inputPulseSteps;
@@ -388,6 +405,9 @@ class HttpControlServer {
       motor["lastInputPulseMs"] = state.lastInputPulseMs;
       motor["lastStatusMs"] = state.lastStatusMs;
       motor["lastAnyFrameMs"] = state.lastAnyFrameMs;
+      motor["lastProbeMs"] = state.lastProbeMs;
+      motor["lastErrorCode"] = state.lastErrorCode;
+      motor["lastErrorMessage"] = state.lastErrorMessage;
     }
   }
 
@@ -399,6 +419,7 @@ class HttpControlServer {
     json["lastAlerts"] = diagnostics.lastAlerts;
     json["txFailedCount"] = diagnostics.txFailedCount;
     json["txRetryCount"] = diagnostics.txRetryCount;
+    json["commandQueueFullCount"] = diagnostics.commandQueueFullCount;
     json["busErrorCount"] = diagnostics.busErrorCount;
     json["rxQueueFullCount"] = diagnostics.rxQueueFullCount;
     json["errPassiveCount"] = diagnostics.errPassiveCount;
@@ -407,8 +428,18 @@ class HttpControlServer {
     json["lastAlertAtMs"] = diagnostics.lastAlertAtMs;
     json["lastFaultAtMs"] = diagnostics.lastFaultAtMs;
     json["lastTxError"] = diagnostics.lastTxError;
+    json["lastCommandQueueError"] = diagnostics.lastCommandQueueError;
     json["lastFaultCode"] = diagnostics.lastFaultCode;
     json["lastFaultMessage"] = diagnostics.lastFaultMessage;
+  }
+
+  void writeProtocolDiagnostics(JsonObject json, const ProtocolDiagnostics& diagnostics) {
+    json["unknownFrameCount"] = diagnostics.unknownFrameCount;
+    json["invalidFrameCount"] = diagnostics.invalidFrameCount;
+    json["lastEventAtMs"] = diagnostics.lastEventAtMs;
+    json["lastInvalidAtMs"] = diagnostics.lastInvalidAtMs;
+    json["lastInvalidError"] = diagnostics.lastInvalidError;
+    json["lastEventKind"] = EmmV5ProtocolParser::kindText(diagnostics.lastEventKind);
   }
 
   template <typename T>
@@ -485,6 +516,42 @@ class HttpControlServer {
       case PlanStatus::Ok:
       default:
         return "ok";
+    }
+  }
+
+  static const char* motorRoleJson(MotorRole role) {
+    switch (role) {
+      case MotorRole::YLeft:
+        return "y_left";
+      case MotorRole::YRight:
+        return "y_right";
+      case MotorRole::LineFeed:
+        return "line_feed";
+      case MotorRole::X:
+      default:
+        return "x";
+    }
+  }
+
+  static const char* motorReadinessJson(MotorReadiness readiness) {
+    switch (readiness) {
+      case MotorReadiness::ConfigPending:
+        return "config_pending";
+      case MotorReadiness::ConfigSent:
+        return "config_sent";
+      case MotorReadiness::Acked:
+        return "acked";
+      case MotorReadiness::Ready:
+        return "ready";
+      case MotorReadiness::Offline:
+        return "offline";
+      case MotorReadiness::ConditionNotMet:
+        return "condition_not_met";
+      case MotorReadiness::Faulted:
+        return "faulted";
+      case MotorReadiness::Unknown:
+      default:
+        return "unknown";
     }
   }
 

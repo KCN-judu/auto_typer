@@ -56,6 +56,24 @@ enum class DeviceMode : uint8_t {
   Debug,
 };
 
+enum class MotorRole : uint8_t {
+  X,
+  YLeft,
+  YRight,
+  LineFeed,
+};
+
+enum class MotorReadiness : uint8_t {
+  Unknown,
+  ConfigPending,
+  ConfigSent,
+  Acked,
+  Ready,
+  Offline,
+  ConditionNotMet,
+  Faulted,
+};
+
 struct MachinePointMm {
   float xMm;
   float yMm;
@@ -232,10 +250,15 @@ struct MotionBlock {
 
 struct MotorState {
   uint8_t id;
+  MotorRole role;
+  MotorReadiness readiness;
   bool hasVelocity;
   bool hasRealtimeAngle;
   bool hasInputPulse;
   bool hasStatus;
+  bool hasRecentStatus;
+  bool hasRecentInputPulse;
+  bool hasRecentVelocity;
   float velocityRpm;
   int32_t realtimeAngleRaw65536;
   int32_t inputPulseSteps;
@@ -256,6 +279,9 @@ struct MotorState {
   uint32_t lastInputPulseMs;
   uint32_t lastStatusMs;
   uint32_t lastAnyFrameMs;
+  uint32_t lastProbeMs;
+  const char* lastErrorCode;
+  const char* lastErrorMessage;
 };
 
 struct SubmitJobResult {

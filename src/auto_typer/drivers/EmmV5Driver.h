@@ -9,10 +9,19 @@ namespace auto_typer {
 
 class EmmV5Driver {
  public:
+  struct MoveRelativeCommand {
+    uint8_t motorId;
+    MotorDirection direction;
+    uint16_t rpm;
+    uint8_t acceleration;
+    uint32_t steps;
+    bool sync;
+  };
+
   explicit EmmV5Driver(CanTxQueue& tx, ProtocolTrace* trace = nullptr) : tx_(tx), trace_(trace) {}
 
-  bool setClosedLoopControlMode(uint8_t motorId) {
-    const uint8_t command[] = {motorId, 0x46, 0x69, 0x00, 0x02, 0x6B};
+  bool setClosedLoopControlMode(uint8_t motorId, bool store = false) {
+    const uint8_t command[] = {motorId, 0x46, 0x69, static_cast<uint8_t>(store ? 0x01 : 0x00), 0x02, 0x6B};
     return sendCommand(command, sizeof(command));
   }
 
@@ -48,6 +57,30 @@ class EmmV5Driver {
       0x6B,
     };
     return sendCommand(command, sizeof(command));
+  }
+
+  bool moveRelativeBatch(const MoveRelativeCommand* commands, size_t count, bool triggerBroadcast) {
+    if ((commands == nullptr && count > 0) || count > kMaxMoveBatchCommands) {
+      return false;
+    }
+    CanFrame frames[kMaxBatchFrames]{};
+    size_t frameCount = 0;
+    for (size_t i = 0; i < count; ++i) {
+      if (!appendMoveRelativeFrames(commands[i], frames, kMaxBatchFrames, frameCount)) {
+        return false;
+      }
+    }
+    if (triggerBroadcast) {
+      const uint8_t triggerCommand[] = {0x00, 0xFF, 0x66, 0x6B};
+      if (!appendCommandFrames(triggerCommand, sizeof(triggerCommand), frames, kMaxBatchFrames, frameCount)) {
+        return false;
+      }
+    }
+    if (!tx_.enqueueBatch(frames, frameCount)) {
+      return false;
+    }
+    traceFrames(frames, frameCount);
+    return true;
   }
 
   bool triggerSynchronousMotion(uint8_t motorId) {
@@ -86,7 +119,50 @@ class EmmV5Driver {
   }
 
  private:
+  static constexpr size_t kMaxCommandFrames = 4;
+  static constexpr size_t kMaxMoveBatchCommands = 3;
+  static constexpr size_t kMaxBatchFrames = kMaxMoveBatchCommands * 2 + 1;
+
   bool sendCommand(const uint8_t* command, size_t len, bool highPriority = false) {
+    CanFrame frames[kMaxCommandFrames]{};
+    size_t frameCount = 0;
+    if (!appendCommandFrames(command, len, frames, kMaxCommandFrames, frameCount)) {
+      return false;
+    }
+    if (!tx_.enqueueBatch(frames, frameCount, highPriority)) {
+      return false;
+    }
+    traceFrames(frames, frameCount);
+    return true;
+  }
+
+  bool appendMoveRelativeFrames(const MoveRelativeCommand& move,
+                                CanFrame* frames,
+                                size_t maxFrames,
+                                size_t& frameCount) const {
+    const uint8_t command[] = {
+      move.motorId,
+      0xFD,
+      static_cast<uint8_t>(move.direction),
+      static_cast<uint8_t>((move.rpm >> 8) & 0xFF),
+      static_cast<uint8_t>(move.rpm & 0xFF),
+      move.acceleration,
+      static_cast<uint8_t>((move.steps >> 24) & 0xFF),
+      static_cast<uint8_t>((move.steps >> 16) & 0xFF),
+      static_cast<uint8_t>((move.steps >> 8) & 0xFF),
+      static_cast<uint8_t>(move.steps & 0xFF),
+      0x00,
+      static_cast<uint8_t>(move.sync),
+      0x6B,
+    };
+    return appendCommandFrames(command, sizeof(command), frames, maxFrames, frameCount);
+  }
+
+  bool appendCommandFrames(const uint8_t* command,
+                           size_t len,
+                           CanFrame* frames,
+                           size_t maxFrames,
+                           size_t& frameCount) const {
     if (len < 2) {
       return false;
     }
@@ -94,6 +170,9 @@ class EmmV5Driver {
     size_t offset = 0;
     uint8_t packetNumber = 0;
     while (offset < payloadLen) {
+      if (frameCount >= maxFrames) {
+        return false;
+      }
       CanFrame frame{};
       const size_t remaining = payloadLen - offset;
       const size_t chunkLen = remaining < 7 ? remaining : 7;
@@ -105,15 +184,20 @@ class EmmV5Driver {
         frame.data[i + 1] = command[offset + 2];
         ++offset;
       }
-      if (trace_ != nullptr) {
-        trace_->addTx(frame);
-      }
-      if (!tx_.enqueue(frame, highPriority)) {
-        return false;
-      }
+      frames[frameCount] = frame;
+      ++frameCount;
       ++packetNumber;
     }
     return true;
+  }
+
+  void traceFrames(const CanFrame* frames, size_t count) {
+    if (trace_ == nullptr) {
+      return;
+    }
+    for (size_t i = 0; i < count; ++i) {
+      trace_->addTx(frames[i]);
+    }
   }
 
   CanTxQueue& tx_;

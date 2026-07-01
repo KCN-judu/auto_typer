@@ -214,13 +214,28 @@ class MotionExecutor {
                                                primarySteps,
                                                block.profile.maxRpm,
                                                config_.motionRuntime.minimumCoordinatedRpm);
-    const bool sync = hasX && hasY;
+    if (hasX && hasY) {
+      const MotorDirection yLeftDirection = directionForSignedSteps(block.deltaSteps.yLeft);
+      const MotorDirection yRightDirection = yLeftDirection == MotorDirection::Cw ? MotorDirection::Ccw
+                                                                                  : MotorDirection::Cw;
+      const EmmV5Driver::MoveRelativeCommand commands[] = {
+        {config_.topology.xMotorId,
+         directionForSignedSteps(block.deltaSteps.x),
+         xRpm,
+         block.profile.acceleration,
+         xSteps,
+         true},
+        {config_.topology.yLeftMotorId, yLeftDirection, yRpm, block.profile.acceleration, ySteps, true},
+        {config_.topology.yRightMotorId, yRightDirection, yRpm, block.profile.acceleration, ySteps, true},
+      };
+      return driver_.moveRelativeBatch(commands, sizeof(commands) / sizeof(commands[0]), true);
+    }
     if (hasX && !driver_.moveRelative(config_.topology.xMotorId,
                                       directionForSignedSteps(block.deltaSteps.x),
                                       xRpm,
                                       block.profile.acceleration,
                                       xSteps,
-                                      sync)) {
+                                      false)) {
       return false;
     }
     if (hasY && !yPair_.moveRelative(block.deltaSteps.yLeft, yRpm, block.profile.acceleration)) {

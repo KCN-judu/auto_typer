@@ -18,9 +18,11 @@ class YPairController {
     const MotorDirection leftDirection = directionForSignedSteps(yLeftSteps);
     const MotorDirection rightDirection = leftDirection == MotorDirection::Cw ? MotorDirection::Ccw
                                                                               : MotorDirection::Cw;
-    return driver_.moveRelative(config_.topology.yLeftMotorId, leftDirection, rpm, acceleration, steps, true) &&
-           driver_.moveRelative(config_.topology.yRightMotorId, rightDirection, rpm, acceleration, steps, true) &&
-           driver_.triggerSynchronousMotionBroadcast();
+    const EmmV5Driver::MoveRelativeCommand commands[] = {
+      {config_.topology.yLeftMotorId, leftDirection, rpm, acceleration, steps, true},
+      {config_.topology.yRightMotorId, rightDirection, rpm, acceleration, steps, true},
+    };
+    return driver_.moveRelativeBatch(commands, sizeof(commands) / sizeof(commands[0]), true);
   }
 
   bool trigger() {

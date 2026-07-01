@@ -45,6 +45,10 @@ export class DeviceClient {
     return this.postJson<DeviceStatus>(protocolRoutes.resetFault, {});
   }
 
+  async probeMotors(): Promise<DeviceStatus> {
+    return this.postJson<DeviceStatus>(protocolRoutes.probeMotors, {});
+  }
+
   async canDiagnostics() {
     return this.getJson(protocolRoutes.canDiagnostics);
   }

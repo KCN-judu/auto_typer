@@ -16,6 +16,7 @@ struct ProtocolTraceItem {
   bool extd;
   uint8_t dlc;
   uint8_t data[8];
+  char dataHex[24];
   const char* parsed;
   uint8_t motorId;
   uint8_t packetIndex;
@@ -81,7 +82,21 @@ class ProtocolTrace {
     for (uint8_t i = 0; i < item.dlc; ++i) {
       item.data[i] = frame.data[i];
     }
+    writeDataHex(item);
     return item;
+  }
+
+  static void writeDataHex(ProtocolTraceItem& item) {
+    static const char kHex[] = "0123456789ABCDEF";
+    size_t out = 0;
+    for (uint8_t i = 0; i < item.dlc && out + 2 < sizeof(item.dataHex); ++i) {
+      if (i > 0 && out + 1 < sizeof(item.dataHex)) {
+        item.dataHex[out++] = ' ';
+      }
+      item.dataHex[out++] = kHex[(item.data[i] >> 4) & 0x0F];
+      item.dataHex[out++] = kHex[item.data[i] & 0x0F];
+    }
+    item.dataHex[out] = '\0';
   }
 
   void push(const ProtocolTraceItem& item) {

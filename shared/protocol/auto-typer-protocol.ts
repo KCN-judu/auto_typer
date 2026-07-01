@@ -1,10 +1,22 @@
 export type DeviceMode = "idle" | "running" | "paused" | "faulted" | "debug";
 
-export type DeviceHealth = "unknown" | "ok" | "warning" | "fault";
+export type DeviceHealth = "unknown" | "ok" | "not_ready" | "warning" | "fault";
 
 export type MotorDirection = "cw" | "ccw";
 
 export type ServoCommand = "press" | "release" | "neutral";
+
+export type MotorRole = "x" | "y_left" | "y_right" | "line_feed";
+
+export type MotorReadiness =
+  | "unknown"
+  | "config_pending"
+  | "config_sent"
+  | "acked"
+  | "ready"
+  | "offline"
+  | "condition_not_met"
+  | "faulted";
 
 export interface MachinePointMm {
   xMm: number;
@@ -53,6 +65,7 @@ export interface CanBusDiagnostics {
   lastAlerts: number;
   txFailedCount: number;
   txRetryCount: number;
+  commandQueueFullCount: number;
   busErrorCount: number;
   rxQueueFullCount: number;
   errPassiveCount: number;
@@ -61,6 +74,7 @@ export interface CanBusDiagnostics {
   lastAlertAtMs: number;
   lastFaultAtMs: number;
   lastTxError: string;
+  lastCommandQueueError: string;
   lastFaultCode: string;
   lastFaultMessage: string;
 }
@@ -99,10 +113,15 @@ export interface JobStatus {
 
 export interface MotorState {
   id: number;
+  role: MotorRole;
+  readiness: MotorReadiness;
   hasVelocity: boolean;
   hasRealtimeAngle: boolean;
   hasInputPulse: boolean;
   hasStatus: boolean;
+  hasRecentStatus: boolean;
+  hasRecentInputPulse: boolean;
+  hasRecentVelocity: boolean;
   velocityRpm: number;
   realtimeAngleRaw65536: number;
   inputPulseSteps: number;
@@ -123,6 +142,9 @@ export interface MotorState {
   lastInputPulseMs: number;
   lastStatusMs: number;
   lastAnyFrameMs: number;
+  lastProbeMs: number;
+  lastErrorCode: string;
+  lastErrorMessage: string;
 }
 
 export interface ProtocolTraceItem {
@@ -132,6 +154,7 @@ export interface ProtocolTraceItem {
   extd: boolean;
   dlc: number;
   data: number[];
+  dataHex: string;
   parsed: string;
   motorId: number;
   packetIndex: number;
@@ -139,6 +162,14 @@ export interface ProtocolTraceItem {
 
 export interface ProtocolTraceResponse {
   trace: ProtocolTraceItem[];
+  diagnostics: {
+    unknownFrameCount: number;
+    invalidFrameCount: number;
+    lastEventAtMs: number;
+    lastInvalidAtMs: number;
+    lastInvalidError: string;
+    lastEventKind: string;
+  };
 }
 
 export interface ApiErrorBody {
@@ -194,6 +225,7 @@ export const protocolRoutes = {
   cancelJob: "/api/jobs/current/cancel",
   machineStop: "/api/machine/stop",
   resetFault: "/api/machine/reset-fault",
+  probeMotors: "/api/machine/probe-motors",
   canDiagnostics: "/api/diagnostics/can",
   protocolTrace: "/api/diagnostics/protocol-trace",
   keymap: "/api/keymap",

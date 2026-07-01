@@ -20,6 +20,7 @@ import type {
   DeviceStatus,
   KeymapDocument,
   MotorDirection,
+  MotorState,
   ServoCommand,
 } from "../../../../shared/protocol/auto-typer-protocol";
 import { DeviceClient } from "../domain/deviceClient";
@@ -123,6 +124,16 @@ export function App() {
       appendLog(next.mode === "faulted" ? `故障仍存在：${faultText(next)}` : "故障已清除");
     } catch (error) {
       appendLog(error instanceof Error ? error.message : "清除故障失败");
+    }
+  }
+
+  async function probeMotors() {
+    try {
+      const next = await client.probeMotors();
+      setStatus(next);
+      appendLog("已探测电机 readiness");
+    } catch (error) {
+      appendLog(error instanceof Error ? error.message : "电机探测失败");
     }
   }
 
@@ -249,6 +260,9 @@ export function App() {
             </button>
             <button className="secondary" onClick={resetFault} disabled={connection !== "connected" || status.mode !== "faulted"}>
               清故障
+            </button>
+            <button className="secondary" onClick={probeMotors} disabled={connection !== "connected" || isBusy}>
+              探测电机
             </button>
           </div>
         </header>
@@ -425,13 +439,15 @@ function StatusPanel({ status, logLines }: { status: DeviceStatus; logLines: str
           <StateRow label="CAN fatal" value={status.canDiagnostics.fatalFault ? "YES" : "NO"} />
           <StateRow
             label="CAN counts"
-            value={`tx ${status.canDiagnostics.txFailedCount} / retry ${status.canDiagnostics.txRetryCount} / bus ${status.canDiagnostics.busErrorCount} / rx ${status.canDiagnostics.rxQueueFullCount}`}
+            value={`tx ${status.canDiagnostics.txFailedCount} / retry ${status.canDiagnostics.txRetryCount} / queue ${status.canDiagnostics.commandQueueFullCount} / bus ${status.canDiagnostics.busErrorCount} / rx ${status.canDiagnostics.rxQueueFullCount}`}
           />
           <StateRow label="CAN pending" value={status.canDiagnostics.pendingFrameValid ? "YES" : "NO"} />
-          {(status.canDiagnostics.lastFaultCode || status.canDiagnostics.lastTxError) && (
+          {(status.canDiagnostics.lastFaultCode ||
+            status.canDiagnostics.lastTxError ||
+            status.canDiagnostics.lastCommandQueueError) && (
             <StateRow
               label="CAN detail"
-              value={`${status.canDiagnostics.lastFaultCode || status.canDiagnostics.lastTxError} ${status.canDiagnostics.lastFaultMessage}`}
+              value={`${status.canDiagnostics.lastFaultCode || status.canDiagnostics.lastTxError || status.canDiagnostics.lastCommandQueueError} ${status.canDiagnostics.lastFaultMessage}`}
             />
           )}
         </div>
@@ -441,10 +457,19 @@ function StatusPanel({ status, logLines }: { status: DeviceStatus; logLines: str
           {status.motors.map((motor) => (
             <StateRow
               key={motor.id}
-              label={`M${motor.id}`}
-              value={`${motor.inputPulseSteps} pulses / ${motor.velocityRpm.toFixed(1)} rpm`}
+              label={`${motorRoleLabel(motor)} M${motor.id}`}
+              value={`${motor.readiness} / ${motor.inputPulseSteps} pulses / ${motor.velocityRpm.toFixed(1)} rpm`}
             />
           ))}
+          {status.motors.some((motor) => motor.lastErrorCode) && (
+            <StateRow
+              label="电机错误"
+              value={status.motors
+                .filter((motor) => motor.lastErrorCode)
+                .map((motor) => `M${motor.id}:${motor.lastErrorCode}`)
+                .join(" ")}
+            />
+          )}
         </div>
       )}
       <div className="logBox">
@@ -519,6 +544,20 @@ function StateRow({ label, value }: { label: string; value: string }) {
       <code>{value}</code>
     </div>
   );
+}
+
+function motorRoleLabel(motor: MotorState): string {
+  switch (motor.role) {
+    case "y_left":
+      return "Y左";
+    case "y_right":
+      return "Y右";
+    case "line_feed":
+      return "走纸";
+    case "x":
+    default:
+      return "X";
+  }
 }
 
 function connectionText(connection: ConnectionState): string {

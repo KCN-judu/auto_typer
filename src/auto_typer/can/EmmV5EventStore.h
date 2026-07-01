@@ -8,9 +8,27 @@
 
 namespace auto_typer {
 
+struct ProtocolDiagnostics {
+  uint32_t unknownFrameCount;
+  uint32_t invalidFrameCount;
+  uint32_t lastEventAtMs;
+  uint32_t lastInvalidAtMs;
+  const char* lastInvalidError;
+  EmmV5EventKind lastEventKind;
+};
+
 class EmmV5EventStore {
  public:
-  EmmV5EventStore() : mutex_(xSemaphoreCreateMutex()), next_(0), count_(0) {
+  EmmV5EventStore()
+      : mutex_(xSemaphoreCreateMutex()),
+        next_(0),
+        count_(0),
+        unknownFrameCount_(0),
+        invalidFrameCount_(0),
+        lastEventAtMs_(0),
+        lastInvalidAtMs_(0),
+        lastInvalidError_(""),
+        lastEventKind_(EmmV5EventKind::None) {
     for (uint8_t i = 0; i < kCapacity; ++i) {
       events_[i] = {};
     }
@@ -19,6 +37,15 @@ class EmmV5EventStore {
   void push(const EmmV5Event& event) {
     if (!lock()) {
       return;
+    }
+    lastEventAtMs_ = event.timeMs;
+    lastEventKind_ = event.kind;
+    if (event.kind == EmmV5EventKind::UnknownFrame) {
+      ++unknownFrameCount_;
+    } else if (event.kind == EmmV5EventKind::InvalidFrame) {
+      ++invalidFrameCount_;
+      lastInvalidAtMs_ = event.timeMs;
+      lastInvalidError_ = event.errorCode;
     }
     events_[next_] = event;
     next_ = (next_ + 1) % kCapacity;
@@ -41,6 +68,21 @@ class EmmV5EventStore {
     return n;
   }
 
+  ProtocolDiagnostics diagnostics() const {
+    if (!lock()) {
+      return {};
+    }
+    ProtocolDiagnostics snapshot{};
+    snapshot.unknownFrameCount = unknownFrameCount_;
+    snapshot.invalidFrameCount = invalidFrameCount_;
+    snapshot.lastEventAtMs = lastEventAtMs_;
+    snapshot.lastInvalidAtMs = lastInvalidAtMs_;
+    snapshot.lastInvalidError = lastInvalidError_;
+    snapshot.lastEventKind = lastEventKind_;
+    unlock();
+    return snapshot;
+  }
+
  private:
   static constexpr size_t kCapacity = 64;
 
@@ -58,6 +100,12 @@ class EmmV5EventStore {
   EmmV5Event events_[kCapacity];
   size_t next_;
   size_t count_;
+  uint32_t unknownFrameCount_;
+  uint32_t invalidFrameCount_;
+  uint32_t lastEventAtMs_;
+  uint32_t lastInvalidAtMs_;
+  const char* lastInvalidError_;
+  EmmV5EventKind lastEventKind_;
 };
 
 }  // namespace auto_typer

@@ -26,7 +26,17 @@ CanTxQueue gCanTx(gCanBus, &gTrace);
 CanRxTask gCanRx(gCanBus, gFeedback, gEvents, gTrace);
 EmmV5Driver gMotion(gCanTx, &gTrace);
 ServoPressHal gServo(kConfig.servo);
-AutoTyperApplication gApp(kConfig, gDisplay, gCanBus, gCanTx, gCanRx, gMotion, gServo, gFeedback, gTrace, Serial);
+AutoTyperApplication gApp(kConfig,
+                          gDisplay,
+                          gCanBus,
+                          gCanTx,
+                          gCanRx,
+                          gMotion,
+                          gServo,
+                          gFeedback,
+                          gEvents,
+                          gTrace,
+                          Serial);
 HttpControlServer gHttp(kConfig, gApp, Serial);
 
 }  // namespace

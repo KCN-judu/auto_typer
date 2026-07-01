@@ -1,12 +1,17 @@
-import type { DeviceStatus, KeymapDocument } from "../../../../shared/protocol/auto-typer-protocol";
+import type { DeviceStatus, KeymapDocument, MotorRole } from "../../../../shared/protocol/auto-typer-protocol";
 import { currentFeiyu200Keymap } from "./keymap";
 
-const mockMotor = (id: number) => ({
+const mockMotor = (id: number, role: MotorRole) => ({
   id,
+  role,
+  readiness: "ready" as const,
   hasVelocity: true,
   hasRealtimeAngle: false,
   hasInputPulse: true,
   hasStatus: true,
+  hasRecentStatus: true,
+  hasRecentInputPulse: true,
+  hasRecentVelocity: true,
   velocityRpm: 0,
   realtimeAngleRaw65536: 0,
   inputPulseSteps: 0,
@@ -27,6 +32,9 @@ const mockMotor = (id: number) => ({
   lastInputPulseMs: 0,
   lastStatusMs: 0,
   lastAnyFrameMs: 0,
+  lastProbeMs: 0,
+  lastErrorCode: "",
+  lastErrorMessage: "",
 });
 
 export const mockStatus: DeviceStatus = {
@@ -48,6 +56,7 @@ export const mockStatus: DeviceStatus = {
     lastAlerts: 0,
     txFailedCount: 0,
     txRetryCount: 0,
+    commandQueueFullCount: 0,
     busErrorCount: 0,
     rxQueueFullCount: 0,
     errPassiveCount: 0,
@@ -56,14 +65,15 @@ export const mockStatus: DeviceStatus = {
     lastAlertAtMs: 0,
     lastFaultAtMs: 0,
     lastTxError: "",
+    lastCommandQueueError: "",
     lastFaultCode: "",
     lastFaultMessage: "",
   },
   motors: [
-    mockMotor(1),
-    mockMotor(2),
-    mockMotor(3),
-    mockMotor(4),
+    mockMotor(1, "x"),
+    mockMotor(2, "y_left"),
+    mockMotor(3, "y_right"),
+    mockMotor(4, "line_feed"),
   ],
 };
 

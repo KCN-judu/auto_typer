@@ -20,6 +20,12 @@ namespace auto_typer {
 
 class AutoTyperApplication {
  public:
+  struct RequiredMotorCheck {
+    bool ready;
+    const char* code;
+    const char* message;
+  };
+
   AutoTyperApplication(const TypingConfig& config,
                        DisplayHal& display,
                        CanBus& canBus,
@@ -28,6 +34,7 @@ class AutoTyperApplication {
                        EmmV5Driver& motion,
                        ServoPressHal& servo,
                        MotorFeedbackStore& feedback,
+                       EmmV5EventStore& events,
                        ProtocolTrace& protocolTrace,
                        Print& log)
       : config_(config),
@@ -38,6 +45,7 @@ class AutoTyperApplication {
         motion_(motion),
         servo_(servo),
         feedback_(feedback),
+        events_(events),
         protocolTrace_(protocolTrace),
         executor_(config, motion, servo, feedback),
         log_(log),
@@ -49,10 +57,13 @@ class AutoTyperApplication {
         activeBlocks_{},
         lastPlanStatus_(PlanStatus::Ok),
         failedKey_('\0'),
-        deviceReadyWarning_(false),
         faulted_(false),
         faultCode_(""),
-        faultMessage_("") {}
+        faultMessage_("") {
+    for (uint8_t i = 0; i < kTrackedMotorCount; ++i) {
+      lastMotorProbeMs_[i] = 0;
+    }
+  }
 
   void setup() {
     buildKeymap();
@@ -80,11 +91,8 @@ class AutoTyperApplication {
       return;
     }
     canBus_.setSoftFaultEscalationEnabled(false);
-    prepareMotors();
+    prepareMotorsBestEffort();
     canBus_.setSoftFaultEscalationEnabled(true);
-    if (faulted_) {
-      return;
-    }
     log_.println("Auto typer ready");
     display_.showStatus(DisplayStatus::Idle);
   }
@@ -148,9 +156,9 @@ class AutoTyperApplication {
       result.rejectionMessage = "Device is already processing a job";
       return result;
     }
-    if (!motionReady()) {
+    if (!motionTransportReady()) {
       result.planStatus = PlanStatus::DeviceNotReady;
-      result.rejectionCode = "motion_not_ready";
+      result.rejectionCode = "motion_transport_not_ready";
       result.rejectionMessage = motionNotReadyMessage();
       return result;
     }
@@ -181,6 +189,16 @@ class AutoTyperApplication {
       result.planStatus = activeBlocks_.status;
       result.rejectionCode = statusText(activeBlocks_.status);
       result.rejectionMessage = statusText(activeBlocks_.status);
+      result.stepCount = activeBlocks_.count;
+      return result;
+    }
+
+    const RequiredMotorCheck required = checkRequiredMotors(activeBlocks_);
+    if (!required.ready) {
+      jobState_ = JobState::None;
+      result.planStatus = PlanStatus::DeviceNotReady;
+      result.rejectionCode = required.code;
+      result.rejectionMessage = required.message;
       result.stepCount = activeBlocks_.count;
       return result;
     }
@@ -218,17 +236,9 @@ class AutoTyperApplication {
     faultCode_ = "";
     faultMessage_ = "";
     jobState_ = JobState::None;
-    deviceReadyWarning_ = false;
     canBus_.setSoftFaultEscalationEnabled(false);
-    requestMotorFeedback();
-    const uint32_t startedAt = millis();
-    while (millis() - startedAt < 300) {
-      canTx_.tick(4);
-      canRx_.tick(16);
-      delay(10);
-    }
+    probeMotorsBestEffort(300);
     canBus_.setSoftFaultEscalationEnabled(true);
-    refreshDeviceReadyWarning();
     if (!recovered || canBus_.hasFatalFault()) {
       const CanBusDiagnostics diagnostics = canBus_.diagnostics();
       setFault(diagnostics.lastFaultCode, diagnostics.lastFaultMessage);
@@ -236,6 +246,17 @@ class AutoTyperApplication {
       return false;
     }
     display_.showStatus(DisplayStatus::Idle);
+    return true;
+  }
+
+  bool probeMotors() {
+    if (jobState_ == JobState::Queued || jobState_ == JobState::Planning || jobState_ == JobState::Running ||
+        jobState_ == JobState::Cancelling) {
+      return false;
+    }
+    canBus_.setSoftFaultEscalationEnabled(false);
+    probeMotorsBestEffort(400);
+    canBus_.setSoftFaultEscalationEnabled(true);
     return true;
   }
 
@@ -336,7 +357,7 @@ class AutoTyperApplication {
   }
 
   MotorState motorState(uint8_t motorId) const {
-    return feedback_.get(motorId);
+    return enrichedMotorState(motorId);
   }
 
   JobSnapshot snapshot() const {
@@ -370,11 +391,18 @@ class AutoTyperApplication {
   }
 
   bool motionReady() const {
-    return canBus_.motionReady() && !deviceReadyWarning_;
+    return motionTransportReady() && requiredMotorReady(config_.topology.xMotorId) &&
+           requiredMotorReady(config_.topology.yLeftMotorId) &&
+           requiredMotorReady(config_.topology.yRightMotorId) &&
+           requiredMotorReady(config_.topology.lineFeedMotorId);
   }
 
   bool healthWarning() const {
-    return !faulted_ && (!motionReady() || canBus_.diagnostics().lastAlerts != 0 || deviceReadyWarning_);
+    return !faulted_ && canBus_.diagnostics().lastAlerts != 0;
+  }
+
+  bool healthNotReady() const {
+    return !faulted_ && !motionReady();
   }
 
   CanBusDiagnostics canDiagnostics() const {
@@ -383,6 +411,10 @@ class AutoTyperApplication {
 
   size_t protocolTraceSnapshot(ProtocolTraceItem* out, size_t maxItems) const {
     return protocolTrace_.snapshot(out, maxItems);
+  }
+
+  ProtocolDiagnostics protocolDiagnostics() const {
+    return events_.diagnostics();
   }
 
  private:
@@ -404,37 +436,8 @@ class AutoTyperApplication {
     log_.println(config_.motionRuntime.defaultMoveRpm);
   }
 
-  void prepareMotors() {
-    const uint8_t motors[] = {
-      config_.topology.xMotorId,
-      config_.topology.yLeftMotorId,
-      config_.topology.yRightMotorId,
-      config_.topology.lineFeedMotorId,
-    };
-    for (uint8_t motor : motors) {
-      if (!motion_.setClosedLoopControlMode(motor) || !motion_.enableMotor(motor)) {
-        deviceReadyWarning_ = true;
-      }
-      motion_.requestStatusFlags(motor);
-      motion_.requestInputPulseCount(motor);
-    }
-    const uint32_t startedAt = millis();
-    while (millis() - startedAt < 800) {
-      canTx_.tick(4);
-      canRx_.tick(16);
-      delay(10);
-    }
-    for (uint8_t motor : motors) {
-      const MotorState state = feedback_.get(motor);
-      if (state.driverFault) {
-        setFault("motor_fault", "Motor reported a fault");
-        showError();
-        return;
-      }
-      if (state.lastAnyFrameMs == 0) {
-        deviceReadyWarning_ = true;
-      }
-    }
+  void prepareMotorsBestEffort() {
+    probeMotorsBestEffort(150);
   }
 
   bool emergencyStopWithReason(const char* code, const char* message) {
@@ -462,33 +465,33 @@ class AutoTyperApplication {
     faultMessage_ = message;
   }
 
-  void requestMotorFeedback() {
+  void requestMotorFeedback(bool includeConfig) {
     const uint8_t motors[] = {
       config_.topology.xMotorId,
       config_.topology.yLeftMotorId,
       config_.topology.yRightMotorId,
       config_.topology.lineFeedMotorId,
     };
+    const uint32_t nowMs = millis();
     for (uint8_t motor : motors) {
+      setLastProbeMs(motor, nowMs);
+      if (includeConfig) {
+        motion_.setClosedLoopControlMode(motor, false);
+        motion_.enableMotor(motor);
+      }
       motion_.requestStatusFlags(motor);
       motion_.requestInputPulseCount(motor);
       motion_.requestVelocity(motor);
     }
   }
 
-  void refreshDeviceReadyWarning() {
-    const uint8_t motors[] = {
-      config_.topology.xMotorId,
-      config_.topology.yLeftMotorId,
-      config_.topology.yRightMotorId,
-      config_.topology.lineFeedMotorId,
-    };
-    deviceReadyWarning_ = false;
-    for (uint8_t motor : motors) {
-      const MotorState state = feedback_.get(motor);
-      if (state.lastAnyFrameMs == 0) {
-        deviceReadyWarning_ = true;
-      }
+  void probeMotorsBestEffort(uint16_t pumpMs) {
+    requestMotorFeedback(true);
+    const uint32_t startedAt = millis();
+    while (millis() - startedAt < pumpMs) {
+      canTx_.tick(4);
+      canRx_.tick(16);
+      delay(10);
     }
   }
 
@@ -500,16 +503,137 @@ class AutoTyperApplication {
     if (diagnostics.fatalFault) {
       return diagnostics.lastFaultMessage;
     }
-    if (deviceReadyWarning_) {
-      return "Motor feedback is not ready";
-    }
     if (diagnostics.rxQueueFullCount > 0) {
       return "CAN RX queue has overflow warnings";
     }
     if (diagnostics.txFailedCount > 0 || diagnostics.busErrorCount > 0) {
       return "CAN warning counters are non-zero";
     }
-    return "Motion subsystem is not ready";
+    return "Required motor feedback is not ready";
+  }
+
+  RequiredMotorCheck checkRequiredMotors(const MotionBlockPlan& blocks) const {
+    bool needsX = false;
+    bool needsY = false;
+    bool needsLineFeed = false;
+    for (size_t i = 0; i < blocks.count; ++i) {
+      const MotionBlock& block = blocks.blocks[i];
+      if (block.deltaSteps.x != 0) {
+        needsX = true;
+      }
+      if (block.deltaSteps.yLeft != 0 || block.deltaSteps.yRight != 0) {
+        needsY = true;
+      }
+      if (block.deltaSteps.lineFeed != 0) {
+        needsLineFeed = true;
+      }
+    }
+    if (needsX && !requiredMotorReady(config_.topology.xMotorId)) {
+      return {false, "x_motor_not_ready", "X motor is not ready"};
+    }
+    if (needsY &&
+        (!requiredMotorReady(config_.topology.yLeftMotorId) || !requiredMotorReady(config_.topology.yRightMotorId))) {
+      return {false, "y_pair_not_ready", "Y pair is not ready"};
+    }
+    if (needsLineFeed && !requiredMotorReady(config_.topology.lineFeedMotorId)) {
+      return {false, "line_feed_not_ready", "Line feed motor is not ready"};
+    }
+    return {true, "", ""};
+  }
+
+  bool motionTransportReady() const {
+    return canBus_.motionReady();
+  }
+
+  bool requiredMotorReady(uint8_t motorId) const {
+    return enrichedMotorState(motorId).readiness == MotorReadiness::Ready;
+  }
+
+  MotorState enrichedMotorState(uint8_t motorId) const {
+    MotorState state = feedback_.get(motorId);
+    const uint32_t nowMs = millis();
+    const uint32_t lastProbeMs = lastProbeMsFor(motorId);
+    state.role = motorRole(motorId);
+    state.hasRecentStatus = state.hasStatus && state.lastStatusMs != 0 && nowMs - state.lastStatusMs <= kFeedbackFreshMs;
+    state.hasRecentInputPulse =
+        state.hasInputPulse && state.lastInputPulseMs != 0 && nowMs - state.lastInputPulseMs <= kFeedbackFreshMs;
+    state.hasRecentVelocity =
+        state.hasVelocity && state.lastVelocityMs != 0 && nowMs - state.lastVelocityMs <= kFeedbackFreshMs;
+    state.lastProbeMs = lastProbeMs;
+    if (state.lastErrorCode == nullptr) {
+      state.lastErrorCode = "";
+    }
+    if (state.lastErrorMessage == nullptr) {
+      state.lastErrorMessage = "";
+    }
+    state.readiness = computeReadiness(state, lastProbeMs);
+    return state;
+  }
+
+  MotorReadiness computeReadiness(const MotorState& state, uint32_t lastProbeMs) const {
+    if (state.driverFault) {
+      return MotorReadiness::Faulted;
+    }
+    if (state.lastMalformedMs != 0 && state.lastMalformedMs >= lastProbeMs) {
+      return MotorReadiness::Faulted;
+    }
+    if (state.lastConditionNotMetMs != 0 && state.lastConditionNotMetMs >= lastProbeMs) {
+      return MotorReadiness::ConditionNotMet;
+    }
+    if (state.hasRecentStatus && state.hasRecentInputPulse && state.hasRecentVelocity) {
+      return MotorReadiness::Ready;
+    }
+    if (state.lastAckMs != 0 && state.lastAckMs >= lastProbeMs) {
+      return MotorReadiness::Acked;
+    }
+    if (lastProbeMs != 0 && state.lastAnyFrameMs < lastProbeMs && millis() - lastProbeMs > kProbeOfflineMs) {
+      return MotorReadiness::Offline;
+    }
+    if (lastProbeMs != 0) {
+      return MotorReadiness::ConfigSent;
+    }
+    return MotorReadiness::Unknown;
+  }
+
+  MotorRole motorRole(uint8_t motorId) const {
+    if (motorId == config_.topology.yLeftMotorId) {
+      return MotorRole::YLeft;
+    }
+    if (motorId == config_.topology.yRightMotorId) {
+      return MotorRole::YRight;
+    }
+    if (motorId == config_.topology.lineFeedMotorId) {
+      return MotorRole::LineFeed;
+    }
+    return MotorRole::X;
+  }
+
+  uint32_t lastProbeMsFor(uint8_t motorId) const {
+    const int8_t index = trackedMotorIndex(motorId);
+    return index < 0 ? 0 : lastMotorProbeMs_[index];
+  }
+
+  void setLastProbeMs(uint8_t motorId, uint32_t timeMs) {
+    const int8_t index = trackedMotorIndex(motorId);
+    if (index >= 0) {
+      lastMotorProbeMs_[index] = timeMs;
+    }
+  }
+
+  int8_t trackedMotorIndex(uint8_t motorId) const {
+    if (motorId == config_.topology.xMotorId) {
+      return 0;
+    }
+    if (motorId == config_.topology.yLeftMotorId) {
+      return 1;
+    }
+    if (motorId == config_.topology.yRightMotorId) {
+      return 2;
+    }
+    if (motorId == config_.topology.lineFeedMotorId) {
+      return 3;
+    }
+    return -1;
   }
 
   void showError() {
@@ -528,6 +652,7 @@ class AutoTyperApplication {
   EmmV5Driver& motion_;
   ServoPressHal& servo_;
   MotorFeedbackStore& feedback_;
+  EmmV5EventStore& events_;
   ProtocolTrace& protocolTrace_;
   MotionExecutor executor_;
   Print& log_;
@@ -541,10 +666,13 @@ class AutoTyperApplication {
   MotionBlockPlan activeBlocks_;
   PlanStatus lastPlanStatus_;
   char failedKey_;
-  bool deviceReadyWarning_;
   bool faulted_;
   const char* faultCode_;
   const char* faultMessage_;
+  static constexpr uint8_t kTrackedMotorCount = 4;
+  static constexpr uint32_t kFeedbackFreshMs = 1500;
+  static constexpr uint32_t kProbeOfflineMs = 250;
+  uint32_t lastMotorProbeMs_[kTrackedMotorCount];
 };
 
 }  // namespace auto_typer
