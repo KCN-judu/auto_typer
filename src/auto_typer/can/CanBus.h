@@ -15,10 +15,7 @@ class CanBus {
         ready_(false),
         fatalFault_(false),
         fault_(CanBusFault::None),
-        diagnostics_{},
-        firstSoftFaultAtMs_(0),
-        softFaultWindowCount_(0),
-        softFaultEscalationEnabled_(true) {
+        diagnostics_{} {
     diagnostics_.lastTxError = "";
     diagnostics_.lastCommandQueueError = "";
     diagnostics_.lastFaultCode = "";
@@ -162,14 +159,6 @@ class CanBus {
     diagnostics_.pendingFrameValid = valid;
   }
 
-  void setSoftFaultEscalationEnabled(bool enabled) {
-    softFaultEscalationEnabled_ = enabled;
-    if (!enabled) {
-      firstSoftFaultAtMs_ = 0;
-      softFaultWindowCount_ = 0;
-    }
-  }
-
   bool recoverOrClearFault() {
     if (!ready_) {
       return begin();
@@ -247,8 +236,6 @@ class CanBus {
     diagnostics_.lastFault = CanBusFault::None;
     diagnostics_.lastFaultCode = "";
     diagnostics_.lastFaultMessage = "";
-    firstSoftFaultAtMs_ = 0;
-    softFaultWindowCount_ = 0;
   }
 
   void flushRx() {
@@ -291,9 +278,6 @@ class CanBus {
   bool fatalFault_;
   CanBusFault fault_;
   CanBusDiagnostics diagnostics_;
-  uint32_t firstSoftFaultAtMs_;
-  uint8_t softFaultWindowCount_;
-  bool softFaultEscalationEnabled_;
 };
 
 }  // namespace auto_typer

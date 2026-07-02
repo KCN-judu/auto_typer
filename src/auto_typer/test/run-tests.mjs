@@ -320,7 +320,14 @@ function countMotorSpecificTriggers(frames) {
 function baselineReady(states, requiredIds, nowMs, maxAgeMs) {
   return requiredIds.every((id) => {
     const state = states.get(id);
-    return state?.hasInputPulse && state.lastInputPulseMs !== 0 && nowMs - state.lastInputPulseMs <= maxAgeMs;
+    return (
+      state?.hasInputPulse &&
+      state.hasVelocity &&
+      state.lastInputPulseMs !== 0 &&
+      state.lastVelocityMs !== 0 &&
+      nowMs - state.lastInputPulseMs <= maxAgeMs &&
+      nowMs - state.lastVelocityMs <= maxAgeMs
+    );
   });
 }
 
@@ -450,8 +457,17 @@ assert.equal(
 );
 
 const baselineStates = new Map([[1, feedbackState]]);
-assert.equal(baselineReady(baselineStates, [1], 150, 1500), true, "Fresh 0x32 pulse should satisfy baseline");
-assert.equal(baselineReady(baselineStates, [1], 2000, 1500), false, "Stale 0x32 pulse should not satisfy baseline");
+assert.equal(
+  baselineReady(new Map([[1, { ...feedbackState, hasVelocity: false, lastVelocityMs: 0 }]]), [1], 150, 1500),
+  false,
+  "Fresh 0x32 pulse without 0x35 velocity must not satisfy baseline",
+);
+assert.equal(
+  baselineReady(baselineStates, [1], 150, 1500),
+  true,
+  "Fresh 0x32 pulse and 0x35 velocity should satisfy baseline",
+);
+assert.equal(baselineReady(baselineStates, [1], 2000, 1500), false, "Stale feedback should not satisfy baseline");
 
 const yOnly = yOnlyFrames(-320);
 assert.equal(countBroadcastTriggers(yOnly), 1, "Y-only movement must emit exactly one broadcast trigger");
@@ -524,7 +540,7 @@ assert.doesNotMatch(motionExecutor, /requestPosition\(/, "Motion feedback pollin
 assert.match(motionExecutor, /motionPollIntervalMs/, "Motion feedback polling must be rate limited");
 assert.match(motionExecutor, /lastFeedbackPollMs_/, "Motion feedback polling must keep a poll timestamp");
 assert.match(motionExecutor, /inputPulseSteps/, "Motion completion must use input pulse steps");
-assert.match(motionExecutor, /validateLineFeedBaseline/, "Line feed moves must require a fresh pulse baseline");
+assert.match(motionExecutor, /validateLineFeedBaseline/, "Line feed moves must require a fresh feedback baseline");
 assert.match(motionExecutor, /line_feed_baseline_missing/, "Missing line feed baseline must fail with a clear error");
 assert.match(motionExecutor, /prepareBlockBaseline/, "MotionExecutor must acquire a fresh baseline before command send");
 assert.match(motionExecutor, /baselineReady\(block\)/, "MotionExecutor must gate command send on baseline readiness");

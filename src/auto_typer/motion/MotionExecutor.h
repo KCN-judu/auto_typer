@@ -233,7 +233,7 @@ class MotionExecutor {
     }
     if (nowMs - baselineRequestedAtMs_ > kBaselineAcquireTimeoutMs) {
       stopAll();
-      fail("motor_feedback_baseline_timeout", "Motor input pulse baseline timeout");
+      fail("motor_feedback_baseline_timeout", "Motor feedback baseline timeout");
     }
     return false;
   }
@@ -543,18 +543,19 @@ class MotionExecutor {
     return true;
   }
 
-  bool hasFreshInputPulse(uint8_t motorId, uint32_t nowMs) const {
-    return feedback_.hasFreshInputPulse(motorId, nowMs, kBaselineFreshMs);
+  bool motorBaselineReady(uint8_t motorId, uint32_t nowMs) const {
+    return feedback_.hasFreshInputPulse(motorId, nowMs, kBaselineFreshMs) &&
+           feedback_.hasFreshVelocity(motorId, nowMs, kBaselineFreshMs);
   }
 
   bool moveXYBaselineReady(const MotionBlock& block) const {
     const uint32_t nowMs = millis();
-    if (block.deltaSteps.x != 0 && !hasFreshInputPulse(config_.topology.xMotorId, nowMs)) {
+    if (block.deltaSteps.x != 0 && !motorBaselineReady(config_.topology.xMotorId, nowMs)) {
       return false;
     }
     if (block.deltaSteps.yLeft != 0 || block.deltaSteps.yRight != 0) {
-      return hasFreshInputPulse(config_.topology.yLeftMotorId, nowMs) &&
-             hasFreshInputPulse(config_.topology.yRightMotorId, nowMs);
+      return motorBaselineReady(config_.topology.yLeftMotorId, nowMs) &&
+             motorBaselineReady(config_.topology.yRightMotorId, nowMs);
     }
     return true;
   }
@@ -564,17 +565,17 @@ class MotionExecutor {
       return true;
     }
     const uint32_t nowMs = millis();
-    if (block.deltaSteps.x != 0 && !hasFreshInputPulse(config_.topology.xMotorId, nowMs)) {
-      fail("motor_feedback_baseline_missing", "X motor input pulse baseline missing");
+    if (block.deltaSteps.x != 0 && !motorBaselineReady(config_.topology.xMotorId, nowMs)) {
+      fail("motor_feedback_baseline_missing", "X motor feedback baseline missing");
       return false;
     }
     if (block.deltaSteps.yLeft != 0 || block.deltaSteps.yRight != 0) {
-      if (!hasFreshInputPulse(config_.topology.yLeftMotorId, nowMs)) {
-        fail("motor_feedback_baseline_missing", "Y left motor input pulse baseline missing");
+      if (!motorBaselineReady(config_.topology.yLeftMotorId, nowMs)) {
+        fail("motor_feedback_baseline_missing", "Y left motor feedback baseline missing");
         return false;
       }
-      if (!hasFreshInputPulse(config_.topology.yRightMotorId, nowMs)) {
-        fail("motor_feedback_baseline_missing", "Y right motor input pulse baseline missing");
+      if (!motorBaselineReady(config_.topology.yRightMotorId, nowMs)) {
+        fail("motor_feedback_baseline_missing", "Y right motor feedback baseline missing");
         return false;
       }
     }
@@ -583,12 +584,12 @@ class MotionExecutor {
 
   bool lineFeedBaselineReady() const {
     const uint32_t nowMs = millis();
-    return hasFreshInputPulse(config_.topology.lineFeedMotorId, nowMs);
+    return motorBaselineReady(config_.topology.lineFeedMotorId, nowMs);
   }
 
   bool validateLineFeedBaseline() {
     if (!lineFeedBaselineReady()) {
-      fail("line_feed_baseline_missing", "LineFeed motor input pulse baseline missing");
+      fail("line_feed_baseline_missing", "LineFeed motor feedback baseline missing");
       return false;
     }
     return true;

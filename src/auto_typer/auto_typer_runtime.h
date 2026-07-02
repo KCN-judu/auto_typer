@@ -90,9 +90,7 @@ class AutoTyperApplication {
       showError();
       return;
     }
-    canBus_.setSoftFaultEscalationEnabled(false);
     prepareMotorsBestEffort();
-    canBus_.setSoftFaultEscalationEnabled(true);
     log_.println("Auto typer ready");
     display_.showStatus(DisplayStatus::Idle);
   }
@@ -236,9 +234,7 @@ class AutoTyperApplication {
     faultCode_ = "";
     faultMessage_ = "";
     jobState_ = JobState::None;
-    canBus_.setSoftFaultEscalationEnabled(false);
     probeMotorsBestEffort(300);
-    canBus_.setSoftFaultEscalationEnabled(true);
     if (!recovered || canBus_.hasFatalFault()) {
       const CanBusDiagnostics diagnostics = canBus_.diagnostics();
       setFault(diagnostics.lastFaultCode, diagnostics.lastFaultMessage);
@@ -254,9 +250,7 @@ class AutoTyperApplication {
         jobState_ == JobState::Cancelling) {
       return false;
     }
-    canBus_.setSoftFaultEscalationEnabled(false);
     probeMotorsBestEffort(400);
-    canBus_.setSoftFaultEscalationEnabled(true);
     return true;
   }
 
