@@ -797,10 +797,13 @@ assert.match(httpServer, /body\.length\(\) > kMaxJobRequestBytes/, "Create job m
 assert.match(httpServer, /sendError\(413,\s*"job_too_large"/, "Oversized job requests must return job_too_large");
 assert.match(httpServer, /sendHeader\("Connection",\s*"close"\)/, "Firmware JSON responses must close HTTP connections");
 assert.match(httpServer, /sendHeader\("Cache-Control",\s*"no-store"\)/, "Firmware JSON responses must disable response caching");
-assert.match(httpServer, /server_\.client\(\)\.stop\(\)/, "Firmware should explicitly stop the response client");
+assert.doesNotMatch(httpServer, /server_\.client\(\)\.stop\(\)/, "Firmware must not immediately hard-stop response clients");
+assert.match(httpServer, /\[http\] response status=/, "Firmware JSON responses must log response status");
+assert.match(httpServer, /json\.length\(\)/, "Firmware JSON responses must log response byte length");
 assert.match(httpServer, /\[http\] POST \/api\/jobs bodyBytes=/, "Create job must log request body bytes");
 assert.match(httpServer, /\[http\] POST \/api\/jobs invalid_json/, "Create job must log JSON parse errors");
 assert.match(httpServer, /\[http\] POST \/api\/jobs textLength=/, "Create job must log text length");
+assert.match(httpServer, /\[http\] POST \/api\/jobs missing text/, "Create job must log missing text");
 assert.match(httpServer, /\[http\] POST \/api\/jobs accepted=/, "Create job must log submit result");
 assert.match(httpServer, /\[http\] POST \/api\/jobs response sent/, "Create job must log response completion");
 assert.match(keymapDomain, /return sanitizeKeymap\(\{[\s\S]*bindings: base\.bindings/, "Desktop keymap preservation path must sanitize existing bindings");

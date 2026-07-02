@@ -85,7 +85,12 @@ class HttpControlServer {
     const String body = server_.arg("plain");
     log_.print("[http] POST /api/jobs bodyBytes=");
     log_.println(body.length());
+    if (body.length() == 0) {
+      sendError(400, "invalid_json", "Missing JSON body");
+      return;
+    }
     if (body.length() > kMaxJobRequestBytes) {
+      log_.println("[http] POST /api/jobs body too large");
       sendError(413, "job_too_large", "Job request body too large");
       return;
     }
@@ -102,6 +107,7 @@ class HttpControlServer {
     log_.print("[http] POST /api/jobs textLength=");
     log_.println(strlen(text));
     if (strlen(text) == 0) {
+      log_.println("[http] POST /api/jobs missing text");
       sendError(400, "invalid_job", "Missing text");
       return;
     }
@@ -130,11 +136,14 @@ class HttpControlServer {
       response["failedKey"] = failedKey;
     }
     log_.print("[http] POST /api/jobs accepted=");
-    log_.print(result.accepted ? 1 : 0);
+    log_.print(result.accepted ? "1" : "0");
     log_.print(" planStatus=");
     log_.print(planStatusJson(result.planStatus));
-    log_.print(" rejection=");
-    log_.println(result.accepted ? "" : result.rejectionCode);
+    if (!result.accepted) {
+      log_.print(" rejection=");
+      log_.print(result.rejectionCode);
+    }
+    log_.println();
     sendJson(200, response);
     log_.println("[http] POST /api/jobs response sent");
   }
@@ -472,7 +481,10 @@ class HttpControlServer {
     server_.sendHeader("Connection", "close");
     server_.sendHeader("Cache-Control", "no-store");
     server_.send(status, "application/json", json);
-    server_.client().stop();
+    log_.print("[http] response status=");
+    log_.print(status);
+    log_.print(" bytes=");
+    log_.println(json.length());
   }
 
   void sendError(int status, const char* code, const char* message) {
