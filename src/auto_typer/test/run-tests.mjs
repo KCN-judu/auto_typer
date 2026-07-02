@@ -755,13 +755,25 @@ assert.match(sharedProtocol, /dataHex: string/, "Shared protocol must type proto
 assert.match(sharedProtocol, /unknownFrameCount: number/, "Shared protocol must type parser diagnostics");
 assert.match(sharedProtocol, /commandQueueFullCount: number/, "Shared protocol must type command queue full diagnostics");
 assert.match(sharedProtocol, /lastCommandQueueError: string/, "Shared protocol must type last command queue error");
+assert.match(sharedProtocol, /export type BlockStreamMessage/, "Shared protocol must define block stream messages");
+assert.match(sharedProtocol, /export type RemoteMotionBlock/, "Shared protocol must define remote motion blocks");
+assert.match(sharedProtocol, /type: "exec_block"[\s\S]*blockId: string[\s\S]*block: RemoteMotionBlock/, "exec_block must carry id, blockId, and one block");
+assert.doesNotMatch(sharedProtocol, /ExecBlockMessage[\s\S]*text:/, "exec_block must not carry full text jobs");
 
 const keymapDomain = readFileSync(new URL("../../../apps/desktop/src/domain/keymap.ts", import.meta.url), "utf8");
 assert.match(keymapDomain, /if \(base\?\.bindings && base\.bindings\.length > 0\)/, "Desktop keymap must preserve existing device bindings");
+const blockStreamPlanner = readFileSync(new URL("../../../apps/desktop/src/domain/blockStreamPlanner.ts", import.meta.url), "utf8");
+assert.match(blockStreamPlanner, /target\.xMm - current\.xMm/, "Desktop planner must use machine X coordinates directly");
+assert.match(blockStreamPlanner, /target\.yMm - current\.yMm/, "Desktop planner must use machine Y coordinates directly");
+assert.doesNotMatch(blockStreamPlanner, /toSvgCoords|svgY|bbox\.maxY/, "Desktop planner must not use SVG-transformed coordinates");
+assert.match(blockStreamPlanner, /kind: "move_xy"[\s\S]*kind: "servo_press"[\s\S]*kind: "servo_release"[\s\S]*kind: "character_release"/, "Text planning must create move/press/release/character_release blocks");
+assert.match(blockStreamPlanner, /kind: "line_feed"/, "Newline planning must create line_feed block");
+assert.match(blockStreamPlanner, /blockId: `\$\{jobId\}-/, "Desktop planner must create stable non-empty block ids");
 
 const electronMain = readFileSync(new URL("../../../apps/desktop/electron/main.ts", import.meta.url), "utf8");
 assert.match(electronMain, /from "node:http"/, "Electron main network transport must use Node http");
 assert.match(electronMain, /from "node:https"/, "Electron main network transport must support https");
+assert.match(electronMain, /from "node:net"/, "Electron main must use Node net for block stream TCP");
 assert.match(electronMain, /function networkErrorResponse/, "Electron main must build structured network errors");
 assert.match(electronMain, /status:\s*0[\s\S]*statusText:\s*"network_error"/, "Network failures must return status 0 network_error");
 assert.match(electronMain, /cause.*message/, "Network error details must include cause message extraction");
@@ -784,6 +796,9 @@ assert.doesNotMatch(
   /POST \/api\/jobs[\s\S]*retry|retry[\s\S]*POST \/api\/jobs/,
   "POST /api/jobs must not gain automatic retry without idempotency",
 );
+assert.doesNotMatch(electronMain, /retry[\s\S]*exec_block|exec_block[\s\S]*retry/, "exec_block must not auto-retry without idempotency");
+assert.match(electronMain, /blockStreamAckTimeoutMs\s*=\s*5000/, "Block stream commands must have an ack timeout");
+assert.match(electronMain, /Block stream disconnected/, "Block stream disconnect must be surfaced to the UI");
 
 const deviceClient = readFileSync(new URL("../../../apps/desktop/src/domain/deviceClient.ts", import.meta.url), "utf8");
 assert.match(deviceClient, /catch \(error\)[\s\S]*networkErrorMessage/, "DeviceClient must defensively catch request failures");
@@ -810,7 +825,23 @@ assert.match(keymapDomain, /return sanitizeKeymap\(\{[\s\S]*bindings: base\.bind
 
 const appTsx = readFileSync(new URL("../../../apps/desktop/src/ui/App.tsx", import.meta.url), "utf8");
 assert.match(appTsx, /sanitizeKeymap\(await client\.putKeymap\(nextKeymap\)\)/, "Keymap sync must upload and store sanitized current bindings");
-assert.match(appTsx, /<TaskStatusPanel status=\{status\} logLines=\{logLines\} \/>/, "Print Task page must use simplified task status panel");
+assert.match(appTsx, /planTextToRemoteBlocks/, "Print Task must plan text locally");
+assert.match(appTsx, /streamClient\.execBlock/, "Print Task must send remote blocks over TCP");
+assert.doesNotMatch(appTsx, /client\.createJob/, "Print Task must not call POST /api/jobs");
+assert.match(appTsx, /<TaskStatusPanel status=\{status\} logLines=\{logLines\} printTask=\{printTask\} \/>/, "Print Task page must show block stream task state");
+
+const blockCommandServer = readFileSync(new URL("../transport/BlockCommandServer.h", import.meta.url), "utf8");
+assert.match(blockCommandServer, /kBlockCommandPort\s*=\s*7777/, "Block command server must listen on TCP 7777");
+assert.match(blockCommandServer, /kMaxLineBytes\s*=\s*1536/, "Block command server must guard max line length");
+assert.match(blockCommandServer, /line_too_long/, "Block command server must reject oversized NDJSON lines");
+assert.match(blockCommandServer, /client\.write\('\\n'\)/, "Block command server responses must be newline-delimited");
+assert.match(blockCommandServer, /type == "exec_block"/, "Block command server must support exec_block");
+assert.doesNotMatch(blockCommandServer, /raw_can|can_frame|twai_transmit/, "Block stream must not expose raw CAN commands");
+
+assert.match(autoTyperRuntime, /submitRemoteBlock/, "Firmware must expose remote block submission");
+assert.match(autoTyperRuntime, /convertRemoteBlock/, "Firmware must convert remote blocks before execution");
+assert.match(autoTyperRuntime, /executor_\.start\(&remoteBlock_,\s*1,\s*false\)/, "Remote blocks must use MotionExecutor single-block execution");
+assert.match(autoTyperRuntime, /xyDeltaSteps\(current,\s*target,\s*config_\.calibration\)/, "Remote move_xy must use firmware kinematics");
 
 function pick(object, keys) {
   return Object.fromEntries(keys.map((key) => [key, object[key]]));

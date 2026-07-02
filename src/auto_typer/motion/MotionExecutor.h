@@ -36,9 +36,16 @@ class MotionExecutor {
         completionSampleCount_(0),
         lastFeedbackPollMs_(0),
         waitingForBaseline_(false),
-        baselineRequestedAtMs_(0) {}
+        baselineRequestedAtMs_(0),
+        currentBlockStartedEvent_(false),
+        lastCompletedBlock_(0),
+        lastCompletedDurationMs_(0) {}
 
   bool start(const MotionBlock* blocks, size_t count) {
+    return start(blocks, count, true);
+  }
+
+  bool start(const MotionBlock* blocks, size_t count, bool resetCurrentPoint) {
     if (state_ == State::Running || state_ == State::Cancelling) {
       return false;
     }
@@ -46,7 +53,9 @@ class MotionExecutor {
     blockCount_ = count;
     currentBlock_ = 0;
     activeTextIndex_ = 0;
-    currentPoint_ = config_.homePoint;
+    if (resetCurrentPoint) {
+      currentPoint_ = config_.homePoint;
+    }
     faultCode_ = "";
     faultMessage_ = "";
     blockStartedAtMs_ = 0;
@@ -55,6 +64,9 @@ class MotionExecutor {
     lastFeedbackPollMs_ = 0;
     waitingForBaseline_ = false;
     baselineRequestedAtMs_ = 0;
+    currentBlockStartedEvent_ = false;
+    lastCompletedBlock_ = 0;
+    lastCompletedDurationMs_ = 0;
     state_ = count == 0 ? State::Completed : State::Running;
     return true;
   }
@@ -84,12 +96,18 @@ class MotionExecutor {
       lastFeedbackPollMs_ = 0;
       waitingForBaseline_ = false;
       baselineRequestedAtMs_ = 0;
+      currentBlockStartedEvent_ = true;
     }
     if (isBlockComplete(block)) {
+      const size_t completedBlock = currentBlock_;
+      const uint32_t completedDurationMs = millis() - blockStartedAtMs_;
       finishBlock(block);
       ++currentBlock_;
+      lastCompletedBlock_ = completedBlock + 1;
+      lastCompletedDurationMs_ = completedDurationMs;
       blockStartedAtMs_ = 0;
       settleStartedAtMs_ = 0;
+      currentBlockStartedEvent_ = false;
     }
   }
 
@@ -158,6 +176,18 @@ class MotionExecutor {
 
   MachinePointMm currentPoint() const {
     return currentPoint_;
+  }
+
+  bool blockStartedEvent() const {
+    return currentBlockStartedEvent_;
+  }
+
+  size_t lastCompletedBlock() const {
+    return lastCompletedBlock_;
+  }
+
+  uint32_t lastCompletedDurationMs() const {
+    return lastCompletedDurationMs_;
   }
 
   const char* faultCode() const {
@@ -615,6 +645,9 @@ class MotionExecutor {
   uint32_t lastFeedbackPollMs_;
   bool waitingForBaseline_;
   uint32_t baselineRequestedAtMs_;
+  bool currentBlockStartedEvent_;
+  size_t lastCompletedBlock_;
+  uint32_t lastCompletedDurationMs_;
 };
 
 }  // namespace auto_typer

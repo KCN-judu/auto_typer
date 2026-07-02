@@ -16,15 +16,20 @@ import {
   Square,
   Wrench,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type {
+  BlockFaultMessage,
+  BlockStreamEventMessage,
   DeviceStatus,
   KeymapDocument,
   MotorDirection,
   MotorState,
   ServoCommand,
 } from "../../../../shared/protocol/auto-typer-protocol";
+import { BlockStreamClient } from "../domain/blockStreamClient";
+import type { PlannedRemoteBlock } from "../domain/blockStreamPlanner";
+import { planTextToRemoteBlocks } from "../domain/blockStreamPlanner";
 import { DeviceClient } from "../domain/deviceClient";
 import {
   displayKey,
@@ -42,6 +47,16 @@ import { KeymapPage } from "./keymap/KeymapPage";
 
 type View = "dashboard" | "job" | "debug" | "settings" | "keymap";
 type ConnectionState = "disconnected" | "connecting" | "connected" | "fault";
+type StreamState = "disconnected" | "connecting" | "connected" | "running" | "unknown" | "fault";
+
+type PrintTaskState = {
+  stream: StreamState;
+  running: boolean;
+  currentIndex: number;
+  totalBlocks: number;
+  currentLabel: string;
+  fault?: string;
+};
 
 const motorTargets = [
   { id: 23, label: "Y 组 2+3" },
@@ -56,6 +71,13 @@ export function App() {
   const [status, setStatus] = useState<DeviceStatus>(mockStatus);
   const [keymap, setKeymap] = useState<KeymapDocument>(mockKeymap);
   const [jobText, setJobText] = useState("asdf jkl");
+  const [printTask, setPrintTask] = useState<PrintTaskState>({
+    stream: "disconnected",
+    running: false,
+    currentIndex: 0,
+    totalBlocks: 0,
+    currentLabel: "",
+  });
   const [logLines, setLogLines] = useState<string[]>(["等待连接 ESP32"]);
   const [selectedKey, setSelectedKey] = useState("a");
   const [probePoint, setProbePoint] = useState({ xMm: 10.5, yMm: 45 });
@@ -70,7 +92,14 @@ export function App() {
   });
 
   const client = useMemo(() => new DeviceClient(deviceUrl), [deviceUrl]);
+  const streamClient = useMemo(() => new BlockStreamClient(), []);
   const keymapIssues = useMemo(() => validateKeymap(keymap), [keymap]);
+  const printTaskRef = useRef(printTask);
+  const activeBlockIdRef = useRef<string | undefined>();
+
+  useEffect(() => {
+    printTaskRef.current = printTask;
+  }, [printTask]);
 
   useEffect(() => {
     void window.autoTyper?.readStore().then((store) => {
@@ -79,6 +108,12 @@ export function App() {
       }
     });
   }, []);
+
+  useEffect(() => {
+    return streamClient.onMessage((message) => {
+      handleBlockStreamEvent(message);
+    });
+  }, [streamClient]);
 
   async function connect() {
     setConnection("connecting");
@@ -97,15 +132,130 @@ export function App() {
   }
 
   async function submitJob() {
+    const jobId = `job-${Date.now().toString(36)}`;
+    const plan = planTextToRemoteBlocks(jobText, keymap, jobId);
+    setPrintTask((task) => ({
+      ...task,
+      currentIndex: 0,
+      totalBlocks: plan.blocks.length,
+      currentLabel: "",
+      fault: plan.ok ? undefined : plan.message,
+    }));
+    if (!plan.ok) {
+      appendLog(`规划失败：${plan.message}`);
+      return;
+    }
+    if (plan.blocks.length === 0) {
+      appendLog("任务为空");
+      return;
+    }
     try {
-      const response = await client.createJob({ text: jobText, options: { startAtHome: true } });
-      appendLog(
-        response.accepted
-          ? `任务已创建 ${response.jobId}`
-          : `任务拒绝：${response.rejectionMessage ?? response.rejectionCode ?? response.planStatus}`,
-      );
+      await ensureBlockStreamConnected();
+      const runningTask = {
+        ...printTaskRef.current,
+        running: true,
+        stream: "running" as const,
+        totalBlocks: plan.blocks.length,
+        fault: undefined,
+      };
+      printTaskRef.current = runningTask;
+      setPrintTask(runningTask);
+      appendLog(`开始块流任务：${plan.blocks.length} blocks`);
+      await runPlannedBlocks(plan.blocks);
+      appendLog("块流任务完成");
       const nextStatus = await client.status();
       setStatus(nextStatus);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "提交任务失败";
+      setPrintTask((task) => ({ ...task, running: false, stream: task.stream === "unknown" ? "unknown" : "fault", fault: message }));
+      appendLog(message);
+    } finally {
+      activeBlockIdRef.current = undefined;
+    }
+  }
+
+  async function ensureBlockStreamConnected() {
+    if (printTaskRef.current.stream === "connected" || printTaskRef.current.stream === "running") {
+      return;
+    }
+    setPrintTask((task) => ({ ...task, stream: "connecting" }));
+    const host = deviceUrlToHost(deviceUrl);
+    await streamClient.connect({ host, port: 7777 });
+    setPrintTask((task) => ({ ...task, stream: "connected" }));
+    appendLog(`块流已连接 ${host}:7777`);
+  }
+
+  async function runPlannedBlocks(blocks: PlannedRemoteBlock[]) {
+    for (let index = 0; index < blocks.length; index += 1) {
+      const planned = blocks[index];
+      if (!printTaskRef.current.running) {
+        throw new Error("任务已取消");
+      }
+      activeBlockIdRef.current = planned.blockId;
+      setPrintTask((task) => ({
+        ...task,
+        currentIndex: index + 1,
+        currentLabel: blockLabel(planned),
+      }));
+      const ack = await streamClient.execBlock(planned.blockId, planned.block);
+      if (!ack.accepted) {
+        throw new Error(`Block rejected: ${ack.code ?? "rejected"} ${ack.message ?? ""}`.trim());
+      }
+      await waitForBlockDone(planned.blockId);
+      activeBlockIdRef.current = undefined;
+    }
+    setPrintTask((task) => ({ ...task, running: false, stream: "connected", currentLabel: "" }));
+  }
+
+  function waitForBlockDone(blockId: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const unsubscribe = streamClient.onMessage((message) => {
+        if (message.type === "block_done" && message.blockId === blockId) {
+          unsubscribe();
+          resolve();
+          return;
+        }
+        if (message.type === "fault") {
+          unsubscribe();
+          reject(new Error(`${message.code}: ${message.message}`));
+        }
+      });
+    });
+  }
+
+  function handleBlockStreamEvent(message: BlockStreamEventMessage) {
+    if (message.type === "block_started") {
+      appendLog(`Block started ${message.blockId}`);
+      return;
+    }
+    if (message.type === "block_done") {
+      appendLog(`Block done ${message.blockId}${message.durationMs !== undefined ? ` ${message.durationMs}ms` : ""}`);
+      return;
+    }
+    if (message.type === "fault") {
+      const fault = message as BlockFaultMessage;
+      const text = `${fault.code}: ${fault.message}`;
+      setPrintTask((task) => ({
+        ...task,
+        running: false,
+        stream: fault.code === "disconnect" && activeBlockIdRef.current ? "unknown" : "fault",
+        fault: text,
+      }));
+      appendLog(text);
+    }
+  }
+
+  async function cancelJob() {
+    try {
+      printTaskRef.current = { ...printTaskRef.current, running: false };
+      setPrintTask((task) => ({ ...task, running: false }));
+      if (printTaskRef.current.stream === "connected" || printTaskRef.current.stream === "running") {
+        const ack = await streamClient.cancel();
+        appendLog(ack.accepted ? "已取消块流任务" : `取消拒绝：${ack.message ?? ack.code ?? "rejected"}`);
+      } else {
+        setStatus(await client.cancelJob());
+        appendLog("已取消当前任务");
+      }
     } catch (error) {
       appendLog(error instanceof Error ? error.message : "提交任务失败");
     }
@@ -138,15 +288,6 @@ export function App() {
       appendLog("已探测电机 readiness");
     } catch (error) {
       appendLog(error instanceof Error ? error.message : "电机探测失败");
-    }
-  }
-
-  async function cancelJob() {
-    try {
-      setStatus(await client.cancelJob());
-      appendLog("已取消当前任务");
-    } catch (error) {
-      appendLog(error instanceof Error ? error.message : "取消任务失败");
     }
   }
 
@@ -217,7 +358,7 @@ export function App() {
   }
 
   const jobState = status.currentJob?.state ?? "none";
-  const isBusy = status.mode === "running" || jobState === "queued" || jobState === "planning" || jobState === "running" || jobState === "cancelling";
+  const isBusy = printTask.running || status.mode === "running" || jobState === "queued" || jobState === "planning" || jobState === "running" || jobState === "cancelling";
   const canDebug = connection === "connected" && !isBusy && status.mode !== "faulted";
 
   return (
@@ -293,13 +434,13 @@ export function App() {
             <div className="panel large">
               <div className="panelHeader">
                 <h2>文本任务</h2>
-                <span>{jobText.length} 字符</span>
+                <span>{jobText.length} 字符 / {printTask.totalBlocks} blocks</span>
               </div>
               <textarea value={jobText} onChange={(event) => setJobText(event.target.value)} spellCheck={false} />
               <div className="actionRow">
                 <button className="primary" onClick={submitJob} disabled={connection !== "connected" || isBusy || status.mode === "faulted"}>
                   <Send size={16} />
-                  创建打印任务
+                  开始块流打印
                 </button>
                 {status.mode === "faulted" && <span className="inlineFault">{faultText(status)}</span>}
                 <button className="secondary" onClick={cancelJob} disabled={connection !== "connected"}>
@@ -308,7 +449,7 @@ export function App() {
                 </button>
               </div>
             </div>
-            <TaskStatusPanel status={status} logLines={logLines} />
+            <TaskStatusPanel status={status} logLines={logLines} printTask={printTask} />
           </section>
         )}
 
@@ -376,7 +517,7 @@ export function App() {
 
         {view === "settings" && (
           <section className="panelGrid">
-            <TaskStatusPanel status={status} logLines={logLines} />
+            <TaskStatusPanel status={status} logLines={logLines} printTask={printTask} />
             <div className="panel">
               <div className="panelHeader">
                 <h2>映射表</h2>
@@ -428,21 +569,37 @@ function faultText(status: DeviceStatus) {
   return "未知故障";
 }
 
-function TaskStatusPanel({ status, logLines }: { status: DeviceStatus; logLines: string[] }) {
+function deviceUrlToHost(deviceUrl: string): string {
+  try {
+    return new URL(deviceUrl).hostname;
+  } catch {
+    return deviceUrl.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+  }
+}
+
+function blockLabel(block: PlannedRemoteBlock): string {
+  const suffix = block.targetKeyLabel ? ` ${block.targetKeyLabel}` : "";
+  return `${block.kind}${suffix}`;
+}
+
+function TaskStatusPanel({ status, logLines, printTask }: { status: DeviceStatus; logLines: string[]; printTask: PrintTaskState }) {
   return (
     <div className="panel">
       <div className="panelHeader">
         <h2>任务状态</h2>
-        <span>{status.health}</span>
+        <span>{printTask.stream}</span>
       </div>
       <div className="stateRows">
         <StateRow label="模式" value={status.mode} />
         <StateRow label="健康" value={status.health} />
+        <StateRow label="块流" value={printTask.stream} />
         <StateRow label="舵机" value={status.servoReady ? "READY" : "WAIT"} />
         <StateRow label="运动" value={status.motionReady ? "READY" : "WAIT"} />
         <StateRow label="任务" value={status.currentJob?.state ?? "none"} />
-        <StateRow label="Block" value={`${status.currentJob?.currentBlock ?? 0}/${status.currentJob?.totalBlocks ?? 0}`} />
+        <StateRow label="Block" value={`${printTask.currentIndex}/${printTask.totalBlocks}`} />
+        <StateRow label="当前" value={printTask.currentLabel || "-"} />
         <StateRow label="坐标" value={`${status.currentJob?.currentPoint.xMm.toFixed(1) ?? "0.0"}, ${status.currentJob?.currentPoint.yMm.toFixed(1) ?? "0.0"}`} />
+        {printTask.fault && <StateRow label="块流故障" value={printTask.fault} />}
         {status.fault && <StateRow label="故障" value={`${status.fault.code}: ${status.fault.message}`} />}
       </div>
       <div className="logBox">

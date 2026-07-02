@@ -11,6 +11,7 @@
 #include "hal_display.h"
 #include "hal_servo_press.h"
 #include "http_control_server.h"
+#include "transport/BlockCommandServer.h"
 
 namespace {
 
@@ -38,6 +39,7 @@ AutoTyperApplication gApp(kConfig,
                           gTrace,
                           Serial);
 HttpControlServer gHttp(kConfig, gApp, Serial);
+BlockCommandServer gBlockServer(kConfig, gApp, Serial);
 
 }  // namespace
 
@@ -46,10 +48,12 @@ void setup() {
   delay(300);
   gApp.setup();
   gHttp.begin();
+  gBlockServer.begin();
 }
 
 void loop() {
   gHttp.tick();
+  gBlockServer.tick();
   gApp.tick();
   delay(10);
 }

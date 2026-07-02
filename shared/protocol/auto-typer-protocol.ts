@@ -172,6 +172,124 @@ export interface ProtocolTraceResponse {
   };
 }
 
+export type RemoteMotionBlock =
+  | {
+      kind: "move_xy";
+      dxMm: number;
+      dyMm: number;
+      profile?: {
+        rpm?: number;
+        accelRaw?: number;
+        timeoutMs?: number;
+      };
+    }
+  | { kind: "servo_press" }
+  | { kind: "servo_release" }
+  | { kind: "character_release" }
+  | { kind: "line_feed" }
+  | { kind: "wait"; durationMs: number };
+
+export type HelloMessage = {
+  v: 1;
+  id: string;
+  type: "hello";
+  client: "desktop";
+};
+
+export type ExecBlockMessage = {
+  v: 1;
+  id: string;
+  type: "exec_block";
+  blockId: string;
+  block: RemoteMotionBlock;
+};
+
+export type CancelMessage = {
+  v: 1;
+  id: string;
+  type: "cancel";
+};
+
+export type ResetFaultMessage = {
+  v: 1;
+  id: string;
+  type: "reset_fault";
+};
+
+export type ProbeMessage = {
+  v: 1;
+  id: string;
+  type: "probe";
+};
+
+export type AckMessage = {
+  v: 1;
+  type: "ack";
+  id: string;
+  accepted: boolean;
+  code?: string;
+  message?: string;
+};
+
+export type BlockStartedMessage = {
+  v: 1;
+  type: "block_started";
+  blockId: string;
+};
+
+export type BlockDoneMessage = {
+  v: 1;
+  type: "block_done";
+  blockId: string;
+  durationMs?: number;
+};
+
+export type BlockFaultMessage = {
+  v: 1;
+  type: "fault";
+  blockId?: string;
+  code: string;
+  message: string;
+};
+
+export type TelemetryMessage = {
+  v: 1;
+  type: "telemetry";
+  executor: "idle" | "running" | "faulted";
+  jobState: JobStatus["state"];
+  fault?: {
+    code: string;
+    message: string;
+  };
+  can?: Partial<CanBusDiagnostics>;
+  motors?: Array<{
+    id: number;
+    role: MotorRole;
+    rpm: number;
+    inputPulse: number;
+    angle: number;
+    fresh: boolean;
+  }>;
+};
+
+export type BlockStreamCommandMessage =
+  | HelloMessage
+  | ExecBlockMessage
+  | CancelMessage
+  | ResetFaultMessage
+  | ProbeMessage;
+
+export type BlockStreamEventMessage =
+  | AckMessage
+  | BlockStartedMessage
+  | BlockDoneMessage
+  | BlockFaultMessage
+  | TelemetryMessage;
+
+export type BlockStreamMessage =
+  | BlockStreamCommandMessage
+  | BlockStreamEventMessage;
+
 export interface ApiErrorBody {
   code: string;
   message: string;
