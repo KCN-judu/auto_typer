@@ -758,6 +758,51 @@ assert.match(sharedProtocol, /lastCommandQueueError: string/, "Shared protocol m
 
 const keymapDomain = readFileSync(new URL("../../../apps/desktop/src/domain/keymap.ts", import.meta.url), "utf8");
 assert.match(keymapDomain, /if \(base\?\.bindings && base\.bindings\.length > 0\)/, "Desktop keymap must preserve existing device bindings");
+
+const electronMain = readFileSync(new URL("../../../apps/desktop/electron/main.ts", import.meta.url), "utf8");
+assert.match(electronMain, /from "node:http"/, "Electron main network transport must use Node http");
+assert.match(electronMain, /from "node:https"/, "Electron main network transport must support https");
+assert.match(electronMain, /function networkErrorResponse/, "Electron main must build structured network errors");
+assert.match(electronMain, /status:\s*0[\s\S]*statusText:\s*"network_error"/, "Network failures must return status 0 network_error");
+assert.match(electronMain, /cause.*message/, "Network error details must include cause message extraction");
+assert.match(electronMain, /code.*syscall/s, "Network error details must include code and syscall extraction");
+assert.match(electronMain, /console\.error\(`\[network:request\]/, "Network failures must be logged in Electron main");
+assert.match(electronMain, /function normalizeHeaders/, "Electron main must normalize request headers");
+assert.match(electronMain, /Accept:\s*"application\/json"/, "Electron main must send Accept application/json");
+assert.match(electronMain, /Connection:\s*"close"/, "Electron main must request short-lived HTTP connections");
+assert.match(electronMain, /agent:\s*false/, "Electron main must disable Node HTTP connection reuse");
+assert.match(electronMain, /timeout:\s*networkRequestTimeoutMs/, "Electron main must set a request timeout");
+assert.match(electronMain, /req\.destroy\(new Error\("Request timed out"\)\)/, "Electron timeout must destroy the request");
+assert.match(electronMain, /Content-Length/, "Electron main must send Content-Length for request bodies");
+assert.doesNotMatch(
+  electronMain,
+  /fetch\(request\.url,\s*request\.init\)/,
+  "Electron main network IPC must not use raw fetch",
+);
+assert.doesNotMatch(
+  electronMain,
+  /POST \/api\/jobs[\s\S]*retry|retry[\s\S]*POST \/api\/jobs/,
+  "POST /api/jobs must not gain automatic retry without idempotency",
+);
+
+const deviceClient = readFileSync(new URL("../../../apps/desktop/src/domain/deviceClient.ts", import.meta.url), "utf8");
+assert.match(deviceClient, /catch \(error\)[\s\S]*networkErrorMessage/, "DeviceClient must defensively catch request failures");
+assert.match(deviceClient, /result\.status\s*===\s*0|parsed\.code === "network_error"/, "DeviceClient must handle structured network_error responses");
+assert.match(deviceClient, /details\?\.code[\s\S]*details\?\.syscall/, "DeviceClient network errors must include code/syscall in messages");
+
+assert.match(httpServer, /kMaxJobRequestBytes\s*=\s*8192/, "Create job must cap request bodies at 8192 bytes");
+assert.doesNotMatch(httpServer, /void handleCreateJob\(\)\s*\{[\s\S]*StaticJsonDocument<512>/, "Create job must not use StaticJsonDocument<512>");
+assert.match(httpServer, /DynamicJsonDocument request\(body\.length\(\) \+ 512\)/, "Create job must size JSON parsing from body length");
+assert.match(httpServer, /body\.length\(\) > kMaxJobRequestBytes/, "Create job must reject oversized bodies");
+assert.match(httpServer, /sendError\(413,\s*"job_too_large"/, "Oversized job requests must return job_too_large");
+assert.match(httpServer, /sendHeader\("Connection",\s*"close"\)/, "Firmware JSON responses must close HTTP connections");
+assert.match(httpServer, /sendHeader\("Cache-Control",\s*"no-store"\)/, "Firmware JSON responses must disable response caching");
+assert.match(httpServer, /server_\.client\(\)\.stop\(\)/, "Firmware should explicitly stop the response client");
+assert.match(httpServer, /\[http\] POST \/api\/jobs bodyBytes=/, "Create job must log request body bytes");
+assert.match(httpServer, /\[http\] POST \/api\/jobs invalid_json/, "Create job must log JSON parse errors");
+assert.match(httpServer, /\[http\] POST \/api\/jobs textLength=/, "Create job must log text length");
+assert.match(httpServer, /\[http\] POST \/api\/jobs accepted=/, "Create job must log submit result");
+assert.match(httpServer, /\[http\] POST \/api\/jobs response sent/, "Create job must log response completion");
 assert.match(keymapDomain, /return sanitizeKeymap\(\{[\s\S]*bindings: base\.bindings/, "Desktop keymap preservation path must sanitize existing bindings");
 
 const appTsx = readFileSync(new URL("../../../apps/desktop/src/ui/App.tsx", import.meta.url), "utf8");

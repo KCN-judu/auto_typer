@@ -103,9 +103,12 @@ export class DeviceClient {
 
   private async requestJson<T>(route: string, init: RequestInit): Promise<T> {
     const url = `${this.baseUrl.replace(/\/$/, "")}${route}`;
-    const result = window.autoTyper
-      ? await window.autoTyper.request(url, init)
-      : await directRequest(url, init);
+    let result: Awaited<ReturnType<typeof directRequest>>;
+    try {
+      result = window.autoTyper ? await window.autoTyper.request(url, init) : await directRequest(url, init);
+    } catch (error) {
+      throw new DeviceClientError(networkErrorMessage(error), 0);
+    }
 
     if (!result.ok) {
       throw new DeviceClientError(parseErrorMessage(result.body, result.statusText), result.status);
@@ -132,7 +135,13 @@ function parseErrorMessage(body: string, fallback: string): string {
     return fallback;
   }
   try {
-    const parsed = JSON.parse(body) as ApiErrorBody;
+    const parsed = JSON.parse(body) as ApiErrorBody & {
+      details?: { code?: string; syscall?: string };
+    };
+    if (parsed.code === "network_error") {
+      const suffix = [parsed.details?.code, parsed.details?.syscall].filter(Boolean).join("/");
+      return `${parsed.code}: ${parsed.message}${suffix ? ` (${suffix})` : ""}`;
+    }
     if (isApiErrorBody(parsed)) {
       return `${parsed.code}: ${parsed.message}`;
     }
@@ -140,6 +149,25 @@ function parseErrorMessage(body: string, fallback: string): string {
     // Fall through to plain body.
   }
   return body;
+}
+
+function errorField(error: unknown, field: "message" | "code" | "syscall"): string | undefined {
+  if (error && typeof error === "object" && field in error) {
+    const value = (error as Record<string, unknown>)[field];
+    if (typeof value === "string") {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function networkErrorMessage(error: unknown): string {
+  const cause = error && typeof error === "object" && "cause" in error ? (error as { cause?: unknown }).cause : undefined;
+  const message = errorField(error, "message") ?? errorField(cause, "message") ?? "Network request failed";
+  const suffix = [errorField(cause, "code") ?? errorField(error, "code"), errorField(cause, "syscall") ?? errorField(error, "syscall")]
+    .filter(Boolean)
+    .join("/");
+  return `network_error: ${message}${suffix ? ` (${suffix})` : ""}`;
 }
 
 async function directRequest(url: string, init: RequestInit) {

@@ -50,6 +50,8 @@ class HttpControlServer {
   }
 
  private:
+  static constexpr size_t kMaxJobRequestBytes = 8192;
+
   void registerRoutes() {
     server_.on("/api/status", HTTP_GET, [this]() { sendStatus(); });
     server_.on("/api/jobs", HTTP_POST, [this]() { handleCreateJob(); });
@@ -80,11 +82,25 @@ class HttpControlServer {
   }
 
   void handleCreateJob() {
-    StaticJsonDocument<512> request;
-    if (!parseBody(request)) {
+    const String body = server_.arg("plain");
+    log_.print("[http] POST /api/jobs bodyBytes=");
+    log_.println(body.length());
+    if (body.length() > kMaxJobRequestBytes) {
+      sendError(413, "job_too_large", "Job request body too large");
+      return;
+    }
+
+    DynamicJsonDocument request(body.length() + 512);
+    const DeserializationError error = deserializeJson(request, body);
+    if (error) {
+      log_.print("[http] POST /api/jobs invalid_json ");
+      log_.println(error.c_str());
+      sendError(400, "invalid_json", "Invalid JSON body");
       return;
     }
     const char* text = request["text"] | "";
+    log_.print("[http] POST /api/jobs textLength=");
+    log_.println(strlen(text));
     if (strlen(text) == 0) {
       sendError(400, "invalid_job", "Missing text");
       return;
@@ -113,7 +129,14 @@ class HttpControlServer {
       char failedKey[2] = {result.failedKey, '\0'};
       response["failedKey"] = failedKey;
     }
+    log_.print("[http] POST /api/jobs accepted=");
+    log_.print(result.accepted ? 1 : 0);
+    log_.print(" planStatus=");
+    log_.print(planStatusJson(result.planStatus));
+    log_.print(" rejection=");
+    log_.println(result.accepted ? "" : result.rejectionCode);
     sendJson(200, response);
+    log_.println("[http] POST /api/jobs response sent");
   }
 
   void handleCancelJob() {
@@ -446,7 +469,10 @@ class HttpControlServer {
   void sendJson(int status, T& doc) {
     String json;
     serializeJson(doc, json);
+    server_.sendHeader("Connection", "close");
+    server_.sendHeader("Cache-Control", "no-store");
     server_.send(status, "application/json", json);
+    server_.client().stop();
   }
 
   void sendError(int status, const char* code, const char* message) {

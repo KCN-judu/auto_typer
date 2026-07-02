@@ -1,14 +1,25 @@
 import { app, BrowserWindow, ipcMain } from "electron";
+import http from "node:http";
+import https from "node:https";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, URL } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = process.env.VITE_DEV_SERVER_URL !== undefined || !app.isPackaged;
+const networkRequestTimeoutMs = 10000;
 
 type StoreShape = {
   lastDeviceUrl?: string;
   recentJobs: Array<{ jobId: string; text: string; createdAt: string }>;
+};
+
+type NetworkResponse = {
+  ok: boolean;
+  status: number;
+  statusText: string;
+  body: string;
+  contentType: string;
 };
 
 const defaultStore: StoreShape = {
@@ -31,6 +42,125 @@ async function readStore(): Promise<StoreShape> {
 async function writeStore(store: StoreShape): Promise<void> {
   await mkdir(app.getPath("userData"), { recursive: true });
   await writeFile(storePath(), JSON.stringify(store, null, 2), "utf8");
+}
+
+function errorField(error: unknown, field: "message" | "code" | "errno" | "syscall"): string | number | undefined {
+  if (error && typeof error === "object" && field in error) {
+    const value = (error as Record<string, unknown>)[field];
+    if (typeof value === "string" || typeof value === "number") {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function networkErrorResponse(error: unknown, url: string, method: string): NetworkResponse {
+  const cause = error && typeof error === "object" && "cause" in error ? (error as { cause?: unknown }).cause : undefined;
+  const code = errorField(cause, "code") ?? errorField(error, "code");
+  const syscall = errorField(cause, "syscall") ?? errorField(error, "syscall");
+  const message = String(errorField(error, "message") ?? errorField(cause, "message") ?? "Network request failed");
+  const details = {
+    url,
+    method,
+    cause: errorField(cause, "message"),
+    code,
+    errno: errorField(cause, "errno") ?? errorField(error, "errno"),
+    syscall,
+  };
+
+  console.error(`[network:request] ${method} ${url} failed ${String(code ?? "unknown")} ${String(syscall ?? "")}`.trim());
+
+  return {
+    ok: false,
+    status: 0,
+    statusText: "network_error",
+    body: JSON.stringify({
+      code: "network_error",
+      message,
+      details,
+    }),
+    contentType: "application/json",
+  };
+}
+
+function normalizeHeaders(init?: RequestInit): Record<string, string> {
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+    Connection: "close",
+  };
+  const source = init?.headers;
+  if (!source) {
+    return headers;
+  }
+  if (source instanceof Headers) {
+    source.forEach((value, key) => {
+      headers[key] = value;
+    });
+    return headers;
+  }
+  if (Array.isArray(source)) {
+    for (const [key, value] of source) {
+      headers[key] = value;
+    }
+    return headers;
+  }
+  for (const [key, value] of Object.entries(source)) {
+    if (typeof value === "string") {
+      headers[key] = value;
+    }
+  }
+  return headers;
+}
+
+async function requestViaNodeHttp(url: string, init?: RequestInit): Promise<NetworkResponse> {
+  return new Promise((resolve) => {
+    const parsed = new URL(url);
+    const transport = parsed.protocol === "https:" ? https : http;
+    const method = init?.method ?? "GET";
+    const body = typeof init?.body === "string" || Buffer.isBuffer(init?.body) ? init.body : undefined;
+    const headers = normalizeHeaders(init);
+    if (body !== undefined && !Object.keys(headers).some((key) => key.toLowerCase() === "content-length")) {
+      headers["Content-Length"] = String(Buffer.byteLength(body));
+    }
+
+    const req = transport.request(
+      parsed,
+      {
+        method,
+        headers,
+        agent: false,
+        timeout: networkRequestTimeoutMs,
+      },
+      (response) => {
+        response.setEncoding("utf8");
+        let responseBody = "";
+        response.on("data", (chunk: string) => {
+          responseBody += chunk;
+        });
+        response.on("end", () => {
+          const status = response.statusCode ?? 0;
+          resolve({
+            ok: status >= 200 && status < 300,
+            status,
+            statusText: response.statusMessage ?? "",
+            body: responseBody,
+            contentType: String(response.headers["content-type"] ?? ""),
+          });
+        });
+      },
+    );
+
+    req.on("timeout", () => {
+      req.destroy(new Error("Request timed out"));
+    });
+    req.on("error", (error) => {
+      resolve(networkErrorResponse(error, url, method));
+    });
+    if (body !== undefined) {
+      req.write(body);
+    }
+    req.end();
+  });
 }
 
 async function createWindow() {
@@ -63,15 +193,12 @@ ipcMain.handle("store:write", async (_event, nextStore: StoreShape) => {
 });
 
 ipcMain.handle("network:request", async (_event, request: { url: string; init?: RequestInit }) => {
-  const response = await fetch(request.url, request.init);
-  const text = await response.text();
-  return {
-    ok: response.ok,
-    status: response.status,
-    statusText: response.statusText,
-    body: text,
-    contentType: response.headers.get("content-type") ?? "",
-  };
+  const method = request.init?.method ?? "GET";
+  try {
+    return await requestViaNodeHttp(request.url, request.init);
+  } catch (error) {
+    return networkErrorResponse(error, request.url, method);
+  }
 });
 
 app.whenReady().then(createWindow);
