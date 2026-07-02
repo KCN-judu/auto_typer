@@ -168,6 +168,174 @@ function canMotionReady({ ready, fatalFault }) {
   return ready && !fatalFault;
 }
 
+function applyFeedbackEvent(state, event) {
+  const next = { ...state, id: event.motorId };
+  switch (event.kind) {
+    case "CommandAcked":
+      next.lastAckCommand = event.command;
+      next.lastAckMs = event.timeMs;
+      break;
+    case "CommandConditionNotMet":
+      next.conditionNotMet = true;
+      next.lastConditionNotMetCommand = event.command;
+      next.lastConditionNotMetMs = event.timeMs;
+      next.lastErrorCode = "condition_not_met";
+      break;
+    case "CommandMalformed":
+      next.commandMalformed = true;
+      next.lastMalformedCommand = event.command;
+      next.lastMalformedMs = event.timeMs;
+      next.lastErrorCode = "command_malformed";
+      break;
+    case "MotionReached":
+      next.motionReached = true;
+      next.lastMotionReachedMs = event.timeMs;
+      break;
+    case "InputPulseFeedback":
+      next.hasInputPulse = true;
+      next.inputPulseSteps = event.inputPulseSteps;
+      next.lastInputPulseMs = event.timeMs;
+      break;
+    case "VelocityFeedback":
+      next.hasVelocity = true;
+      next.velocityRpm = event.velocityRpm;
+      next.lastVelocityMs = event.timeMs;
+      break;
+    case "RealtimeAngleFeedback":
+      next.hasRealtimeAngle = true;
+      next.realtimeAngleRaw65536 = event.angleRaw65536;
+      next.lastRealtimeAngleMs = event.timeMs;
+      break;
+    case "StatusFlagsFeedback":
+    case "HomeStatusFeedback":
+      next.hasStatus = true;
+      next.statusFlags = event.statusFlags;
+      next.lastStatusMs = event.timeMs;
+      break;
+  }
+  return next;
+}
+
+function emptyMotorState(id) {
+  return {
+    id,
+    hasInputPulse: false,
+    hasVelocity: false,
+    hasRealtimeAngle: false,
+    hasStatus: false,
+    inputPulseSteps: 0,
+    velocityRpm: 0,
+    realtimeAngleRaw65536: 0,
+    statusFlags: 0,
+    lastInputPulseMs: 0,
+    lastVelocityMs: 0,
+    lastRealtimeAngleMs: 0,
+    lastStatusMs: 0,
+  };
+}
+
+function encodeCommandFrames(command) {
+  const payloadLen = command.length - 2;
+  const frames = [];
+  let offset = 0;
+  let packetIndex = 0;
+  while (offset < payloadLen) {
+    const remaining = payloadLen - offset;
+    const chunkLen = Math.min(remaining, 7);
+    const data = [command[1]];
+    for (let i = 0; i < chunkLen; i += 1) {
+      data.push(command[offset + 2]);
+      offset += 1;
+    }
+    frames.push({
+      canId: (command[0] << 8) | packetIndex,
+      extd: true,
+      data,
+    });
+    packetIndex += 1;
+  }
+  return frames;
+}
+
+function moveCommand({ motorId, direction, rpm, acceleration, steps, sync }) {
+  return [
+    motorId,
+    0xfd,
+    direction === "ccw" ? 1 : 0,
+    (rpm >> 8) & 0xff,
+    rpm & 0xff,
+    acceleration,
+    (steps >> 24) & 0xff,
+    (steps >> 16) & 0xff,
+    (steps >> 8) & 0xff,
+    steps & 0xff,
+    0x00,
+    sync ? 1 : 0,
+    0x6b,
+  ];
+}
+
+function moveRelativeBatch(commands, broadcastTrigger) {
+  const frames = commands.flatMap((command) => encodeCommandFrames(moveCommand(command)));
+  if (broadcastTrigger) {
+    frames.push(...encodeCommandFrames([0x00, 0xff, 0x66, 0x6b]));
+  }
+  return frames;
+}
+
+function yOnlyFrames(yLeftSteps) {
+  const direction = yLeftSteps >= 0 ? "cw" : "ccw";
+  const mirrored = direction === "cw" ? "ccw" : "cw";
+  const steps = Math.abs(yLeftSteps);
+  return moveRelativeBatch(
+    [
+      { motorId: 2, direction, rpm: 1600, acceleration: 128, steps, sync: true },
+      { motorId: 3, direction: mirrored, rpm: 1600, acceleration: 128, steps, sync: true },
+    ],
+    true,
+  );
+}
+
+function xyFrames({ xSteps, yLeftSteps }) {
+  const yDirection = yLeftSteps >= 0 ? "cw" : "ccw";
+  const yMirrored = yDirection === "cw" ? "ccw" : "cw";
+  return moveRelativeBatch(
+    [
+      { motorId: 1, direction: xSteps >= 0 ? "cw" : "ccw", rpm: 1600, acceleration: 128, steps: Math.abs(xSteps), sync: true },
+      { motorId: 2, direction: yDirection, rpm: 1600, acceleration: 128, steps: Math.abs(yLeftSteps), sync: true },
+      { motorId: 3, direction: yMirrored, rpm: 1600, acceleration: 128, steps: Math.abs(yLeftSteps), sync: true },
+    ],
+    true,
+  );
+}
+
+function countBroadcastTriggers(frames) {
+  return frames.filter((frame) => frame.canId === 0x0000 && frame.data.join(",") === "255,102,107").length;
+}
+
+function countMotorSpecificTriggers(frames) {
+  return frames.filter((frame) => frame.canId !== 0x0000 && frame.data.join(",") === "255,102,107").length;
+}
+
+function baselineReady(states, requiredIds, nowMs, maxAgeMs) {
+  return requiredIds.every((id) => {
+    const state = states.get(id);
+    return state?.hasInputPulse && state.lastInputPulseMs !== 0 && nowMs - state.lastInputPulseMs <= maxAgeMs;
+  });
+}
+
+function motorAtTarget(state, target, nowMs, { maxAgeMs, toleranceSteps, stopVelocityRpm }) {
+  if (!state.hasInputPulse || !state.hasVelocity) return false;
+  if (nowMs - state.lastInputPulseMs > maxAgeMs || nowMs - state.lastVelocityMs > maxAgeMs) return false;
+  return Math.abs(state.inputPulseSteps - target) <= toleranceSteps && Math.abs(state.velocityRpm) <= stopVelocityRpm;
+}
+
+function yPairSkewExceeded({ leftStart, rightStart, leftNow, rightNow, tolerance }) {
+  const leftDelta = leftNow - leftStart;
+  const rightDelta = rightNow - rightStart;
+  return Math.abs(leftDelta + rightDelta) > tolerance;
+}
+
 const config = {
   homePoint: { xMm: 0, yMm: 0 },
   servo: { settleMs: 80, pressMs: 600, releaseMs: 300 },
@@ -256,6 +424,57 @@ assert.equal(canMotionReady({ ready: true, fatalFault: false }), true);
 assert.equal(canMotionReady({ ready: true, fatalFault: true }), false);
 assert.equal(canMotionReady({ ready: false, fatalFault: false }), false);
 
+const pulseEvent = { ...parseEmmV5Frame({ canId: 0x0100, data: [0x32, 0x00, 0x00, 0x00, 0x03, 0xe8, 0x6b] }), timeMs: 100 };
+const velocityEvent = { ...parseEmmV5Frame({ canId: 0x0100, data: [0x35, 0x00, 0x00, 0x00, 0x6b] }), timeMs: 120 };
+const angleEvent = { ...parseEmmV5Frame({ canId: 0x0100, data: [0x36, 0x00, 0x00, 0x01, 0x00, 0x00, 0x6b] }), timeMs: 140 };
+let feedbackState = emptyMotorState(1);
+feedbackState = applyFeedbackEvent(feedbackState, pulseEvent);
+assert.equal(feedbackState.inputPulseSteps, 1000, "0x32 input pulse must update pulse steps");
+feedbackState = applyFeedbackEvent(feedbackState, angleEvent);
+assert.equal(feedbackState.inputPulseSteps, 1000, "0x36 realtime angle must not overwrite pulse steps");
+assert.equal(feedbackState.realtimeAngleRaw65536, 65536, "0x36 realtime angle must update angle only");
+feedbackState = applyFeedbackEvent(feedbackState, velocityEvent);
+assert.equal(
+  motorAtTarget(feedbackState, 1000, 150, { maxAgeMs: 300, toleranceSteps: 16, stopVelocityRpm: 1 }),
+  true,
+  "Completion model requires fresh pulse and velocity near target",
+);
+assert.equal(
+  motorAtTarget({ ...feedbackState, velocityRpm: 20, lastVelocityMs: 150 }, 1000, 160, {
+    maxAgeMs: 300,
+    toleranceSteps: 16,
+    stopVelocityRpm: 1,
+  }),
+  false,
+  "Motion completion must reject nonzero velocity",
+);
+
+const baselineStates = new Map([[1, feedbackState]]);
+assert.equal(baselineReady(baselineStates, [1], 150, 1500), true, "Fresh 0x32 pulse should satisfy baseline");
+assert.equal(baselineReady(baselineStates, [1], 2000, 1500), false, "Stale 0x32 pulse should not satisfy baseline");
+
+const yOnly = yOnlyFrames(-320);
+assert.equal(countBroadcastTriggers(yOnly), 1, "Y-only movement must emit exactly one broadcast trigger");
+assert.equal(countMotorSpecificTriggers(yOnly), 0, "Y-only movement must not emit motor-specific triggers");
+assert.deepEqual(
+  yOnly.filter((frame) => frame.data[0] === 0xfd).map((frame) => frame.canId),
+  [0x0200, 0x0201, 0x0300, 0x0301],
+  "Y-only FD frames must target motors 2 and 3 with split packet indices",
+);
+assert.equal(yOnly.filter((frame) => frame.data[0] === 0xfd).every((frame) => frame.data[0] === 0xfd), true);
+
+const xyLinked = xyFrames({ xSteps: 400, yLeftSteps: -320 });
+assert.equal(countBroadcastTriggers(xyLinked), 1, "X+Y movement must emit exactly one broadcast trigger");
+assert.equal(countMotorSpecificTriggers(xyLinked), 0, "X+Y movement must not emit motor-specific triggers");
+assert.deepEqual(
+  xyLinked.filter((frame) => frame.data[0] === 0xfd).map((frame) => frame.canId),
+  [0x0100, 0x0101, 0x0200, 0x0201, 0x0300, 0x0301],
+  "X+Y FD frames must target X, Y-left, and Y-right with split packet indices",
+);
+
+assert.equal(yPairSkewExceeded({ leftStart: 100, rightStart: -100, leftNow: -220, rightNow: 220, tolerance: 10 }), false);
+assert.equal(yPairSkewExceeded({ leftStart: 100, rightStart: -100, leftNow: -220, rightNow: 260, tolerance: 10 }), true);
+
 const httpServer = readFileSync(new URL("../http_control_server.h", import.meta.url), "utf8");
 assert.match(httpServer, /case JobState::None:[\s\S]*return "none";/, "JobState::None must serialize to none");
 assert.match(httpServer, /request\["point"\]/, "ProbeKeyRequest must read nested point");
@@ -291,11 +510,14 @@ const protocol = readFileSync(new URL("../../../shared/protocol/auto-typer-proto
 assert.match(protocol, /not_ready/, "Shared protocol must include not_ready health");
 assert.match(protocol, /MotorReadiness/, "Shared protocol must include motor readiness");
 assert.match(protocol, /probeMotors/, "Shared protocol must include probe motors route");
+assert.match(protocol, /tx_queued[\s\S]*tx_sent[\s\S]*tx_retry[\s\S]*rx/, "Shared protocol must type protocol trace directions");
 
 const motionExecutor = readFileSync(new URL("../motion/MotionExecutor.h", import.meta.url), "utf8");
 assert.doesNotMatch(motionExecutor, /bool feedbackSatisfied\(const MotionBlock&\)\s*\{\s*return false;\s*\}/, "feedbackSatisfied must use motor feedback");
 assert.doesNotMatch(motionExecutor, /estimatedMoveMs/, "MotionExecutor must not complete moves from estimated duration");
-assert.match(motionExecutor, /motion_feedback_timeout/, "Missing feedback must fault instead of completing");
+assert.match(motionExecutor, /motor_feedback_baseline_timeout/, "Missing baseline must fault before sending motion commands");
+assert.match(motionExecutor, /motion_feedback_timeout/, "Stale feedback after command send must fault");
+assert.match(motionExecutor, /motion_timeout/, "Overall motion timeout must use a distinct fault code");
 assert.match(motionExecutor, /y_pair_skew/, "Y pair skew must fault");
 assert.match(motionExecutor, /requestInputPulseCount/, "Motion feedback polling must request input pulse count");
 assert.doesNotMatch(motionExecutor, /requestPosition\(/, "Motion feedback polling must not use realtime angle as position steps");
@@ -304,6 +526,9 @@ assert.match(motionExecutor, /lastFeedbackPollMs_/, "Motion feedback polling mus
 assert.match(motionExecutor, /inputPulseSteps/, "Motion completion must use input pulse steps");
 assert.match(motionExecutor, /validateLineFeedBaseline/, "Line feed moves must require a fresh pulse baseline");
 assert.match(motionExecutor, /line_feed_baseline_missing/, "Missing line feed baseline must fail with a clear error");
+assert.match(motionExecutor, /prepareBlockBaseline/, "MotionExecutor must acquire a fresh baseline before command send");
+assert.match(motionExecutor, /baselineReady\(block\)/, "MotionExecutor must gate command send on baseline readiness");
+assert.match(motionExecutor, /captureFeedbackTargets\(block\)[\s\S]*return driver_\.moveRelative/, "Line feed targets must be captured after baseline before FD send");
 assert.doesNotMatch(motionExecutor, /observedPositionSteps/, "Realtime angle must not be stored as observedPositionSteps");
 assert.doesNotMatch(
   motionExecutor,

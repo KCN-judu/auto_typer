@@ -413,7 +413,7 @@ class HttpControlServer {
 
   void writeCanDiagnostics(JsonObject json, const CanBusDiagnostics& diagnostics) {
     json["driverReady"] = diagnostics.driverReady;
-    json["motionReady"] = app_.motionReady();
+    json["motionReady"] = diagnostics.motionReady;
     json["fatalFault"] = diagnostics.fatalFault;
     json["recoverable"] = diagnostics.recoverable;
     json["lastAlerts"] = diagnostics.lastAlerts;

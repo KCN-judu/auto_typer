@@ -34,7 +34,9 @@ class MotionExecutor {
         activeTextIndex_(0),
         activeFeedback_{},
         completionSampleCount_(0),
-        lastFeedbackPollMs_(0) {}
+        lastFeedbackPollMs_(0),
+        waitingForBaseline_(false),
+        baselineRequestedAtMs_(0) {}
 
   bool start(const MotionBlock* blocks, size_t count) {
     if (state_ == State::Running || state_ == State::Cancelling) {
@@ -47,6 +49,12 @@ class MotionExecutor {
     currentPoint_ = config_.homePoint;
     faultCode_ = "";
     faultMessage_ = "";
+    blockStartedAtMs_ = 0;
+    settleStartedAtMs_ = 0;
+    completionSampleCount_ = 0;
+    lastFeedbackPollMs_ = 0;
+    waitingForBaseline_ = false;
+    baselineRequestedAtMs_ = 0;
     state_ = count == 0 ? State::Completed : State::Running;
     return true;
   }
@@ -61,6 +69,9 @@ class MotionExecutor {
     }
     const MotionBlock& block = blocks_[currentBlock_];
     if (blockStartedAtMs_ == 0) {
+      if (!prepareBlockBaseline(block)) {
+        return;
+      }
       if (!beginBlock(block)) {
         if (state_ != State::Faulted) {
           fail("motion_command_rejected", "Motion command rejected");
@@ -71,6 +82,8 @@ class MotionExecutor {
       settleStartedAtMs_ = 0;
       completionSampleCount_ = 0;
       lastFeedbackPollMs_ = 0;
+      waitingForBaseline_ = false;
+      baselineRequestedAtMs_ = 0;
     }
     if (isBlockComplete(block)) {
       finishBlock(block);
@@ -198,6 +211,33 @@ class MotionExecutor {
     return false;
   }
 
+  bool prepareBlockBaseline(const MotionBlock& block) {
+    if (!requiresFeedbackBaseline(block)) {
+      waitingForBaseline_ = false;
+      baselineRequestedAtMs_ = 0;
+      return true;
+    }
+
+    requestFeedback(block);
+    if (baselineReady(block)) {
+      waitingForBaseline_ = false;
+      baselineRequestedAtMs_ = 0;
+      return true;
+    }
+
+    const uint32_t nowMs = millis();
+    if (!waitingForBaseline_) {
+      waitingForBaseline_ = true;
+      baselineRequestedAtMs_ = nowMs;
+      return false;
+    }
+    if (nowMs - baselineRequestedAtMs_ > kBaselineAcquireTimeoutMs) {
+      stopAll();
+      fail("motor_feedback_baseline_timeout", "Motor input pulse baseline timeout");
+    }
+    return false;
+  }
+
   bool startMoveXY(const MotionBlock& block) {
     const uint32_t xSteps = absoluteSteps(block.deltaSteps.x);
     const uint32_t ySteps = absoluteSteps(block.deltaSteps.yLeft);
@@ -270,7 +310,7 @@ class MotionExecutor {
     const uint32_t elapsed = millis() - blockStartedAtMs_;
     if (elapsed > block.profile.timeoutMs) {
       stopAll();
-      fail("motion_feedback_timeout", "Motion feedback timed out");
+      fail("motion_timeout", "Motion timed out before reaching target");
       return false;
     }
     if (block.kind == MotionBlockKind::Wait) {
@@ -282,6 +322,11 @@ class MotionExecutor {
     }
 
     requestFeedback(block);
+    if (feedbackTimedOut(block)) {
+      stopAll();
+      fail("motion_feedback_timeout", "Required motor feedback became stale");
+      return false;
+    }
     if (feedbackSatisfied(block)) {
       ++completionSampleCount_;
       if (completionSampleCount_ >= config_.motionRuntime.completionSamples) {
@@ -397,7 +442,8 @@ class MotionExecutor {
 
   bool motorAtTarget(const MotorState& state, int32_t target, uint32_t nowMs) const {
     if (state.driverFault || !state.hasInputPulse || !state.hasVelocity || state.lastInputPulseMs == 0 ||
-        state.lastVelocityMs == 0 || nowMs - state.lastInputPulseMs > 300 || nowMs - state.lastVelocityMs > 300) {
+        state.lastVelocityMs == 0 || nowMs - state.lastInputPulseMs > kFeedbackFreshMs ||
+        nowMs - state.lastVelocityMs > kFeedbackFreshMs) {
       return false;
     }
     const uint32_t error = absoluteSigned(state.inputPulseSteps - target);
@@ -406,7 +452,33 @@ class MotionExecutor {
   }
 
   bool feedbackFresh(const MotorState& state, uint32_t nowMs) const {
-    return state.hasInputPulse && state.lastInputPulseMs != 0 && nowMs - state.lastInputPulseMs <= 300;
+    return state.hasInputPulse && state.lastInputPulseMs != 0 && nowMs - state.lastInputPulseMs <= kFeedbackFreshMs;
+  }
+
+  bool feedbackTimedOut(const MotionBlock& block) const {
+    const uint32_t nowMs = millis();
+    if (nowMs - blockStartedAtMs_ <= kFeedbackFreshMs) {
+      return false;
+    }
+    if (block.kind == MotionBlockKind::MoveXY) {
+      if (block.deltaSteps.x != 0 && !motorFeedbackFresh(config_.topology.xMotorId, nowMs)) {
+        return true;
+      }
+      if (block.deltaSteps.yLeft != 0 || block.deltaSteps.yRight != 0) {
+        return !motorFeedbackFresh(config_.topology.yLeftMotorId, nowMs) ||
+               !motorFeedbackFresh(config_.topology.yRightMotorId, nowMs);
+      }
+      return false;
+    }
+    if (block.kind == MotionBlockKind::LineFeed || block.kind == MotionBlockKind::CharacterRelease) {
+      return !motorFeedbackFresh(config_.topology.lineFeedMotorId, nowMs);
+    }
+    return false;
+  }
+
+  bool motorFeedbackFresh(uint8_t motorId, uint32_t nowMs) const {
+    return feedback_.hasFreshInputPulse(motorId, nowMs, kFeedbackFreshMs) &&
+           feedback_.hasFreshVelocity(motorId, nowMs, kFeedbackFreshMs);
   }
 
   bool yPairSkewExceeded(const MotorState& left, const MotorState& right) const {
@@ -448,13 +520,49 @@ class MotionExecutor {
   }
 
   static constexpr uint32_t kBaselineFreshMs = 1500;
+  static constexpr uint32_t kBaselineAcquireTimeoutMs = 1500;
+  static constexpr uint32_t kFeedbackFreshMs = 300;
+
+  bool requiresFeedbackBaseline(const MotionBlock& block) const {
+    if (block.kind == MotionBlockKind::MoveXY) {
+      return block.deltaSteps.x != 0 || block.deltaSteps.yLeft != 0 || block.deltaSteps.yRight != 0;
+    }
+    if (block.kind == MotionBlockKind::LineFeed || block.kind == MotionBlockKind::CharacterRelease) {
+      return block.deltaSteps.lineFeed != 0;
+    }
+    return false;
+  }
+
+  bool baselineReady(const MotionBlock& block) const {
+    if (block.kind == MotionBlockKind::MoveXY) {
+      return moveXYBaselineReady(block);
+    }
+    if (block.kind == MotionBlockKind::LineFeed || block.kind == MotionBlockKind::CharacterRelease) {
+      return lineFeedBaselineReady();
+    }
+    return true;
+  }
 
   bool hasFreshInputPulse(uint8_t motorId, uint32_t nowMs) const {
-    const MotorState state = feedback_.get(motorId);
-    return state.hasInputPulse && state.lastInputPulseMs != 0 && nowMs - state.lastInputPulseMs <= kBaselineFreshMs;
+    return feedback_.hasFreshInputPulse(motorId, nowMs, kBaselineFreshMs);
+  }
+
+  bool moveXYBaselineReady(const MotionBlock& block) const {
+    const uint32_t nowMs = millis();
+    if (block.deltaSteps.x != 0 && !hasFreshInputPulse(config_.topology.xMotorId, nowMs)) {
+      return false;
+    }
+    if (block.deltaSteps.yLeft != 0 || block.deltaSteps.yRight != 0) {
+      return hasFreshInputPulse(config_.topology.yLeftMotorId, nowMs) &&
+             hasFreshInputPulse(config_.topology.yRightMotorId, nowMs);
+    }
+    return true;
   }
 
   bool validateMoveXYBaseline(const MotionBlock& block) {
+    if (moveXYBaselineReady(block)) {
+      return true;
+    }
     const uint32_t nowMs = millis();
     if (block.deltaSteps.x != 0 && !hasFreshInputPulse(config_.topology.xMotorId, nowMs)) {
       fail("motor_feedback_baseline_missing", "X motor input pulse baseline missing");
@@ -473,9 +581,13 @@ class MotionExecutor {
     return true;
   }
 
-  bool validateLineFeedBaseline() {
+  bool lineFeedBaselineReady() const {
     const uint32_t nowMs = millis();
-    if (!hasFreshInputPulse(config_.topology.lineFeedMotorId, nowMs)) {
+    return hasFreshInputPulse(config_.topology.lineFeedMotorId, nowMs);
+  }
+
+  bool validateLineFeedBaseline() {
+    if (!lineFeedBaselineReady()) {
       fail("line_feed_baseline_missing", "LineFeed motor input pulse baseline missing");
       return false;
     }
@@ -500,6 +612,8 @@ class MotionExecutor {
   ActiveFeedbackTargets activeFeedback_;
   uint8_t completionSampleCount_;
   uint32_t lastFeedbackPollMs_;
+  bool waitingForBaseline_;
+  uint32_t baselineRequestedAtMs_;
 };
 
 }  // namespace auto_typer

@@ -149,7 +149,7 @@ export interface MotorState {
 
 export interface ProtocolTraceItem {
   timeMs: number;
-  dir: "tx" | "rx";
+  dir: "tx_queued" | "tx_sent" | "tx_retry" | "rx";
   canId: number;
   extd: boolean;
   dlc: number;

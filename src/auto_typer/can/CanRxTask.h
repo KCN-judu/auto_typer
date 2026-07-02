@@ -98,6 +98,20 @@ class MotorFeedbackStore {
     return state;
   }
 
+  MotorState getMotorState(uint8_t id) const {
+    return get(id);
+  }
+
+  bool hasFreshInputPulse(uint8_t id, uint32_t nowMs, uint32_t maxAgeMs) const {
+    const MotorState state = get(id);
+    return state.hasInputPulse && state.lastInputPulseMs != 0 && nowMs - state.lastInputPulseMs <= maxAgeMs;
+  }
+
+  bool hasFreshVelocity(uint8_t id, uint32_t nowMs, uint32_t maxAgeMs) const {
+    const MotorState state = get(id);
+    return state.hasVelocity && state.lastVelocityMs != 0 && nowMs - state.lastVelocityMs <= maxAgeMs;
+  }
+
  private:
   static constexpr uint8_t kCapacity = 32;
 
