@@ -28,8 +28,8 @@ import type {
   ServoCommand,
 } from "../../../../shared/protocol/auto-typer-protocol";
 import { BlockStreamClient } from "../domain/blockStreamClient";
-import type { PlannedPrimitiveCommand } from "../domain/primitive-planner";
-import { planTextToPrimitiveCommands } from "../domain/primitive-planner";
+import type { PlannedRemoteMotionBlock } from "../domain/blockStreamPlanner";
+import { planTextToRemoteMotionBlocks } from "../domain/blockStreamPlanner";
 import { DeviceClient } from "../domain/deviceClient";
 import {
   displayKey,
@@ -62,6 +62,7 @@ const motorTargets = [
   { id: 23, label: "Y 组 2+3" },
   { id: 1, label: "X 电机 1" },
   { id: 4, label: "走纸电机 4" },
+  { id: 5, label: "按压电机 5" },
 ] as const;
 
 export function App() {
@@ -95,7 +96,7 @@ export function App() {
   const streamClient = useMemo(() => new BlockStreamClient(), []);
   const keymapIssues = useMemo(() => validateKeymap(keymap), [keymap]);
   const printTaskRef = useRef(printTask);
-  const activeCommandIdRef = useRef<string | undefined>();
+  const activeBlockIdRef = useRef<string | undefined>();
 
   useEffect(() => {
     printTaskRef.current = printTask;
@@ -133,11 +134,11 @@ export function App() {
 
   async function submitJob() {
     const jobId = `job-${Date.now().toString(36)}`;
-    const plan = planTextToPrimitiveCommands(jobText, keymap, jobId);
+    const plan = planTextToRemoteMotionBlocks(jobText, keymap, jobId);
     setPrintTask((task) => ({
       ...task,
       currentIndex: 0,
-      totalBlocks: plan.commands.length,
+      totalBlocks: plan.blocks.length,
       currentLabel: "",
       fault: plan.ok ? undefined : plan.message,
     }));
@@ -145,7 +146,7 @@ export function App() {
       appendLog(`规划失败：${plan.message}`);
       return;
     }
-    if (plan.commands.length === 0) {
+    if (plan.blocks.length === 0) {
       appendLog("任务为空");
       return;
     }
@@ -155,13 +156,13 @@ export function App() {
         ...printTaskRef.current,
         running: true,
         stream: "running" as const,
-        totalBlocks: plan.commands.length,
+        totalBlocks: plan.blocks.length,
         fault: undefined,
       };
       printTaskRef.current = runningTask;
       setPrintTask(runningTask);
-      appendLog(`开始帧协议任务：${plan.commands.length} commands`);
-      await runPlannedCommands(plan.commands);
+      appendLog(`开始块流任务：${plan.blocks.length} blocks`);
+      await runPlannedBlocks(plan.blocks);
       appendLog("块流任务完成");
       const nextStatus = await client.status();
       setStatus(nextStatus);
@@ -170,7 +171,7 @@ export function App() {
       setPrintTask((task) => ({ ...task, running: false, stream: task.stream === "unknown" ? "unknown" : "fault", fault: message }));
       appendLog(message);
     } finally {
-      activeCommandIdRef.current = undefined;
+      activeBlockIdRef.current = undefined;
     }
   }
 
@@ -185,38 +186,48 @@ export function App() {
     appendLog(`块流已连接 ${host}:7777`);
   }
 
-  async function runPlannedCommands(commands: PlannedPrimitiveCommand[]) {
-    for (let index = 0; index < commands.length; index += 1) {
-      const planned = commands[index];
+  async function runPlannedBlocks(blocks: PlannedRemoteMotionBlock[]) {
+    for (let index = 0; index < blocks.length; index += 1) {
+      const planned = blocks[index];
       if (!printTaskRef.current.running) {
         throw new Error("任务已取消");
       }
-      activeCommandIdRef.current = planned.commandId;
+      activeBlockIdRef.current = planned.blockId;
       setPrintTask((task) => ({
         ...task,
         currentIndex: index + 1,
-        currentLabel: commandLabel(planned),
+        currentLabel: blockLabel(planned),
       }));
-      const ack = await streamClient.sendPrimitive(planned.command);
-      if (!ack.ok && !ack.accepted) {
-        throw new Error(`Command rejected: ${ack.code ?? "rejected"} ${ack.message ?? ""}`.trim());
+      const ack = await streamClient.sendExecBlock(planned.blockId, planned.block);
+      if (!ack.ok || !ack.accepted) {
+        throw new Error(`Block rejected: ${ack.code ?? "rejected"} ${ack.message ?? ""}`.trim());
       }
-      await waitForCommandDone(planned.commandId);
-      activeCommandIdRef.current = undefined;
+      await waitForBlockDone(planned);
+      activeBlockIdRef.current = undefined;
     }
     setPrintTask((task) => ({ ...task, running: false, stream: "connected", currentLabel: "" }));
   }
 
-  function waitForCommandDone(commandId: string): Promise<void> {
+  function waitForBlockDone(planned: PlannedRemoteMotionBlock): Promise<void> {
     return new Promise((resolve, reject) => {
-      const unsubscribe = streamClient.onMessage((message) => {
-        if (message.type === "done" && message.id === commandId) {
-          unsubscribe();
+      let unsubscribe = () => {};
+      let timeout: ReturnType<typeof setTimeout>;
+      const cleanup = () => {
+        clearTimeout(timeout);
+        unsubscribe();
+      };
+      timeout = setTimeout(() => {
+        cleanup();
+        reject(new Error(`Block timed out: ${planned.blockId}`));
+      }, blockDoneTimeoutMs(planned));
+      unsubscribe = streamClient.onMessage((message) => {
+        if (message.type === "block_done" && message.blockId === planned.blockId) {
+          cleanup();
           resolve();
           return;
         }
         if (message.type === "fault") {
-          unsubscribe();
+          cleanup();
           reject(new Error(`${message.code}: ${message.message}`));
         }
       });
@@ -224,8 +235,8 @@ export function App() {
   }
 
   function handleBlockStreamEvent(message: BlockStreamEventMessage) {
-    if (message.type === "done") {
-      appendLog(`Done ${message.id}${message.durationMs !== undefined ? ` ${message.durationMs}ms` : ""}`);
+    if (message.type === "block_done") {
+      appendLog(`Block done ${message.blockId}${message.durationMs !== undefined ? ` ${message.durationMs}ms` : ""}`);
       if (message.currentPoint) {
         setStatus((current) => ({
           ...current,
@@ -286,7 +297,7 @@ export function App() {
       setPrintTask((task) => ({
         ...task,
         running: false,
-        stream: fault.code === "disconnect" && activeCommandIdRef.current ? "unknown" : "fault",
+        stream: fault.code === "disconnect" && activeBlockIdRef.current ? "unknown" : "fault",
         fault: text,
       }));
       appendLog(text);
@@ -625,9 +636,30 @@ function deviceUrlToHost(deviceUrl: string): string {
   }
 }
 
-function commandLabel(command: PlannedPrimitiveCommand): string {
-  const suffix = command.targetKeyLabel ? ` ${command.targetKeyLabel}` : "";
-  return `${command.op}${suffix}`;
+function blockLabel(block: PlannedRemoteMotionBlock): string {
+  const suffix = block.targetKeyLabel ? ` ${block.targetKeyLabel}` : "";
+  return `${block.kind}${suffix}`;
+}
+
+function blockDoneTimeoutMs(planned: PlannedRemoteMotionBlock): number {
+  const block = planned.block;
+  const paddingMs = 3000;
+  if (block.kind === "move_xy" && block.profile?.timeoutMs) {
+    return block.profile.timeoutMs + paddingMs;
+  }
+  if (block.kind === "wait") {
+    return block.durationMs + paddingMs;
+  }
+  if (block.kind === "servo_press" || block.kind === "servo_release") {
+    return 5000;
+  }
+  if (block.kind === "line_feed") {
+    return 30000;
+  }
+  if (block.kind === "character_release") {
+    return 10000;
+  }
+  return 30000;
 }
 
 function TaskStatusPanel({ status, logLines, printTask }: { status: DeviceStatus; logLines: string[]; printTask: PrintTaskState }) {
@@ -732,6 +764,8 @@ function motorRoleLabel(motor: MotorState): string {
       return "Y右";
     case "line_feed":
       return "走纸";
+    case "press":
+      return "按压";
     case "x":
     default:
       return "X";

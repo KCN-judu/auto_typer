@@ -9,7 +9,6 @@ import type {
   AckMessage,
   BlockStreamCommandMessage,
   BlockStreamEventMessage,
-  PrimitiveCommand,
 } from "./device-link.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -229,14 +228,13 @@ function sendBlockStreamMessage(message: BlockStreamCommandMessage): Promise<Ack
   if (!deviceLink) {
     return Promise.reject(new Error("Block stream is not connected"));
   }
-  if (message.type !== "command") {
-    return Promise.reject(new Error("Only primitive commands can be sent through blockStream:send"));
+  if (!["exec_block", "cancel", "reset_fault", "probe", "ping"].includes(message.type)) {
+    return Promise.reject(new Error("Unsupported block stream message type"));
   }
-  const command = message as PrimitiveCommand;
-  if (typeof command.id !== "string" || command.id.length === 0) {
-    return Promise.reject(new Error("Block stream command id is required"));
+  if (typeof message.id !== "string" || message.id.length === 0) {
+    return Promise.reject(new Error("Block stream message id is required"));
   }
-  return deviceLink.sendCommand(command);
+  return deviceLink.sendCommand(message);
 }
 
 ipcMain.handle("store:read", async () => readStore());

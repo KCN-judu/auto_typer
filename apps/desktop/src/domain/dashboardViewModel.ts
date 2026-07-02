@@ -215,6 +215,7 @@ function roleLabel(role: MotorRole): string {
     case "y_left": return "Y-left";
     case "y_right": return "Y-right";
     case "line_feed": return "LineFeed";
+    case "press": return "Press";
     default: return role;
   }
 }

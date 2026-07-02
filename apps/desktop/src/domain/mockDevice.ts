@@ -74,6 +74,7 @@ export const mockStatus: DeviceStatus = {
     mockMotor(2, "y_left"),
     mockMotor(3, "y_right"),
     mockMotor(4, "line_feed"),
+    mockMotor(5, "press"),
   ],
 };
 

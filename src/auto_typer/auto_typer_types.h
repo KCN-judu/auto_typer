@@ -61,6 +61,7 @@ enum class MotorRole : uint8_t {
   YLeft,
   YRight,
   LineFeed,
+  Press,
 };
 
 enum class MotorReadiness : uint8_t {
@@ -89,6 +90,7 @@ struct AxisTopology {
   uint8_t yLeftMotorId;
   uint8_t yRightMotorId;
   uint8_t lineFeedMotorId;
+  uint8_t pressMotorId;
 };
 
 struct MotionCalibration {
@@ -248,11 +250,36 @@ struct MotionBlock {
   uint16_t waitMs;
 };
 
-struct SubmitRemoteCommandResult {
+enum class RemoteMotionBlockKind : uint8_t {
+  MoveXY,
+  ServoPress,
+  ServoRelease,
+  CharacterRelease,
+  LineFeed,
+  Wait,
+};
+
+struct RemoteMotionProfile {
+  bool hasRpm;
+  uint16_t rpm;
+  bool hasAccelRaw;
+  uint8_t accelRaw;
+  bool hasTimeoutMs;
+  uint32_t timeoutMs;
+};
+
+struct RemoteMotionBlock {
+  RemoteMotionBlockKind kind;
+  float dxMm;
+  float dyMm;
+  uint16_t durationMs;
+  RemoteMotionProfile profile;
+};
+
+struct SubmitRemoteBlockResult {
   bool accepted;
-  const char* code;
-  const char* message;
-  bool duplicateCompleted;
+  const char* rejectionCode;
+  const char* rejectionMessage;
 };
 
 struct MotorState {

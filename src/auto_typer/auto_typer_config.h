@@ -42,7 +42,7 @@ inline TypingConfig defaultTypingConfig() {
   config.servo.settleMs = 80;
   config.servo.semantics = {ServoMotion::Reverse, ServoMotion::Forward};
 
-  config.topology = {1, 2, 3, 4};
+  config.topology = {1, 2, 3, 4, 5};
   config.calibration = {2.0f, 20, 3200};
 
   config.motionRuntime = defaultMotionRuntimeConfig();

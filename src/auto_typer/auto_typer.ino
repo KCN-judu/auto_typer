@@ -11,7 +11,7 @@
 #include "hal_display.h"
 #include "hal_servo_press.h"
 #include "http_control_server.h"
-#include "transport/DesktopLinkServer.h"
+#include "transport/BlockCommandServer.h"
 
 namespace {
 
@@ -39,7 +39,7 @@ AutoTyperApplication gApp(kConfig,
                           gTrace,
                           Serial);
 HttpControlServer gHttp(kConfig, gApp, Serial);
-DesktopLinkServer gLink(kConfig, gApp, Serial);
+BlockCommandServer gBlockServer(kConfig, gApp, Serial);
 
 }  // namespace
 
@@ -49,12 +49,12 @@ void setup() {
   gApp.setup();
   WiFi.setSleep(false);
   gHttp.begin();
-  gLink.begin();
+  gBlockServer.begin();
 }
 
 void loop() {
-  gLink.tick();
   gHttp.tick();
+  gBlockServer.tick();
   gApp.tick();
   delay(1);
 }

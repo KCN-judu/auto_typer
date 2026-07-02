@@ -403,6 +403,7 @@ class HttpControlServer {
       config_.topology.yLeftMotorId,
       config_.topology.yRightMotorId,
       config_.topology.lineFeedMotorId,
+      config_.topology.pressMotorId,
     };
     for (uint8_t id : ids) {
       const MotorState state = app_.motorState(id);
@@ -565,6 +566,8 @@ class HttpControlServer {
         return "y_right";
       case MotorRole::LineFeed:
         return "line_feed";
+      case MotorRole::Press:
+        return "press";
       case MotorRole::X:
       default:
         return "x";

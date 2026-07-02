@@ -14,7 +14,6 @@
 #include "keymap_store.h"
 #include "motion/MotionExecutor.h"
 #include "motion/MotionPlanner.h"
-#include "protocol/DesktopCommand.h"
 #include "typing_logic.h"
 
 namespace auto_typer {
@@ -61,12 +60,12 @@ class AutoTyperApplication {
         faulted_(false),
         faultCode_(""),
         faultMessage_(""),
-        remoteBlock_{},
         remoteCurrentPoint_(config.homePoint),
         currentRemoteCommandId_{},
+        startedRemoteBlockId_{},
         lastCompletedRemoteCommandId_{},
-        lastCompletedRemoteOp_(""),
         remoteCommandActive_(false),
+        remoteBlockStartedPending_(false),
         remoteDoneNotified_(false),
         remoteFaultNotified_(false),
         remoteCommandStartedAtMs_(0),
@@ -122,13 +121,24 @@ class AutoTyperApplication {
     }
 
     if (jobState_ == JobState::Queued) {
-      if (!executor_.start(activeBlocks_.blocks, activeBlocks_.count)) {
+      const MachinePointMm startPoint = remoteCommandActive_ ? remoteCurrentPoint_ : MachinePointMm{NAN, NAN};
+      if (!executor_.start(activeBlocks_.blocks, activeBlocks_.count, startPoint)) {
         setFault("executor_busy", "Motion executor rejected job");
         jobState_ = JobState::Failed;
+        if (remoteCommandActive_) {
+          remoteFaultNotified_ = true;
+          remoteCommandActive_ = false;
+          startedRemoteBlockId_[0] = '\0';
+        }
         showError();
         return;
       }
       jobState_ = JobState::Running;
+      if (remoteCommandActive_) {
+        remoteBlockStartedPending_ = true;
+        copyString(startedRemoteBlockId_, sizeof(startedRemoteBlockId_), currentRemoteCommandId_);
+        remoteCommandStartedAtMs_ = millis();
+      }
       display_.showStatus(DisplayStatus::Printing);
     }
 
@@ -149,6 +159,8 @@ class AutoTyperApplication {
         remoteFaultNotified_ = true;
       }
       remoteCommandActive_ = false;
+      remoteBlockStartedPending_ = false;
+      startedRemoteBlockId_[0] = '\0';
       showError();
     }
 
@@ -164,11 +176,14 @@ class AutoTyperApplication {
         currentRemoteCommandId_[0] = '\0';
         remoteCommandActive_ = false;
         remoteDoneNotified_ = true;
+        startedRemoteBlockId_[0] = '\0';
         display_.showStatus(DisplayStatus::Idle);
       } else if (executor_.cancelled()) {
         jobState_ = JobState::Cancelled;
         currentRemoteCommandId_[0] = '\0';
         remoteCommandActive_ = false;
+        remoteBlockStartedPending_ = false;
+        startedRemoteBlockId_[0] = '\0';
         display_.showStatus(DisplayStatus::Idle);
       }
     }
@@ -257,69 +272,32 @@ class AutoTyperApplication {
     }
     display_.showStatus(DisplayStatus::Idle);
     remoteCommandActive_ = false;
+    remoteBlockStartedPending_ = false;
+    startedRemoteBlockId_[0] = '\0';
     return true;
   }
 
-  SubmitRemoteCommandResult submitRemoteCommand(const DesktopCommand& command) {
-    SubmitRemoteCommandResult result{false, "", "", false};
-    if (strcmp(command.id, currentRemoteCommandId_) == 0 && remoteCommandActive_) {
-      result.accepted = true;
-      result.code = "duplicate_running";
-      result.message = "Command is already running";
-      return result;
-    }
-    if (strcmp(command.id, lastCompletedRemoteCommandId_) == 0 && lastCompletedRemoteCommandId_[0] != '\0') {
-      result.accepted = true;
-      result.code = "duplicate_completed";
-      result.message = "Command already completed";
-      result.duplicateCompleted = true;
-      remoteDoneNotified_ = true;
-      return result;
-    }
-
-    if (command.op == DesktopCommandOp::Cancel) {
-      cancelCurrentJob();
-      finishImmediateRemoteCommand(command);
-      result.accepted = true;
-      return result;
-    }
-    if (command.op == DesktopCommandOp::ResetFault) {
-      const bool ok = resetFault();
-      result.accepted = ok;
-      result.code = ok ? "" : "reset_rejected";
-      result.message = ok ? "" : "Fault reset rejected";
-      if (ok) {
-        finishImmediateRemoteCommand(command);
-      }
-      return result;
-    }
-    if (command.op == DesktopCommandOp::EmergencyStop) {
-      emergencyStop();
-      finishImmediateRemoteCommand(command);
-      remoteFaultNotified_ = true;
-      result.accepted = true;
-      return result;
-    }
-
+  SubmitRemoteBlockResult submitRemoteBlock(const RemoteMotionBlock& block, const char* blockId) {
+    SubmitRemoteBlockResult result{false, "", ""};
     if (faulted_ || executor_.faulted()) {
-      result.code = "faulted";
-      result.message = faultMessage_;
+      result.rejectionCode = "faulted";
+      result.rejectionMessage = faultMessage_;
       return result;
     }
     if (jobState_ == JobState::Queued || jobState_ == JobState::Planning || jobState_ == JobState::Running ||
         jobState_ == JobState::Cancelling || remoteCommandActive_) {
-      result.code = "busy";
-      result.message = "Device is already executing a command";
+      result.rejectionCode = "device_busy";
+      result.rejectionMessage = "Device is already executing a job";
       return result;
     }
     if (!motionTransportReady()) {
-      result.code = "device_not_ready";
-      result.message = motionNotReadyMessage();
+      result.rejectionCode = "motion_transport_not_ready";
+      result.rejectionMessage = motionNotReadyMessage();
       return result;
     }
 
     MotionBlock motionBlock{};
-    if (!convertRemoteCommand(command, motionBlock, result)) {
+    if (!convertRemoteBlock(block, motionBlock, result)) {
       return result;
     }
 
@@ -329,33 +307,45 @@ class AutoTyperApplication {
     single.blocks[0] = motionBlock;
     const RequiredActuatorCheck required = checkRequiredActuators(single);
     if (!required.ready) {
-      result.code = "device_not_ready";
-      result.message = required.message;
+      result.rejectionCode = required.code;
+      result.rejectionMessage = required.message;
       return result;
     }
 
-    remoteBlock_ = motionBlock;
-    copyString(currentRemoteCommandId_, sizeof(currentRemoteCommandId_), command.id);
-    lastCompletedRemoteOp_ = commandOpText(command.op);
+    activeBlocks_ = single;
+    copyString(currentRemoteCommandId_, sizeof(currentRemoteCommandId_), blockId);
+    startedRemoteBlockId_[0] = '\0';
+    remoteBlockStartedPending_ = false;
     remoteDoneNotified_ = false;
     remoteFaultNotified_ = false;
     remoteCommandStartedAtMs_ = 0;
     lastRemoteCommandDurationMs_ = 0;
-    if (!executor_.start(&remoteBlock_, 1, remoteCurrentPoint_)) {
-      currentRemoteCommandId_[0] = '\0';
-      result.code = "busy";
-      result.message = "Motion executor rejected command";
-      return result;
-    }
     remoteCommandActive_ = true;
-    jobState_ = JobState::Running;
+    jobState_ = JobState::Queued;
     ++jobId_;
     activeTextLength_ = 0;
     activePlan_ = TypingPlan{};
-    activeBlocks_ = single;
-    display_.showStatus(DisplayStatus::Printing);
     result.accepted = true;
     return result;
+  }
+
+  bool consumeRemoteBlockStarted(char* outBlockId, size_t outBlockIdSize) {
+    if (!remoteBlockStartedPending_) {
+      return false;
+    }
+    remoteBlockStartedPending_ = false;
+    copyString(outBlockId, outBlockIdSize, startedRemoteBlockId_);
+    return true;
+  }
+
+  bool consumeRemoteBlockDone(char* outBlockId, size_t outBlockIdSize, uint32_t& durationMs) {
+    if (!remoteDoneNotified_) {
+      return false;
+    }
+    remoteDoneNotified_ = false;
+    copyString(outBlockId, outBlockIdSize, lastCompletedRemoteCommandId_);
+    durationMs = lastRemoteCommandDurationMs_;
+    return true;
   }
 
   bool emergencyStop() {
@@ -563,18 +553,6 @@ class AutoTyperApplication {
     return remoteCommandActive_ ? executor_.currentPoint() : remoteCurrentPoint_;
   }
 
-  bool consumeRemoteDone(char* outCommandId, size_t outCommandIdSize, const char*& op, uint32_t& durationMs, MachinePointMm& point) {
-    if (!remoteDoneNotified_) {
-      return false;
-    }
-    remoteDoneNotified_ = false;
-    copyString(outCommandId, outCommandIdSize, lastCompletedRemoteCommandId_);
-    op = lastCompletedRemoteOp_;
-    durationMs = lastRemoteCommandDurationMs_;
-    point = remoteCurrentPoint_;
-    return true;
-  }
-
   bool consumeRemoteFault(char* outCommandId, size_t outCommandIdSize, const char*& code, const char*& message) {
     if (!remoteFaultNotified_) {
       return false;
@@ -640,30 +618,32 @@ class AutoTyperApplication {
     faultMessage_ = message;
   }
 
-  bool convertRemoteCommand(const DesktopCommand& command, MotionBlock& block, SubmitRemoteCommandResult& result) const {
+  bool convertRemoteBlock(const RemoteMotionBlock& remoteBlock,
+                          MotionBlock& block,
+                          SubmitRemoteBlockResult& result) const {
     block = MotionBlock{};
     block.profile = defaultMotionProfile(config_);
-    block.profile.maxRpm = command.profile.hasRpm ? command.profile.rpm : kRemoteDefaultRpm;
+    block.profile.maxRpm = remoteBlock.profile.hasRpm ? remoteBlock.profile.rpm : kRemoteDefaultRpm;
     block.profile.acceleration =
-        command.profile.hasAccelRaw ? command.profile.accelRaw : kRemoteDefaultAccelerationRaw;
+        remoteBlock.profile.hasAccelRaw ? remoteBlock.profile.accelRaw : kRemoteDefaultAccelerationRaw;
     block.profile.timeoutMs =
-        command.profile.hasTimeoutMs ? command.profile.timeoutMs : config_.motionRuntime.motionTimeoutMs;
+        remoteBlock.profile.hasTimeoutMs ? remoteBlock.profile.timeoutMs : config_.motionRuntime.motionTimeoutMs;
     block.targetMm = remoteCurrentPoint_;
     if (block.profile.maxRpm == 0 || block.profile.acceleration == 0 || block.profile.timeoutMs == 0) {
-      result.code = "invalid_command";
-      result.message = "Invalid remote command profile";
+      result.rejectionCode = "invalid_block";
+      result.rejectionMessage = "Invalid remote block profile";
       return false;
     }
 
-    switch (command.op) {
-      case DesktopCommandOp::MoveTo: {
-        if (!isfinite(command.xMm) || !isfinite(command.yMm)) {
-          result.code = "invalid_command";
-          result.message = "Move target must be finite";
+    switch (remoteBlock.kind) {
+      case RemoteMotionBlockKind::MoveXY: {
+        if (!isfinite(remoteBlock.dxMm) || !isfinite(remoteBlock.dyMm)) {
+          result.rejectionCode = "invalid_block";
+          result.rejectionMessage = "move_xy delta must be finite";
           return false;
         }
         const MachinePointMm current = remoteCurrentPoint_;
-        const MachinePointMm target{command.xMm, command.yMm};
+        const MachinePointMm target{current.xMm + remoteBlock.dxMm, current.yMm + remoteBlock.dyMm};
         block.kind = MotionBlockKind::MoveXY;
         block.targetMm = target;
         block.deltaSteps = xyDeltaSteps(current, target, config_.calibration);
@@ -671,15 +651,15 @@ class AutoTyperApplication {
                                                                                         : config_.yProfile.settleMs;
         return true;
       }
-      case DesktopCommandOp::Press:
+      case RemoteMotionBlockKind::ServoPress:
         block.kind = MotionBlockKind::ServoPress;
-        block.waitMs = command.durationMs > 0 ? static_cast<uint16_t>(command.durationMs) : config_.servo.pressMs;
+        block.waitMs = config_.servo.pressMs;
         return true;
-      case DesktopCommandOp::Release:
+      case RemoteMotionBlockKind::ServoRelease:
         block.kind = MotionBlockKind::ServoRelease;
-        block.waitMs = command.durationMs > 0 ? static_cast<uint16_t>(command.durationMs) : config_.servo.releaseMs;
+        block.waitMs = config_.servo.releaseMs;
         return true;
-      case DesktopCommandOp::CharacterRelease:
+      case RemoteMotionBlockKind::CharacterRelease:
         block.kind = MotionBlockKind::CharacterRelease;
         block.deltaSteps.lineFeed =
             signedStepsForDirection(config_.lineFeed.characterReleaseSteps, config_.lineFeed.releaseDirection);
@@ -687,7 +667,7 @@ class AutoTyperApplication {
         block.profile.acceleration = config_.lineFeed.acceleration;
         block.profile.settleMs = config_.lineFeed.characterReleaseSettleMs;
         return true;
-      case DesktopCommandOp::LineFeed:
+      case RemoteMotionBlockKind::LineFeed:
         block.kind = MotionBlockKind::LineFeed;
         block.deltaSteps.lineFeed =
             signedStepsForDirection(config_.lineFeed.returnTotalSteps, config_.lineFeed.returnDirection);
@@ -696,31 +676,32 @@ class AutoTyperApplication {
         block.profile.settleMs = config_.lineFeed.settleMs;
         block.targetMm = {config_.homePoint.xMm, remoteCurrentPoint_.yMm};
         return true;
-      case DesktopCommandOp::Wait:
-        if (command.durationMs > 65535) {
-          result.code = "invalid_command";
-          result.message = "Wait duration is too large";
-          return false;
-        }
+      case RemoteMotionBlockKind::Wait:
         block.kind = MotionBlockKind::Wait;
-        block.waitMs = static_cast<uint16_t>(command.durationMs);
+        block.waitMs = remoteBlock.durationMs;
         return true;
-      case DesktopCommandOp::Cancel:
-      case DesktopCommandOp::ResetFault:
-      case DesktopCommandOp::EmergencyStop:
-        break;
     }
-    result.code = "invalid_command";
-    result.message = "Unsupported motion command op";
+    result.rejectionCode = "invalid_block";
+    result.rejectionMessage = "Unsupported remote block kind";
     return false;
   }
 
-  void finishImmediateRemoteCommand(const DesktopCommand& command) {
-    copyString(lastCompletedRemoteCommandId_, sizeof(lastCompletedRemoteCommandId_), command.id);
-    lastCompletedRemoteOp_ = commandOpText(command.op);
-    lastRemoteCommandDurationMs_ = 0;
-    currentRemoteCommandId_[0] = '\0';
-    remoteDoneNotified_ = true;
+  static const char* remoteBlockKindText(RemoteMotionBlockKind kind) {
+    switch (kind) {
+      case RemoteMotionBlockKind::MoveXY:
+        return "move_xy";
+      case RemoteMotionBlockKind::ServoPress:
+        return "servo_press";
+      case RemoteMotionBlockKind::ServoRelease:
+        return "servo_release";
+      case RemoteMotionBlockKind::CharacterRelease:
+        return "character_release";
+      case RemoteMotionBlockKind::LineFeed:
+        return "line_feed";
+      case RemoteMotionBlockKind::Wait:
+      default:
+        return "wait";
+    }
   }
 
   static void copyString(char* out, size_t outSize, const char* value) {
@@ -741,6 +722,7 @@ class AutoTyperApplication {
       config_.topology.yLeftMotorId,
       config_.topology.yRightMotorId,
       config_.topology.lineFeedMotorId,
+      config_.topology.pressMotorId,
     };
     const uint32_t nowMs = millis();
     for (uint8_t motor : motors) {
@@ -876,6 +858,9 @@ class AutoTyperApplication {
     if (motorId == config_.topology.lineFeedMotorId) {
       return MotorRole::LineFeed;
     }
+    if (motorId == config_.topology.pressMotorId) {
+      return MotorRole::Press;
+    }
     return MotorRole::X;
   }
 
@@ -903,6 +888,9 @@ class AutoTyperApplication {
     }
     if (motorId == config_.topology.lineFeedMotorId) {
       return 3;
+    }
+    if (motorId == config_.topology.pressMotorId) {
+      return 4;
     }
     return -1;
   }
@@ -940,17 +928,17 @@ class AutoTyperApplication {
   bool faulted_;
   const char* faultCode_;
   const char* faultMessage_;
-  MotionBlock remoteBlock_;
   MachinePointMm remoteCurrentPoint_;
   char currentRemoteCommandId_[49];
+  char startedRemoteBlockId_[49];
   char lastCompletedRemoteCommandId_[49];
-  const char* lastCompletedRemoteOp_;
   bool remoteCommandActive_;
+  bool remoteBlockStartedPending_;
   bool remoteDoneNotified_;
   bool remoteFaultNotified_;
   uint32_t remoteCommandStartedAtMs_;
   uint32_t lastRemoteCommandDurationMs_;
-  static constexpr uint8_t kTrackedMotorCount = 4;
+  static constexpr uint8_t kTrackedMotorCount = 5;
   static constexpr uint32_t kFeedbackFreshMs = 1500;
   static constexpr uint32_t kProbeOfflineMs = 250;
   static constexpr uint32_t kRecentAlertWindowMs = 5000;

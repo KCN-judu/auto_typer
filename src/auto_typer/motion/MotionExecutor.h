@@ -138,6 +138,7 @@ class MotionExecutor {
     driver_.stopNow(config_.topology.yLeftMotorId);
     driver_.stopNow(config_.topology.yRightMotorId);
     driver_.stopNow(config_.topology.lineFeedMotorId);
+    driver_.stopNow(config_.topology.pressMotorId);
   }
 
   bool idle() const {
