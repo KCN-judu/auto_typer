@@ -16,6 +16,7 @@ type AckMessage = {
   v: 1;
   type: "ack";
   id: string;
+  ok: boolean;
   accepted: boolean;
   code?: string;
   message?: string;

@@ -172,84 +172,91 @@ export interface ProtocolTraceResponse {
   };
 }
 
-export type RemoteMotionBlock =
+export type PrimitiveCommandProfile = {
+  rpm?: number;
+  accelRaw?: number;
+  timeoutMs?: number;
+};
+
+export type PrimitiveCommand =
   | {
-      kind: "move_xy";
-      dxMm: number;
-      dyMm: number;
-      profile?: {
-        rpm?: number;
-        accelRaw?: number;
-        timeoutMs?: number;
-      };
+      v: 1;
+      type: "command";
+      id: string;
+      op: "move_to";
+      xMm: number;
+      yMm: number;
+      profile?: PrimitiveCommandProfile;
     }
-  | { kind: "servo_press" }
-  | { kind: "servo_release" }
-  | { kind: "character_release" }
-  | { kind: "line_feed" }
-  | { kind: "wait"; durationMs: number };
+  | {
+      v: 1;
+      type: "command";
+      id: string;
+      op: "wait";
+      durationMs: number;
+    }
+  | {
+      v: 1;
+      type: "command";
+      id: string;
+      op: "press" | "release";
+      durationMs?: number;
+    }
+  | {
+      v: 1;
+      type: "command";
+      id: string;
+      op: "character_release" | "line_feed" | "cancel" | "reset_fault" | "emergency_stop";
+    };
 
 export type HelloMessage = {
   v: 1;
-  id: string;
   type: "hello";
   client: "desktop";
 };
 
-export type ExecBlockMessage = {
+export type HelloAckMessage = {
   v: 1;
-  id: string;
-  type: "exec_block";
-  blockId: string;
-  block: RemoteMotionBlock;
-};
-
-export type CancelMessage = {
-  v: 1;
-  id: string;
-  type: "cancel";
-};
-
-export type ResetFaultMessage = {
-  v: 1;
-  id: string;
-  type: "reset_fault";
-};
-
-export type ProbeMessage = {
-  v: 1;
-  id: string;
-  type: "probe";
+  type: "hello_ack";
+  snapshot: LinkSnapshot;
 };
 
 export type AckMessage = {
   v: 1;
   type: "ack";
   id: string;
+  ok: boolean;
   accepted: boolean;
   code?: string;
   message?: string;
 };
 
-export type BlockStartedMessage = {
+export type DoneMessage = {
   v: 1;
-  type: "block_started";
-  blockId: string;
-};
-
-export type BlockDoneMessage = {
-  v: 1;
-  type: "block_done";
-  blockId: string;
+  type: "done";
+  id: string;
+  op?: PrimitiveCommand["op"];
   durationMs?: number;
+  currentPoint?: MachinePointMm;
 };
 
 export type BlockFaultMessage = {
   v: 1;
   type: "fault";
-  blockId?: string;
+  id?: string;
   code: string;
   message: string;
+};
+
+export type LinkSnapshot = {
+  mode: DeviceMode;
+  currentCommandId?: string;
+  lastCompletedCommandId?: string;
+  currentPoint: MachinePointMm;
+  fault?: {
+    code: string;
+    message: string;
+  };
 };
 
 export type TelemetryMessage = {
@@ -257,6 +264,9 @@ export type TelemetryMessage = {
   type: "telemetry";
   executor: "idle" | "running" | "faulted";
   jobState: JobStatus["state"];
+  currentCommandId?: string;
+  lastCompletedCommandId?: string;
+  currentPoint: MachinePointMm;
   fault?: {
     code: string;
     message: string;
@@ -272,19 +282,32 @@ export type TelemetryMessage = {
   }>;
 };
 
-export type BlockStreamCommandMessage =
-  | HelloMessage
-  | ExecBlockMessage
-  | CancelMessage
-  | ResetFaultMessage
-  | ProbeMessage;
+export type SnapshotMessage = {
+  v: 1;
+  type: "snapshot";
+  snapshot: LinkSnapshot;
+};
+
+export type PingMessage = {
+  v: 1;
+  type: "ping";
+};
+
+export type PongMessage = {
+  v: 1;
+  type: "pong";
+};
+
+export type BlockStreamCommandMessage = HelloMessage | PrimitiveCommand | PingMessage;
 
 export type BlockStreamEventMessage =
   | AckMessage
-  | BlockStartedMessage
-  | BlockDoneMessage
+  | HelloAckMessage
+  | DoneMessage
   | BlockFaultMessage
-  | TelemetryMessage;
+  | TelemetryMessage
+  | SnapshotMessage
+  | PongMessage;
 
 export type BlockStreamMessage =
   | BlockStreamCommandMessage

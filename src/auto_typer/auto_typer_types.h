@@ -248,36 +248,11 @@ struct MotionBlock {
   uint16_t waitMs;
 };
 
-enum class RemoteMotionBlockKind : uint8_t {
-  MoveXY,
-  ServoPress,
-  ServoRelease,
-  CharacterRelease,
-  LineFeed,
-  Wait,
-};
-
-struct RemoteMotionProfile {
-  bool hasRpm;
-  bool hasAccelRaw;
-  bool hasTimeoutMs;
-  uint16_t rpm;
-  uint8_t accelRaw;
-  uint32_t timeoutMs;
-};
-
-struct RemoteMotionBlock {
-  RemoteMotionBlockKind kind;
-  float dxMm;
-  float dyMm;
-  uint32_t durationMs;
-  RemoteMotionProfile profile;
-};
-
-struct SubmitRemoteBlockResult {
+struct SubmitRemoteCommandResult {
   bool accepted;
-  const char* rejectionCode;
-  const char* rejectionMessage;
+  const char* code;
+  const char* message;
+  bool duplicateCompleted;
 };
 
 struct MotorState {

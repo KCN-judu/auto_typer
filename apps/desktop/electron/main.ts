@@ -2,14 +2,19 @@ import { app, BrowserWindow, ipcMain } from "electron";
 import http from "node:http";
 import https from "node:https";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import net from "node:net";
 import path from "node:path";
 import { fileURLToPath, URL } from "node:url";
+import { DeviceLink } from "./device-link.js";
+import type {
+  AckMessage,
+  BlockStreamCommandMessage,
+  BlockStreamEventMessage,
+  PrimitiveCommand,
+} from "./device-link.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = process.env.VITE_DEV_SERVER_URL !== undefined || !app.isPackaged;
 const networkRequestTimeoutMs = 10000;
-const blockStreamAckTimeoutMs = 5000;
 
 type StoreShape = {
   lastDeviceUrl?: string;
@@ -24,30 +29,12 @@ type NetworkResponse = {
   contentType: string;
 };
 
-type BlockStreamMessage = {
-  v: 1;
-  id?: string;
-  type: string;
-  accepted?: boolean;
-  [key: string]: unknown;
-};
-
-type PendingBlockCommand = {
-  resolve: (message: BlockStreamMessage) => void;
-  reject: (error: Error) => void;
-  timer: NodeJS.Timeout;
-  type: string;
-  blockId?: string;
-};
-
 const defaultStore: StoreShape = {
   recentJobs: [],
 };
 
 let mainWindowRef: BrowserWindow | undefined;
-let blockSocket: net.Socket | undefined;
-let blockLineBuffer = "";
-const pendingBlockCommands = new Map<string, PendingBlockCommand>();
+let deviceLink: DeviceLink | undefined;
 
 function storePath() {
   return path.join(app.getPath("userData"), "controller-store.json");
@@ -215,128 +202,41 @@ async function createWindow() {
   }
 }
 
-function emitBlockStreamMessage(message: BlockStreamMessage) {
+function emitBlockStreamMessage(message: BlockStreamEventMessage) {
   mainWindowRef?.webContents.send("blockStream:message", message);
 }
 
-function rejectAllBlockCommands(error: Error) {
-  for (const [id, pending] of pendingBlockCommands) {
-    clearTimeout(pending.timer);
-    pending.reject(error);
-    pendingBlockCommands.delete(id);
-  }
-}
-
-function handleBlockStreamLine(line: string) {
-  if (line.trim().length === 0) {
-    return;
-  }
-  let message: BlockStreamMessage;
-  try {
-    message = JSON.parse(line) as BlockStreamMessage;
-  } catch {
-    emitBlockStreamMessage({ v: 1, type: "fault", code: "invalid_json", message: "Invalid block stream JSON" });
-    return;
-  }
-  if (message.type === "ack" && typeof message.id === "string") {
-    const pending = pendingBlockCommands.get(message.id);
-    if (pending) {
-      clearTimeout(pending.timer);
-      pending.resolve(message);
-      pendingBlockCommands.delete(message.id);
-    }
-  }
-  emitBlockStreamMessage(message);
-}
-
-function closeBlockSocket() {
-  if (blockSocket) {
-    blockSocket.removeAllListeners();
-    blockSocket.destroy();
-    blockSocket = undefined;
-  }
-  blockLineBuffer = "";
+function closeBlockStream() {
+  deviceLink?.close();
+  deviceLink = undefined;
 }
 
 async function connectBlockStream(host: string, port: number): Promise<void> {
-  closeBlockSocket();
-  await new Promise<void>((resolve, reject) => {
-    const socket = net.createConnection({ host, port });
-    blockSocket = socket;
-    socket.setEncoding("utf8");
-    socket.setNoDelay(true);
-    socket.setTimeout(0);
-    socket.once("connect", () => {
-      resolve();
-    });
-    socket.on("data", (chunk: string) => {
-      blockLineBuffer += chunk;
-      let newlineIndex = blockLineBuffer.indexOf("\n");
-      while (newlineIndex >= 0) {
-        const line = blockLineBuffer.slice(0, newlineIndex).replace(/\r$/, "");
-        blockLineBuffer = blockLineBuffer.slice(newlineIndex + 1);
-        handleBlockStreamLine(line);
-        newlineIndex = blockLineBuffer.indexOf("\n");
-      }
-      if (blockLineBuffer.length > 8192) {
-        blockLineBuffer = "";
-        emitBlockStreamMessage({ v: 1, type: "fault", code: "line_too_long", message: "Block stream line too long" });
-      }
-    });
-    socket.on("error", (error) => {
-      emitBlockStreamMessage({
-        v: 1,
-        type: "fault",
-        code: "socket_error",
-        message: error.message,
-      });
-      rejectAllBlockCommands(error);
-      reject(error);
-    });
-    socket.on("close", () => {
-      if (blockSocket === socket) {
-        blockSocket = undefined;
-      }
-      rejectAllBlockCommands(new Error("Block stream disconnected"));
-      emitBlockStreamMessage({ v: 1, type: "fault", code: "disconnect", message: "Block stream disconnected" });
-    });
+  closeBlockStream();
+  const link = new DeviceLink();
+  link.on("message", emitBlockStreamMessage);
+  link.on("disconnect", (error) => {
+    if (deviceLink === link) {
+      deviceLink = undefined;
+    }
+    emitBlockStreamMessage({ v: 1, type: "fault", code: "disconnect", message: error.message || "Block stream disconnected" });
   });
+  deviceLink = link;
+  await link.connect(host, port);
 }
 
-function sendBlockStreamMessage(message: BlockStreamMessage): Promise<BlockStreamMessage> {
-  if (!blockSocket || !blockSocket.writable) {
+function sendBlockStreamMessage(message: BlockStreamCommandMessage): Promise<AckMessage> {
+  if (!deviceLink) {
     return Promise.reject(new Error("Block stream is not connected"));
   }
-  if (typeof message.id !== "string" || message.id.length === 0) {
+  if (message.type !== "command") {
+    return Promise.reject(new Error("Only primitive commands can be sent through blockStream:send"));
+  }
+  const command = message as PrimitiveCommand;
+  if (typeof command.id !== "string" || command.id.length === 0) {
     return Promise.reject(new Error("Block stream command id is required"));
   }
-  if (message.type === "exec_block" && pendingBlockCommands.size > 0) {
-    return Promise.reject(new Error("Another block stream command is in flight"));
-  }
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      pendingBlockCommands.delete(message.id as string);
-      reject(new Error("Block stream ack timed out"));
-    }, blockStreamAckTimeoutMs);
-    pendingBlockCommands.set(message.id as string, {
-      resolve,
-      reject,
-      timer,
-      type: message.type,
-      blockId: typeof message.blockId === "string" ? message.blockId : undefined,
-    });
-    blockSocket!.write(`${JSON.stringify(message)}\n`, (error) => {
-      if (!error) {
-        return;
-      }
-      const pending = pendingBlockCommands.get(message.id as string);
-      if (pending) {
-        clearTimeout(pending.timer);
-        pendingBlockCommands.delete(message.id as string);
-      }
-      reject(error);
-    });
-  });
+  return deviceLink.sendCommand(command);
 }
 
 ipcMain.handle("store:read", async () => readStore());
@@ -360,12 +260,11 @@ ipcMain.handle("blockStream:connect", async (_event, request: { host: string; po
 });
 
 ipcMain.handle("blockStream:disconnect", async () => {
-  closeBlockSocket();
-  rejectAllBlockCommands(new Error("Block stream disconnected"));
+  closeBlockStream();
   return { connected: false };
 });
 
-ipcMain.handle("blockStream:send", async (_event, message: BlockStreamMessage) => sendBlockStreamMessage(message));
+ipcMain.handle("blockStream:send", async (_event, message: BlockStreamCommandMessage) => sendBlockStreamMessage(message));
 
 app.whenReady().then(createWindow);
 

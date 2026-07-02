@@ -1,9 +1,7 @@
 import type {
   AckMessage,
-  BlockStreamCommandMessage,
   BlockStreamEventMessage,
-  ExecBlockMessage,
-  RemoteMotionBlock,
+  PrimitiveCommand,
 } from "../../../../shared/protocol/auto-typer-protocol";
 
 export type BlockStreamConnection = {
@@ -27,10 +25,6 @@ export class BlockStreamClient {
         this.listeners.forEach((listener) => listener(message));
       });
     }
-    const ack = await this.sendCommand({ v: 1, id: this.nextId("hello"), type: "hello", client: "desktop" });
-    if (!ack.accepted) {
-      throw new Error(ack.message ?? ack.code ?? "Block stream hello rejected");
-    }
   }
 
   async disconnect(): Promise<void> {
@@ -44,30 +38,19 @@ export class BlockStreamClient {
     };
   }
 
-  async execBlock(blockId: string, block: RemoteMotionBlock): Promise<AckMessage> {
-    const message: ExecBlockMessage = {
-      v: 1,
-      id: this.nextId("block"),
-      type: "exec_block",
-      blockId,
-      block,
-    };
-    return this.sendCommand(message);
+  async sendPrimitive(command: PrimitiveCommand): Promise<AckMessage> {
+    return this.sendCommand(command);
   }
 
   async cancel(): Promise<AckMessage> {
-    return this.sendCommand({ v: 1, id: this.nextId("cancel"), type: "cancel" });
+    return this.sendCommand({ v: 1, id: this.nextId("cancel"), type: "command", op: "cancel" });
   }
 
   async resetFault(): Promise<AckMessage> {
-    return this.sendCommand({ v: 1, id: this.nextId("reset"), type: "reset_fault" });
+    return this.sendCommand({ v: 1, id: this.nextId("reset"), type: "command", op: "reset_fault" });
   }
 
-  async probe(): Promise<AckMessage> {
-    return this.sendCommand({ v: 1, id: this.nextId("probe"), type: "probe" });
-  }
-
-  private async sendCommand(message: BlockStreamCommandMessage): Promise<AckMessage> {
+  private async sendCommand(message: PrimitiveCommand): Promise<AckMessage> {
     const ack = await window.autoTyper?.blockStreamSend(message);
     if (!ack) {
       throw new Error("Block stream IPC is unavailable");

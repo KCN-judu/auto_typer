@@ -41,11 +41,7 @@ class MotionExecutor {
         lastCompletedBlock_(0),
         lastCompletedDurationMs_(0) {}
 
-  bool start(const MotionBlock* blocks, size_t count) {
-    return start(blocks, count, true);
-  }
-
-  bool start(const MotionBlock* blocks, size_t count, bool resetCurrentPoint) {
+  bool start(const MotionBlock* blocks, size_t count, MachinePointMm startPoint = {NAN, NAN}) {
     if (state_ == State::Running || state_ == State::Cancelling) {
       return false;
     }
@@ -53,7 +49,9 @@ class MotionExecutor {
     blockCount_ = count;
     currentBlock_ = 0;
     activeTextIndex_ = 0;
-    if (resetCurrentPoint) {
+    if (isfinite(startPoint.xMm) && isfinite(startPoint.yMm)) {
+      currentPoint_ = startPoint;
+    } else {
       currentPoint_ = config_.homePoint;
     }
     faultCode_ = "";
