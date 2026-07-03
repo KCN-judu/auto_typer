@@ -9,6 +9,9 @@ import type {
   MotorStopRequest,
   ProbeKeyRequest,
   ServoApplyRequest,
+  WifiConfigRequest,
+  WifiNetworksResponse,
+  WifiSetupStatusResponse,
 } from "../../../../shared/protocol/auto-typer-protocol";
 import { protocolRoutes } from "../../../../shared/protocol/auto-typer-protocol";
 import { isApiErrorBody } from "../../../../shared/protocol/schema";
@@ -51,6 +54,22 @@ export class DeviceClient {
 
   async canDiagnostics() {
     return this.getJson(protocolRoutes.canDiagnostics);
+  }
+
+  async wifiStatus(): Promise<WifiSetupStatusResponse> {
+    return this.getJson<WifiSetupStatusResponse>(protocolRoutes.wifiStatus);
+  }
+
+  async wifiNetworks(): Promise<WifiNetworksResponse> {
+    return this.getJson<WifiNetworksResponse>(protocolRoutes.wifiNetworks);
+  }
+
+  async configureWifi(request: WifiConfigRequest): Promise<WifiSetupStatusResponse> {
+    return this.postJson<WifiSetupStatusResponse>(protocolRoutes.wifiConfig, request);
+  }
+
+  async finishWifiSetup(): Promise<WifiSetupStatusResponse> {
+    return this.postJson<WifiSetupStatusResponse>(protocolRoutes.wifiSetupFinish, {});
   }
 
   async getKeymap(): Promise<KeymapDocument> {

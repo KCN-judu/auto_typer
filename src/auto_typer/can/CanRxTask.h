@@ -27,7 +27,7 @@ class MotorFeedbackStore {
     }
     MotorState& state = stateFor(event.motorId);
     // These booleans are diagnostic latches only. Runtime motion decisions must
-    // use last*Ms timestamps scoped to the current block.
+    // use last*Ms timestamps scoped to the current motion step.
     state.id = event.motorId;
     state.lastAnyFrameMs = event.timeMs;
     switch (event.kind) {

@@ -32,10 +32,6 @@ export function JobOverviewPanel({ job }: JobOverviewPanelProps) {
           <span className="mono">{job.currentStep} / {job.totalSteps}</span>
         </div>
         <div className="dashJobField">
-          <span className="dashJobLabel">Block</span>
-          <span className="mono">{job.currentBlock} / {job.totalBlocks}</span>
-        </div>
-        <div className="dashJobField">
           <span className="dashJobLabel">坐标</span>
           <span className="mono">{job.position} mm</span>
         </div>

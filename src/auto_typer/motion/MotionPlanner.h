@@ -5,20 +5,25 @@
 
 namespace auto_typer {
 
-struct MotionBlockPlan {
+struct MotionStepPlan {
   PlanStatus status;
   size_t count;
-  MotionBlock blocks[256];
+  MotionStep steps[256];
 };
 
-inline bool appendMotionBlock(MotionBlockPlan& plan, const MotionBlock& block) {
-  if (plan.count >= sizeof(plan.blocks) / sizeof(plan.blocks[0])) {
+inline bool appendMotionStep(MotionStepPlan& plan, const MotionStep& step) {
+  if (plan.count >= sizeof(plan.steps) / sizeof(plan.steps[0])) {
     plan.status = PlanStatus::PlanFull;
     return false;
   }
-  plan.blocks[plan.count] = block;
+  plan.steps[plan.count] = step;
   ++plan.count;
   return true;
+}
+
+inline void resetMotionStepPlan(MotionStepPlan& plan, PlanStatus status = PlanStatus::Ok) {
+  plan.status = status;
+  plan.count = 0;
 }
 
 inline MotionProfile defaultMotionProfile(const TypingConfig& config, uint16_t settleMs = 0) {
@@ -30,62 +35,69 @@ inline MotionProfile defaultMotionProfile(const TypingConfig& config, uint16_t s
   return profile;
 }
 
-inline MotionBlockPlan planMotionBlocks(const TypingPlan& typingPlan, const TypingConfig& config) {
-  MotionBlockPlan plan{};
-  plan.status = typingPlan.status;
+inline MotionStepPlan& planMotionStepsInto(MotionStepPlan& plan,
+                                             const TypingPlan& typingPlan,
+                                             const TypingConfig& config) {
+  resetMotionStepPlan(plan, typingPlan.status);
   MachinePointMm current = config.homePoint;
   if (typingPlan.status != PlanStatus::Ok) {
     return plan;
   }
 
   for (size_t i = 0; i < typingPlan.count; ++i) {
-    const TypingStep& step = typingPlan.steps[i];
-    MotionBlock block{};
-    block.targetMm = step.point;
-    block.profile = defaultMotionProfile(config);
-    block.waitMs = step.waitMs;
-    switch (step.kind) {
+    const TypingStep& typingStep = typingPlan.steps[i];
+    MotionStep motionStep{};
+    motionStep.targetMm = typingStep.point;
+    motionStep.profile = defaultMotionProfile(config);
+    motionStep.waitMs = typingStep.waitMs;
+    switch (typingStep.kind) {
       case TypingStepKind::Release:
-        block.kind = MotionBlockKind::ServoRelease;
+        motionStep.kind = MotionStepKind::ServoRelease;
         break;
       case TypingStepKind::Press:
-        block.kind = MotionBlockKind::ServoPress;
+        motionStep.kind = MotionStepKind::ServoPress;
         break;
       case TypingStepKind::CharacterRelease:
-        block.kind = MotionBlockKind::CharacterRelease;
-        block.deltaSteps.lineFeed =
+        motionStep.kind = MotionStepKind::CharacterRelease;
+        motionStep.deltaSteps.lineFeed =
             signedStepsForDirection(config.lineFeed.characterReleaseSteps, config.lineFeed.releaseDirection);
-        block.profile.maxRpm = config.lineFeed.rpm;
-        block.profile.acceleration = config.lineFeed.acceleration;
-        block.profile.settleMs = config.lineFeed.characterReleaseSettleMs;
+        motionStep.profile.maxRpm = config.lineFeed.rpm;
+        motionStep.profile.acceleration = config.lineFeed.acceleration;
+        motionStep.profile.settleMs = config.lineFeed.characterReleaseSettleMs;
         break;
       case TypingStepKind::LineFeed:
-        block.kind = MotionBlockKind::LineFeed;
-        block.deltaSteps.lineFeed =
+        motionStep.kind = MotionStepKind::LineFeed;
+        motionStep.deltaSteps.lineFeed =
             signedStepsForDirection(config.lineFeed.returnTotalSteps, config.lineFeed.returnDirection);
-        block.profile.maxRpm = config.lineFeed.rpm;
-        block.profile.acceleration = config.lineFeed.acceleration;
-        block.profile.settleMs = config.lineFeed.settleMs;
-        block.targetMm = {config.homePoint.xMm, current.yMm};
+        motionStep.profile.maxRpm = config.lineFeed.rpm;
+        motionStep.profile.acceleration = config.lineFeed.acceleration;
+        motionStep.profile.settleMs = config.lineFeed.settleMs;
+        motionStep.targetMm = {config.homePoint.xMm, current.yMm};
         current.xMm = config.homePoint.xMm;
         break;
       case TypingStepKind::MoveTo:
-        block.kind = MotionBlockKind::MoveXY;
-        block.deltaSteps = xyDeltaSteps(current, step.point, config.calibration);
-        block.profile.settleMs = config.xProfile.settleMs > config.yProfile.settleMs ? config.xProfile.settleMs
-                                                                                      : config.yProfile.settleMs;
-        current = step.point;
+        motionStep.kind = MotionStepKind::MoveXY;
+        motionStep.deltaSteps = xyDeltaSteps(current, typingStep.point, config.calibration);
+        motionStep.profile.settleMs = config.xProfile.settleMs > config.yProfile.settleMs
+                                          ? config.xProfile.settleMs
+                                          : config.yProfile.settleMs;
+        current = typingStep.point;
         break;
       case TypingStepKind::Wait:
       default:
-        block.kind = MotionBlockKind::Wait;
+        motionStep.kind = MotionStepKind::Wait;
         break;
     }
-    if (!appendMotionBlock(plan, block)) {
+    if (!appendMotionStep(plan, motionStep)) {
       return plan;
     }
   }
   return plan;
+}
+
+inline MotionStepPlan planMotionSteps(const TypingPlan& typingPlan, const TypingConfig& config) {
+  MotionStepPlan plan{};
+  return planMotionStepsInto(plan, typingPlan, config);
 }
 
 }  // namespace auto_typer

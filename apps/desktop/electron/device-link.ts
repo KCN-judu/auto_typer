@@ -7,7 +7,7 @@ export type RemoteMotionProfile = {
   timeoutMs?: number;
 };
 
-export type RemoteMotionBlock =
+export type RemoteMotionStep =
   | { kind: "move_xy"; dxMm: number; dyMm: number; profile?: RemoteMotionProfile }
   | { kind: "servo_press" }
   | { kind: "servo_release" }
@@ -20,15 +20,16 @@ export type HelloMessage = {
   id: string;
   type: "hello";
   client: "desktop";
+  timeoutMs?: number;
 };
 
-export type BlockStreamCommandMessage =
+export type GroupStreamCommandMessage =
   | HelloMessage
-  | { v: 1; id: string; type: "exec_block"; blockId: string; block: RemoteMotionBlock }
-  | { v: 1; id: string; type: "cancel" }
-  | { v: 1; id: string; type: "reset_fault" }
-  | { v: 1; id: string; type: "probe" }
-  | { v: 1; id: string; type: "ping" };
+  | { v: 1; id: string; type: "exec_group"; groupId: string; steps: RemoteMotionStep[]; timeoutMs?: number }
+  | { v: 1; id: string; type: "cancel"; timeoutMs?: number }
+  | { v: 1; id: string; type: "reset_fault"; timeoutMs?: number }
+  | { v: 1; id: string; type: "probe"; timeoutMs?: number }
+  | { v: 1; id: string; type: "ping"; timeoutMs?: number };
 
 export type AckMessage = {
   v: 1;
@@ -40,28 +41,31 @@ export type AckMessage = {
   message?: string;
 };
 
-export type BlockStreamEventMessage =
+export type GroupStreamEventMessage =
   | AckMessage
   | {
       v: 1;
-      type: "block_started" | "block_done" | "fault" | "telemetry" | "pong" | "snapshot";
+      type: "group_started" | "group_done" | "fault" | "telemetry" | "pong" | "snapshot";
       [key: string]: unknown;
     };
 
 const maxLineBytes = 4096;
 const ackTimeoutMs = 1000;
-const helloTimeoutMs = 1000;
+const helloTimeoutMs = 5000;
+const execGroupAckTimeoutMs = 5000;
 const heartbeatIntervalMs = 1000;
 
 type PendingAck = {
   id: string;
+  type: GroupStreamCommandMessage["type"];
   resolve: (message: AckMessage) => void;
   reject: (error: Error) => void;
   timer: NodeJS.Timeout;
+  timeoutMs: number;
 };
 
 type DeviceLinkEvents = {
-  message: [BlockStreamEventMessage];
+  message: [GroupStreamEventMessage];
   disconnect: [Error];
 };
 
@@ -99,7 +103,7 @@ export class DeviceLink extends EventEmitter<DeviceLinkEvents> {
         this.sendCommand(hello, helloTimeoutMs)
           .then((ack) => {
             if (!ack.ok || !ack.accepted) {
-              finish(new Error(ack.message ?? ack.code ?? "Block stream hello rejected"));
+              finish(new Error(ack.message ?? ack.code ?? "Group stream hello rejected"));
               return;
             }
             this.startHeartbeat();
@@ -111,7 +115,7 @@ export class DeviceLink extends EventEmitter<DeviceLinkEvents> {
         try {
           this.pushLines(chunk);
         } catch (error) {
-          const reason = error instanceof Error ? error : new Error("Invalid block stream line");
+          const reason = error instanceof Error ? error : new Error("Invalid group stream line");
           finish(reason);
           this.handleDisconnect(reason);
         }
@@ -121,21 +125,21 @@ export class DeviceLink extends EventEmitter<DeviceLinkEvents> {
         this.handleDisconnect(error);
       });
       socket.on("close", () => {
-        this.handleDisconnect(new Error("Block stream disconnected"));
+        this.handleDisconnect(new Error("Group stream disconnected"));
       });
     });
   }
 
-  async sendCommand(message: BlockStreamCommandMessage, timeoutMs = ackTimeoutMs): Promise<AckMessage> {
+  async sendCommand(message: GroupStreamCommandMessage, timeoutMs = timeoutForMessage(message)): Promise<AckMessage> {
     if (!this.socket || !this.socket.writable) {
-      throw new Error("Block stream is not connected");
+      throw new Error("Group stream is not connected");
     }
     if (message.type === "ping") {
       this.writeLine(message);
       return { v: 1, type: "ack", id: message.id, ok: true, accepted: true };
     }
     if (this.pending) {
-      throw new Error("Another block stream command is in flight");
+      throw new Error("Another group stream command is in flight");
     }
     return new Promise<AckMessage>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -143,13 +147,15 @@ export class DeviceLink extends EventEmitter<DeviceLinkEvents> {
           this.pending = undefined;
         }
         this.close();
-        reject(new Error("Block stream ack timed out"));
+        reject(new Error(this.timeoutMessage(message.type, timeoutMs)));
       }, timeoutMs);
       this.pending = {
         id: message.id,
+        type: message.type,
         resolve,
         reject,
         timer,
+        timeoutMs,
       };
       try {
         this.writeLine(message);
@@ -158,7 +164,7 @@ export class DeviceLink extends EventEmitter<DeviceLinkEvents> {
         if (this.pending?.id === message.id) {
           this.pending = undefined;
         }
-        reject(error instanceof Error ? error : new Error("Block stream write failed"));
+        reject(error instanceof Error ? error : new Error("Group stream write failed"));
       }
     });
   }
@@ -168,7 +174,7 @@ export class DeviceLink extends EventEmitter<DeviceLinkEvents> {
     this.buffer = "";
     if (this.pending) {
       clearTimeout(this.pending.timer);
-      this.pending.reject(new Error("Block stream disconnected"));
+      this.pending.reject(new Error("Group stream disconnected"));
       this.pending = undefined;
     }
     if (this.socket) {
@@ -184,26 +190,28 @@ export class DeviceLink extends EventEmitter<DeviceLinkEvents> {
       const newline = this.buffer.indexOf("\n");
       if (newline < 0) {
         if (Buffer.byteLength(this.buffer, "utf8") > maxLineBytes) {
-          throw new Error("Block stream inbound line is too large");
+          throw new Error("Group stream inbound line is too large");
         }
         return;
       }
       const line = this.buffer.slice(0, newline);
       this.buffer = this.buffer.slice(newline + 1);
       if (Buffer.byteLength(line, "utf8") > maxLineBytes) {
-        throw new Error("Block stream inbound line is too large");
+        throw new Error("Group stream inbound line is too large");
       }
       if (line.trim().length === 0) {
         continue;
       }
-      const message = JSON.parse(line) as BlockStreamEventMessage;
+      const message = JSON.parse(line) as GroupStreamEventMessage;
       this.handleMessage(message);
     }
   }
 
-  private handleMessage(message: BlockStreamEventMessage): void {
+  private handleMessage(message: GroupStreamEventMessage): void {
     if (message.type === "ack") {
       this.handleAck(message);
+    } else if (message.type === "fault") {
+      this.handleHandshakeFault(message);
     }
     this.emit("message", message);
   }
@@ -218,11 +226,22 @@ export class DeviceLink extends EventEmitter<DeviceLinkEvents> {
     pending.resolve(message);
   }
 
+  private handleHandshakeFault(message: GroupStreamEventMessage): void {
+    const pending = this.pending;
+    if (!pending || pending.type !== "hello") {
+      return;
+    }
+    clearTimeout(pending.timer);
+    this.pending = undefined;
+    pending.reject(new Error(this.faultMessage(message)));
+  }
+
   private handleDisconnect(error: Error): void {
     if (this.pending) {
+      const pending = this.pending;
       clearTimeout(this.pending.timer);
-      this.pending.reject(error);
       this.pending = undefined;
+      pending.reject(this.disconnectError(pending, error));
     }
     this.stopHeartbeat();
     if (this.socket) {
@@ -249,9 +268,9 @@ export class DeviceLink extends EventEmitter<DeviceLinkEvents> {
     }
   }
 
-  private writeLine(message: BlockStreamCommandMessage): void {
+  private writeLine(message: GroupStreamCommandMessage): void {
     if (!this.socket || !this.socket.writable) {
-      throw new Error("Block stream is not connected");
+      throw new Error("Group stream is not connected");
     }
     this.socket.write(`${JSON.stringify(message)}\n`, "utf8");
   }
@@ -260,4 +279,37 @@ export class DeviceLink extends EventEmitter<DeviceLinkEvents> {
     this.sequence += 1;
     return `${prefix}-${Date.now().toString(36)}-${this.sequence.toString(36)}`;
   }
+
+  private timeoutMessage(type: GroupStreamCommandMessage["type"], timeoutMs: number): string {
+    if (type === "hello") {
+      return `Group stream hello ack timed out after ${timeoutMs}ms`;
+    }
+    return `Group stream ${type} ack timed out after ${timeoutMs}ms`;
+  }
+
+  private disconnectError(pending: PendingAck, error: Error): Error {
+    if (pending.type === "hello") {
+      return new Error(`Group stream disconnected before hello ack: ${error.message || "unknown reason"}`);
+    }
+    if (pending.type === "exec_group") {
+      return new Error(`Group stream disconnected before ${pending.type} ack: ${error.message || "unknown reason"}`);
+    }
+    return error;
+  }
+
+  private faultMessage(message: GroupStreamEventMessage): string {
+    const code = typeof message.code === "string" && message.code.length > 0 ? message.code : "fault";
+    const text = typeof message.message === "string" && message.message.length > 0 ? message.message : "Group stream fault";
+    return `Group stream hello rejected: ${code}: ${text}`;
+  }
+}
+
+function timeoutForMessage(message: GroupStreamCommandMessage): number {
+  if (message.type === "hello") {
+    return helloTimeoutMs;
+  }
+  if (message.type === "exec_group") {
+    return execGroupAckTimeoutMs;
+  }
+  return ackTimeoutMs;
 }

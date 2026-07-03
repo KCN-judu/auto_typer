@@ -50,14 +50,18 @@ inline bool appendStep(TypingPlan& plan, const TypingStep& step) {
   return true;
 }
 
-inline TypingPlan planText(const char* text,
-                           const KeyBinding* keymap,
-                           size_t keymapCount,
-                           const TypingConfig& config) {
-  TypingPlan plan{};
+inline void resetTypingPlan(TypingPlan& plan) {
   plan.status = PlanStatus::Ok;
   plan.failedKey = '\0';
   plan.count = 0;
+}
+
+inline TypingPlan& planTextInto(TypingPlan& plan,
+                                const char* text,
+                                const KeyBinding* keymap,
+                                size_t keymapCount,
+                                const TypingConfig& config) {
+  resetTypingPlan(plan);
 
   bool servoReleased = true;
 
@@ -68,7 +72,7 @@ inline TypingPlan planText(const char* text,
         ++i;
       }
       if (!servoReleased) {
-        if (!appendStep(plan, {TypingStepKind::Release, current, config.servo.releaseMs})) {
+        if (!appendStep(plan, {TypingStepKind::Release, current, config.pressMotor.releaseMs})) {
           return plan;
         }
         servoReleased = true;
@@ -88,7 +92,7 @@ inline TypingPlan planText(const char* text,
     }
 
     if (!servoReleased) {
-      if (!appendStep(plan, {TypingStepKind::Release, current, config.servo.releaseMs})) {
+      if (!appendStep(plan, {TypingStepKind::Release, current, config.pressMotor.releaseMs})) {
         return plan;
       }
       servoReleased = true;
@@ -96,14 +100,14 @@ inline TypingPlan planText(const char* text,
     if (!appendStep(plan, {TypingStepKind::MoveTo, target, 0})) {
       return plan;
     }
-    if (!appendStep(plan, {TypingStepKind::Wait, target, config.servo.settleMs})) {
+    if (!appendStep(plan, {TypingStepKind::Wait, target, config.pressMotor.settleMs})) {
       return plan;
     }
-    if (!appendStep(plan, {TypingStepKind::Press, target, config.servo.pressMs})) {
+    if (!appendStep(plan, {TypingStepKind::Press, target, config.pressMotor.pressMs})) {
       return plan;
     }
     servoReleased = false;
-    if (!appendStep(plan, {TypingStepKind::Release, target, config.servo.releaseMs})) {
+    if (!appendStep(plan, {TypingStepKind::Release, target, config.pressMotor.releaseMs})) {
       return plan;
     }
     servoReleased = true;
@@ -115,6 +119,14 @@ inline TypingPlan planText(const char* text,
   }
 
   return plan;
+}
+
+inline TypingPlan planText(const char* text,
+                           const KeyBinding* keymap,
+                           size_t keymapCount,
+                           const TypingConfig& config) {
+  TypingPlan plan{};
+  return planTextInto(plan, text, keymap, keymapCount, config);
 }
 
 inline const char* statusText(PlanStatus status) {

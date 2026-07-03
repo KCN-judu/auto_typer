@@ -9,15 +9,10 @@ enum class MotorDirection : uint8_t {
   Ccw = 1,
 };
 
-enum class ServoMotion : uint8_t {
-  Neutral,
-  Forward,
-  Reverse,
-};
-
 enum class PressAction : uint8_t {
   Release,
   Press,
+  Neutral,
 };
 
 enum class TypingStepKind : uint8_t {
@@ -139,24 +134,17 @@ struct MotionRuntimeConfig {
   uint16_t minimumCoordinatedRpm;
 };
 
-struct ServoPressSemantics {
-  ServoMotion releaseMotion;
-  ServoMotion pressMotion;
-};
-
-struct ServoActuatorConfig {
-  uint8_t address;
-  uint8_t channels[2];
-  uint8_t channelCount;
-  float pwmFrequencyHz;
-  uint32_t oscillatorHz;
-  uint16_t neutralPulseUs;
-  uint16_t forwardPulseUs;
-  uint16_t reversePulseUs;
-  uint16_t releaseMs;
+struct PressMotorProfile {
+  uint16_t rpm;
+  uint8_t acceleration;
+  uint32_t pressSteps;
+  MotorDirection pressDirection;
+  uint32_t releaseSteps;
+  MotorDirection releaseDirection;
   uint16_t pressMs;
+  uint16_t releaseMs;
   uint16_t settleMs;
-  ServoPressSemantics semantics;
+  uint32_t timeoutMs;
 };
 
 struct CanBusConfig {
@@ -182,7 +170,7 @@ struct TypingConfig {
   const char* firmwareVersion;
   CanBusConfig canBus;
   OledConfig oled;
-  ServoActuatorConfig servo;
+  PressMotorProfile pressMotor;
   AxisTopology topology;
   MotionCalibration calibration;
   AxisMotionProfile xProfile;
@@ -219,7 +207,7 @@ struct TypingPlan {
   TypingStep steps[256];
 };
 
-enum class MotionBlockKind : uint8_t {
+enum class MotionStepKind : uint8_t {
   MoveXY,
   LineFeed,
   CharacterRelease,
@@ -242,15 +230,15 @@ struct MotionProfile {
   uint32_t timeoutMs;
 };
 
-struct MotionBlock {
-  MotionBlockKind kind;
+struct MotionStep {
+  MotionStepKind kind;
   MachinePointMm targetMm;
   MotorTargetSteps deltaSteps;
   MotionProfile profile;
   uint16_t waitMs;
 };
 
-enum class RemoteMotionBlockKind : uint8_t {
+enum class RemoteMotionStepKind : uint8_t {
   MoveXY,
   ServoPress,
   ServoRelease,
@@ -268,15 +256,17 @@ struct RemoteMotionProfile {
   uint32_t timeoutMs;
 };
 
-struct RemoteMotionBlock {
-  RemoteMotionBlockKind kind;
+struct RemoteMotionStep {
+  RemoteMotionStepKind kind;
   float dxMm;
   float dyMm;
   uint16_t durationMs;
   RemoteMotionProfile profile;
 };
 
-struct SubmitRemoteBlockResult {
+static constexpr size_t kRemoteGroupMaxSteps = 8;
+
+struct SubmitRemoteGroupResult {
   bool accepted;
   const char* rejectionCode;
   const char* rejectionMessage;
@@ -335,8 +325,6 @@ struct JobSnapshot {
   size_t currentIndex;
   size_t currentStep;
   size_t totalSteps;
-  size_t currentBlock;
-  size_t totalBlocks;
   MachinePointMm currentPoint;
   PlanStatus planStatus;
   char failedKey;

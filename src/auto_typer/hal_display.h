@@ -43,6 +43,14 @@ class DisplayHal {
     }
 
     const char* text = textForStatus(status);
+    showMessage(text);
+  }
+
+  void showMessage(const char* text) {
+    if (!ready_) {
+      return;
+    }
+
     display_.clearDisplay();
     drawStatusText(text);
     display_.display();

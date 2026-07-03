@@ -2,7 +2,6 @@
 
 #include "../can/CanRxTask.h"
 #include "../drivers/EmmV5Driver.h"
-#include "../hal_servo_press.h"
 #include "MachineKinematics.h"
 #include "MotionPlanner.h"
 #include "YPairController.h"
@@ -15,18 +14,16 @@ class MotionExecutor {
  public:
   MotionExecutor(const TypingConfig& config,
                  EmmV5Driver& driver,
-                 ServoPressHal& servo,
                  MotorFeedbackStore& feedback)
       : config_(config),
         driver_(driver),
-        servo_(servo),
         feedback_(feedback),
         yPair_(config, driver),
         state_(State::Idle),
-        blocks_(nullptr),
-        blockCount_(0),
-        currentBlock_(0),
-        blockStartedAtMs_(0),
+        steps_(nullptr),
+        stepCount_(0),
+        currentStep_(0),
+        stepStartedAtMs_(0),
         settleStartedAtMs_(0),
         faultCode_(""),
         faultMessage_(""),
@@ -37,17 +34,17 @@ class MotionExecutor {
         lastFeedbackPollMs_(0),
         waitingForBaseline_(false),
         baselineRequestedAtMs_(0),
-        currentBlockStartedEvent_(false),
-        lastCompletedBlock_(0),
+        currentStepStartedEvent_(false),
+        lastCompletedStep_(0),
         lastCompletedDurationMs_(0) {}
 
-  bool start(const MotionBlock* blocks, size_t count, MachinePointMm startPoint = {NAN, NAN}) {
+  bool start(const MotionStep* steps, size_t count, MachinePointMm startPoint = {NAN, NAN}) {
     if (state_ == State::Running || state_ == State::Cancelling) {
       return false;
     }
-    blocks_ = blocks;
-    blockCount_ = count;
-    currentBlock_ = 0;
+    steps_ = steps;
+    stepCount_ = count;
+    currentStep_ = 0;
     activeTextIndex_ = 0;
     if (isfinite(startPoint.xMm) && isfinite(startPoint.yMm)) {
       currentPoint_ = startPoint;
@@ -56,14 +53,14 @@ class MotionExecutor {
     }
     faultCode_ = "";
     faultMessage_ = "";
-    blockStartedAtMs_ = 0;
+    stepStartedAtMs_ = 0;
     settleStartedAtMs_ = 0;
     completionSampleCount_ = 0;
     lastFeedbackPollMs_ = 0;
     waitingForBaseline_ = false;
     baselineRequestedAtMs_ = 0;
-    currentBlockStartedEvent_ = false;
-    lastCompletedBlock_ = 0;
+    currentStepStartedEvent_ = false;
+    lastCompletedStep_ = 0;
     lastCompletedDurationMs_ = 0;
     state_ = count == 0 ? State::Completed : State::Running;
     return true;
@@ -73,39 +70,39 @@ class MotionExecutor {
     if (state_ != State::Running) {
       return;
     }
-    if (currentBlock_ >= blockCount_) {
+    if (currentStep_ >= stepCount_) {
       state_ = State::Completed;
       return;
     }
-    const MotionBlock& block = blocks_[currentBlock_];
-    if (blockStartedAtMs_ == 0) {
-      if (!prepareBlockBaseline(block)) {
+    const MotionStep& step = steps_[currentStep_];
+    if (stepStartedAtMs_ == 0) {
+      if (!prepareStepBaseline(step)) {
         return;
       }
-      if (!beginBlock(block)) {
+      if (!beginStep(step)) {
         if (state_ != State::Faulted) {
           fail("motion_command_rejected", "Motion command rejected");
         }
         return;
       }
-      blockStartedAtMs_ = millis();
+      stepStartedAtMs_ = millis();
       settleStartedAtMs_ = 0;
       completionSampleCount_ = 0;
       lastFeedbackPollMs_ = 0;
       waitingForBaseline_ = false;
       baselineRequestedAtMs_ = 0;
-      currentBlockStartedEvent_ = true;
+      currentStepStartedEvent_ = true;
     }
-    if (isBlockComplete(block)) {
-      const size_t completedBlock = currentBlock_;
-      const uint32_t completedDurationMs = millis() - blockStartedAtMs_;
-      finishBlock(block);
-      ++currentBlock_;
-      lastCompletedBlock_ = completedBlock + 1;
+    if (isStepComplete(step)) {
+      const size_t completedStep = currentStep_;
+      const uint32_t completedDurationMs = millis() - stepStartedAtMs_;
+      finishStep(step);
+      ++currentStep_;
+      lastCompletedStep_ = completedStep + 1;
       lastCompletedDurationMs_ = completedDurationMs;
-      blockStartedAtMs_ = 0;
+      stepStartedAtMs_ = 0;
       settleStartedAtMs_ = 0;
-      currentBlockStartedEvent_ = false;
+      currentStepStartedEvent_ = false;
     }
   }
 
@@ -115,13 +112,11 @@ class MotionExecutor {
     }
     state_ = State::Cancelling;
     stopAll();
-    servo_.neutral(1);
     state_ = State::Cancelled;
   }
 
   void emergencyStop() {
     stopAll();
-    servo_.neutral(1);
     fail("emergency_stop", "Emergency stop requested");
   }
 
@@ -161,12 +156,12 @@ class MotionExecutor {
     return state_ == State::Faulted;
   }
 
-  size_t currentBlock() const {
-    return currentBlock_;
+  size_t currentStep() const {
+    return currentStep_;
   }
 
-  size_t totalBlocks() const {
-    return blockCount_;
+  size_t totalSteps() const {
+    return stepCount_;
   }
 
   size_t activeTextIndex() const {
@@ -177,12 +172,12 @@ class MotionExecutor {
     return currentPoint_;
   }
 
-  bool blockStartedEvent() const {
-    return currentBlockStartedEvent_;
+  bool stepStartedEvent() const {
+    return currentStepStartedEvent_;
   }
 
-  size_t lastCompletedBlock() const {
-    return lastCompletedBlock_;
+  size_t lastCompletedStep() const {
+    return lastCompletedStep_;
   }
 
   uint32_t lastCompletedDurationMs() const {
@@ -207,10 +202,12 @@ class MotionExecutor {
     int32_t initialYLeft;
     int32_t initialYRight;
     int32_t initialLineFeed;
+    int32_t initialPress;
     int32_t targetX;
     int32_t targetYLeft;
     int32_t targetYRight;
     int32_t targetLineFeed;
+    int32_t targetPress;
   };
 
   enum class State : uint8_t {
@@ -222,33 +219,33 @@ class MotionExecutor {
     Faulted,
   };
 
-  bool beginBlock(const MotionBlock& block) {
-    switch (block.kind) {
-      case MotionBlockKind::ServoPress:
-        return servo_.start(PressAction::Press, block.waitMs);
-      case MotionBlockKind::ServoRelease:
-        return servo_.start(PressAction::Release, block.waitMs);
-      case MotionBlockKind::Wait:
+  bool beginStep(const MotionStep& step) {
+    switch (step.kind) {
+      case MotionStepKind::ServoPress:
+        return startPressMotor(step, PressAction::Press);
+      case MotionStepKind::ServoRelease:
+        return startPressMotor(step, PressAction::Release);
+      case MotionStepKind::Wait:
         return true;
-      case MotionBlockKind::CharacterRelease:
-        return startLineFeed(block);
-      case MotionBlockKind::LineFeed:
-        return startLineFeed(block);
-      case MotionBlockKind::MoveXY:
-        return startMoveXY(block);
+      case MotionStepKind::CharacterRelease:
+        return startLineFeed(step);
+      case MotionStepKind::LineFeed:
+        return startLineFeed(step);
+      case MotionStepKind::MoveXY:
+        return startMoveXY(step);
     }
     return false;
   }
 
-  bool prepareBlockBaseline(const MotionBlock& block) {
-    if (!requiresFeedbackBaseline(block)) {
+  bool prepareStepBaseline(const MotionStep& step) {
+    if (!requiresFeedbackBaseline(step)) {
       waitingForBaseline_ = false;
       baselineRequestedAtMs_ = 0;
       return true;
     }
 
-    requestFeedback(block);
-    if (baselineReady(block)) {
+    requestFeedback(step);
+    if (baselineReady(step)) {
       waitingForBaseline_ = false;
       baselineRequestedAtMs_ = 0;
       return true;
@@ -267,102 +264,116 @@ class MotionExecutor {
     return false;
   }
 
-  bool startMoveXY(const MotionBlock& block) {
-    const uint32_t xSteps = absoluteSteps(block.deltaSteps.x);
-    const uint32_t ySteps = absoluteSteps(block.deltaSteps.yLeft);
+  bool startMoveXY(const MotionStep& step) {
+    const uint32_t xSteps = absoluteSteps(step.deltaSteps.x);
+    const uint32_t ySteps = absoluteSteps(step.deltaSteps.yLeft);
     const bool hasX = xSteps > 0;
     const bool hasY = ySteps > 0;
     if (!hasX && !hasY) {
       return true;
     }
-    if (!validateMoveXYBaseline(block)) {
+    if (!validateMoveXYBaseline(step)) {
       return false;
     }
-    captureFeedbackTargets(block);
+    captureFeedbackTargets(step);
     const uint32_t primarySteps = xSteps > ySteps ? xSteps : ySteps;
     const uint16_t xRpm = scaledCoordinatedRpm(xSteps,
                                                primarySteps,
-                                               block.profile.maxRpm,
+                                               step.profile.maxRpm,
                                                config_.motionRuntime.minimumCoordinatedRpm);
     const uint16_t yRpm = scaledCoordinatedRpm(ySteps,
                                                primarySteps,
-                                               block.profile.maxRpm,
+                                               step.profile.maxRpm,
                                                config_.motionRuntime.minimumCoordinatedRpm);
     if (hasX && hasY) {
-      const MotorDirection yLeftDirection = directionForSignedSteps(block.deltaSteps.yLeft);
+      const MotorDirection yLeftDirection = directionForSignedSteps(step.deltaSteps.yLeft);
       const MotorDirection yRightDirection = yLeftDirection == MotorDirection::Cw ? MotorDirection::Ccw
                                                                                   : MotorDirection::Cw;
       const EmmV5Driver::MoveRelativeCommand commands[] = {
         {config_.topology.xMotorId,
-         directionForSignedSteps(block.deltaSteps.x),
+         directionForSignedSteps(step.deltaSteps.x),
          xRpm,
-         block.profile.acceleration,
+         step.profile.acceleration,
          xSteps,
          true},
-        {config_.topology.yLeftMotorId, yLeftDirection, yRpm, block.profile.acceleration, ySteps, true},
-        {config_.topology.yRightMotorId, yRightDirection, yRpm, block.profile.acceleration, ySteps, true},
+        {config_.topology.yLeftMotorId, yLeftDirection, yRpm, step.profile.acceleration, ySteps, true},
+        {config_.topology.yRightMotorId, yRightDirection, yRpm, step.profile.acceleration, ySteps, true},
       };
       return driver_.moveRelativeBatch(commands, sizeof(commands) / sizeof(commands[0]), true);
     }
     if (hasX && !driver_.moveRelative(config_.topology.xMotorId,
-                                      directionForSignedSteps(block.deltaSteps.x),
+                                      directionForSignedSteps(step.deltaSteps.x),
                                       xRpm,
-                                      block.profile.acceleration,
+                                      step.profile.acceleration,
                                       xSteps,
                                       false)) {
       return false;
     }
-    if (hasY && !yPair_.moveRelative(block.deltaSteps.yLeft, yRpm, block.profile.acceleration)) {
+    if (hasY && !yPair_.moveRelative(step.deltaSteps.yLeft, yRpm, step.profile.acceleration)) {
       return false;
     }
     return true;
   }
 
-  bool startLineFeed(const MotionBlock& block) {
-    const uint32_t steps = absoluteSteps(block.deltaSteps.lineFeed);
+  bool startLineFeed(const MotionStep& step) {
+    const uint32_t steps = absoluteSteps(step.deltaSteps.lineFeed);
     if (steps == 0) {
       return true;
     }
     if (!validateLineFeedBaseline()) {
       return false;
     }
-    captureFeedbackTargets(block);
+    captureFeedbackTargets(step);
     return driver_.moveRelative(config_.topology.lineFeedMotorId,
-                                directionForSignedSteps(block.deltaSteps.lineFeed),
-                                block.profile.maxRpm,
-                                block.profile.acceleration,
+                                directionForSignedSteps(step.deltaSteps.lineFeed),
+                                step.profile.maxRpm,
+                                step.profile.acceleration,
                                 steps,
                                 false);
   }
 
-  bool isBlockComplete(const MotionBlock& block) {
-    const uint32_t elapsed = millis() - blockStartedAtMs_;
-    if (elapsed > block.profile.timeoutMs) {
+  bool startPressMotor(const MotionStep& step, PressAction action) {
+    const int32_t signedSteps = pressMotorSignedSteps(action);
+    const uint32_t steps = absoluteSteps(signedSteps);
+    if (steps == 0) {
+      return true;
+    }
+    if (!validatePressMotorBaseline()) {
+      return false;
+    }
+    captureFeedbackTargets(step);
+    return driver_.moveRelative(config_.topology.pressMotorId,
+                                directionForSignedSteps(signedSteps),
+                                step.profile.maxRpm,
+                                step.profile.acceleration,
+                                steps,
+                                false);
+  }
+
+  bool isStepComplete(const MotionStep& step) {
+    const uint32_t elapsed = millis() - stepStartedAtMs_;
+    if (elapsed > step.profile.timeoutMs) {
       stopAll();
       fail("motion_timeout", "Motion timed out before reaching target");
       return false;
     }
-    if (block.kind == MotionBlockKind::Wait) {
-      return elapsed >= block.waitMs;
-    }
-    if (block.kind == MotionBlockKind::ServoPress || block.kind == MotionBlockKind::ServoRelease) {
-      servo_.tick();
-      return !servo_.busy();
+    if (step.kind == MotionStepKind::Wait) {
+      return elapsed >= step.waitMs;
     }
 
-    requestFeedback(block);
-    if (feedbackTimedOut(block)) {
+    requestFeedback(step);
+    if (feedbackTimedOut(step)) {
       stopAll();
       fail("motion_feedback_timeout", "Required motor feedback became stale");
       return false;
     }
-    if (feedbackSatisfied(block)) {
+    if (feedbackSatisfied(step)) {
       ++completionSampleCount_;
       if (completionSampleCount_ >= config_.motionRuntime.completionSamples) {
         if (settleStartedAtMs_ == 0) {
           settleStartedAtMs_ = millis();
         }
-        return millis() - settleStartedAtMs_ >= block.profile.settleMs;
+        return millis() - settleStartedAtMs_ >= step.profile.settleMs;
       }
       return false;
     }
@@ -371,41 +382,45 @@ class MotionExecutor {
     return false;
   }
 
-  void requestFeedback(const MotionBlock& block) {
+  void requestFeedback(const MotionStep& step) {
     const uint32_t nowMs = millis();
     if (lastFeedbackPollMs_ != 0 && nowMs - lastFeedbackPollMs_ < config_.motionRuntime.motionPollIntervalMs) {
       return;
     }
     lastFeedbackPollMs_ = nowMs;
-    if (block.kind == MotionBlockKind::MoveXY) {
-      if (block.deltaSteps.x != 0) {
+    if (step.kind == MotionStepKind::MoveXY) {
+      if (step.deltaSteps.x != 0) {
         driver_.requestInputPulseCount(config_.topology.xMotorId);
         driver_.requestVelocity(config_.topology.xMotorId);
       }
-      if (block.deltaSteps.yLeft != 0) {
+      if (step.deltaSteps.yLeft != 0) {
         driver_.requestInputPulseCount(config_.topology.yLeftMotorId);
         driver_.requestVelocity(config_.topology.yLeftMotorId);
         driver_.requestInputPulseCount(config_.topology.yRightMotorId);
         driver_.requestVelocity(config_.topology.yRightMotorId);
       }
     }
-    if (block.kind == MotionBlockKind::LineFeed || block.kind == MotionBlockKind::CharacterRelease) {
+    if (step.kind == MotionStepKind::LineFeed || step.kind == MotionStepKind::CharacterRelease) {
       driver_.requestInputPulseCount(config_.topology.lineFeedMotorId);
       driver_.requestVelocity(config_.topology.lineFeedMotorId);
     }
+    if (step.kind == MotionStepKind::ServoPress || step.kind == MotionStepKind::ServoRelease) {
+      driver_.requestInputPulseCount(config_.topology.pressMotorId);
+      driver_.requestVelocity(config_.topology.pressMotorId);
+    }
   }
 
-  bool feedbackSatisfied(const MotionBlock& block) {
+  bool feedbackSatisfied(const MotionStep& step) {
     const uint32_t nowMs = millis();
-    if (block.kind == MotionBlockKind::MoveXY) {
-      if (block.deltaSteps.x != 0 && commandResponseFault(config_.topology.xMotorId)) {
+    if (step.kind == MotionStepKind::MoveXY) {
+      if (step.deltaSteps.x != 0 && commandResponseFault(config_.topology.xMotorId)) {
         return false;
       }
-      if (block.deltaSteps.x != 0 &&
+      if (step.deltaSteps.x != 0 &&
           !motorAtTarget(config_.topology.xMotorId, activeFeedback_.targetX, nowMs)) {
         return false;
       }
-      if (block.deltaSteps.yLeft != 0) {
+      if (step.deltaSteps.yLeft != 0) {
         const MotorState left = feedback_.get(config_.topology.yLeftMotorId);
         const MotorState right = feedback_.get(config_.topology.yRightMotorId);
         if (commandResponseFault(left) || commandResponseFault(right)) {
@@ -423,23 +438,29 @@ class MotionExecutor {
       }
       return true;
     }
-    if (block.kind == MotionBlockKind::LineFeed || block.kind == MotionBlockKind::CharacterRelease) {
+    if (step.kind == MotionStepKind::LineFeed || step.kind == MotionStepKind::CharacterRelease) {
       if (commandResponseFault(config_.topology.lineFeedMotorId)) {
         return false;
       }
       return motorAtTarget(config_.topology.lineFeedMotorId, activeFeedback_.targetLineFeed, nowMs);
     }
+    if (step.kind == MotionStepKind::ServoPress || step.kind == MotionStepKind::ServoRelease) {
+      if (commandResponseFault(config_.topology.pressMotorId)) {
+        return false;
+      }
+      return motorAtTarget(config_.topology.pressMotorId, activeFeedback_.targetPress, nowMs);
+    }
     return true;
   }
 
-  void finishBlock(const MotionBlock& block) {
-    if (block.kind == MotionBlockKind::MoveXY) {
-      currentPoint_ = block.targetMm;
+  void finishStep(const MotionStep& step) {
+    if (step.kind == MotionStepKind::MoveXY) {
+      currentPoint_ = step.targetMm;
     }
-    if (block.kind == MotionBlockKind::LineFeed) {
+    if (step.kind == MotionStepKind::LineFeed) {
       currentPoint_.xMm = config_.homePoint.xMm;
     }
-    if (block.kind == MotionBlockKind::ServoPress) {
+    if (step.kind == MotionStepKind::ServoPress) {
       ++activeTextIndex_;
     }
   }
@@ -450,19 +471,22 @@ class MotionExecutor {
     state_ = State::Faulted;
   }
 
-  void captureFeedbackTargets(const MotionBlock& block) {
+  void captureFeedbackTargets(const MotionStep& step) {
     const MotorState x = feedback_.get(config_.topology.xMotorId);
     const MotorState yLeft = feedback_.get(config_.topology.yLeftMotorId);
     const MotorState yRight = feedback_.get(config_.topology.yRightMotorId);
     const MotorState lineFeed = feedback_.get(config_.topology.lineFeedMotorId);
+    const MotorState press = feedback_.get(config_.topology.pressMotorId);
     activeFeedback_.initialX = x.inputPulseSteps;
     activeFeedback_.initialYLeft = yLeft.inputPulseSteps;
     activeFeedback_.initialYRight = yRight.inputPulseSteps;
     activeFeedback_.initialLineFeed = lineFeed.inputPulseSteps;
-    activeFeedback_.targetX = x.inputPulseSteps + block.deltaSteps.x;
-    activeFeedback_.targetYLeft = yLeft.inputPulseSteps + block.deltaSteps.yLeft;
-    activeFeedback_.targetYRight = yRight.inputPulseSteps + block.deltaSteps.yRight;
-    activeFeedback_.targetLineFeed = lineFeed.inputPulseSteps + block.deltaSteps.lineFeed;
+    activeFeedback_.initialPress = press.inputPulseSteps;
+    activeFeedback_.targetX = x.inputPulseSteps + step.deltaSteps.x;
+    activeFeedback_.targetYLeft = yLeft.inputPulseSteps + step.deltaSteps.yLeft;
+    activeFeedback_.targetYRight = yRight.inputPulseSteps + step.deltaSteps.yRight;
+    activeFeedback_.targetLineFeed = lineFeed.inputPulseSteps + step.deltaSteps.lineFeed;
+    activeFeedback_.targetPress = press.inputPulseSteps + pressMotorSignedSteps(step.kind);
   }
 
   bool motorAtTarget(uint8_t motorId, int32_t target, uint32_t nowMs) const {
@@ -484,23 +508,26 @@ class MotionExecutor {
     return state.hasInputPulse && state.lastInputPulseMs != 0 && nowMs - state.lastInputPulseMs <= kFeedbackFreshMs;
   }
 
-  bool feedbackTimedOut(const MotionBlock& block) const {
+  bool feedbackTimedOut(const MotionStep& step) const {
     const uint32_t nowMs = millis();
-    if (nowMs - blockStartedAtMs_ <= kFeedbackFreshMs) {
+    if (nowMs - stepStartedAtMs_ <= kFeedbackFreshMs) {
       return false;
     }
-    if (block.kind == MotionBlockKind::MoveXY) {
-      if (block.deltaSteps.x != 0 && !motorFeedbackFresh(config_.topology.xMotorId, nowMs)) {
+    if (step.kind == MotionStepKind::MoveXY) {
+      if (step.deltaSteps.x != 0 && !motorFeedbackFresh(config_.topology.xMotorId, nowMs)) {
         return true;
       }
-      if (block.deltaSteps.yLeft != 0 || block.deltaSteps.yRight != 0) {
+      if (step.deltaSteps.yLeft != 0 || step.deltaSteps.yRight != 0) {
         return !motorFeedbackFresh(config_.topology.yLeftMotorId, nowMs) ||
                !motorFeedbackFresh(config_.topology.yRightMotorId, nowMs);
       }
       return false;
     }
-    if (block.kind == MotionBlockKind::LineFeed || block.kind == MotionBlockKind::CharacterRelease) {
+    if (step.kind == MotionStepKind::LineFeed || step.kind == MotionStepKind::CharacterRelease) {
       return !motorFeedbackFresh(config_.topology.lineFeedMotorId, nowMs);
+    }
+    if (step.kind == MotionStepKind::ServoPress || step.kind == MotionStepKind::ServoRelease) {
+      return !motorFeedbackFresh(config_.topology.pressMotorId, nowMs);
     }
     return false;
   }
@@ -521,22 +548,22 @@ class MotionExecutor {
   }
 
   bool commandResponseFault(const MotorState& state) {
-    if (blockStartedAtMs_ == 0) {
+    if (stepStartedAtMs_ == 0) {
       return false;
     }
-    if (state.driverFault && state.lastStatusMs >= blockStartedAtMs_) {
+    if (state.driverFault && state.lastStatusMs >= stepStartedAtMs_) {
       stopAll();
       fail(state.lastErrorCode != nullptr && state.lastErrorCode[0] != '\0' ? state.lastErrorCode : "driver_fault",
            state.lastErrorMessage != nullptr && state.lastErrorMessage[0] != '\0' ? state.lastErrorMessage
                                                                                    : "Motor driver reported a fault");
       return true;
     }
-    if (state.lastConditionNotMetCommand != 0 && state.lastConditionNotMetMs >= blockStartedAtMs_) {
+    if (state.lastConditionNotMetCommand != 0 && state.lastConditionNotMetMs >= stepStartedAtMs_) {
       stopAll();
       fail("motion_condition_not_met", "Motor rejected motion conditions");
       return true;
     }
-    if (state.lastMalformedCommand != 0 && state.lastMalformedMs >= blockStartedAtMs_) {
+    if (state.lastMalformedCommand != 0 && state.lastMalformedMs >= stepStartedAtMs_) {
       stopAll();
       fail("motion_command_malformed", "Motor reported malformed command");
       return true;
@@ -552,22 +579,28 @@ class MotionExecutor {
   static constexpr uint32_t kBaselineAcquireTimeoutMs = 1500;
   static constexpr uint32_t kFeedbackFreshMs = 300;
 
-  bool requiresFeedbackBaseline(const MotionBlock& block) const {
-    if (block.kind == MotionBlockKind::MoveXY) {
-      return block.deltaSteps.x != 0 || block.deltaSteps.yLeft != 0 || block.deltaSteps.yRight != 0;
+  bool requiresFeedbackBaseline(const MotionStep& step) const {
+    if (step.kind == MotionStepKind::MoveXY) {
+      return step.deltaSteps.x != 0 || step.deltaSteps.yLeft != 0 || step.deltaSteps.yRight != 0;
     }
-    if (block.kind == MotionBlockKind::LineFeed || block.kind == MotionBlockKind::CharacterRelease) {
-      return block.deltaSteps.lineFeed != 0;
+    if (step.kind == MotionStepKind::LineFeed || step.kind == MotionStepKind::CharacterRelease) {
+      return step.deltaSteps.lineFeed != 0;
+    }
+    if (step.kind == MotionStepKind::ServoPress || step.kind == MotionStepKind::ServoRelease) {
+      return pressMotorSignedSteps(step.kind) != 0;
     }
     return false;
   }
 
-  bool baselineReady(const MotionBlock& block) const {
-    if (block.kind == MotionBlockKind::MoveXY) {
-      return moveXYBaselineReady(block);
+  bool baselineReady(const MotionStep& step) const {
+    if (step.kind == MotionStepKind::MoveXY) {
+      return moveXYBaselineReady(step);
     }
-    if (block.kind == MotionBlockKind::LineFeed || block.kind == MotionBlockKind::CharacterRelease) {
+    if (step.kind == MotionStepKind::LineFeed || step.kind == MotionStepKind::CharacterRelease) {
       return lineFeedBaselineReady();
+    }
+    if (step.kind == MotionStepKind::ServoPress || step.kind == MotionStepKind::ServoRelease) {
+      return pressMotorBaselineReady();
     }
     return true;
   }
@@ -577,28 +610,28 @@ class MotionExecutor {
            feedback_.hasFreshVelocity(motorId, nowMs, kBaselineFreshMs);
   }
 
-  bool moveXYBaselineReady(const MotionBlock& block) const {
+  bool moveXYBaselineReady(const MotionStep& step) const {
     const uint32_t nowMs = millis();
-    if (block.deltaSteps.x != 0 && !motorBaselineReady(config_.topology.xMotorId, nowMs)) {
+    if (step.deltaSteps.x != 0 && !motorBaselineReady(config_.topology.xMotorId, nowMs)) {
       return false;
     }
-    if (block.deltaSteps.yLeft != 0 || block.deltaSteps.yRight != 0) {
+    if (step.deltaSteps.yLeft != 0 || step.deltaSteps.yRight != 0) {
       return motorBaselineReady(config_.topology.yLeftMotorId, nowMs) &&
              motorBaselineReady(config_.topology.yRightMotorId, nowMs);
     }
     return true;
   }
 
-  bool validateMoveXYBaseline(const MotionBlock& block) {
-    if (moveXYBaselineReady(block)) {
+  bool validateMoveXYBaseline(const MotionStep& step) {
+    if (moveXYBaselineReady(step)) {
       return true;
     }
     const uint32_t nowMs = millis();
-    if (block.deltaSteps.x != 0 && !motorBaselineReady(config_.topology.xMotorId, nowMs)) {
+    if (step.deltaSteps.x != 0 && !motorBaselineReady(config_.topology.xMotorId, nowMs)) {
       fail("motor_feedback_baseline_missing", "X motor feedback baseline missing");
       return false;
     }
-    if (block.deltaSteps.yLeft != 0 || block.deltaSteps.yRight != 0) {
+    if (step.deltaSteps.yLeft != 0 || step.deltaSteps.yRight != 0) {
       if (!motorBaselineReady(config_.topology.yLeftMotorId, nowMs)) {
         fail("motor_feedback_baseline_missing", "Y left motor feedback baseline missing");
         return false;
@@ -624,16 +657,48 @@ class MotionExecutor {
     return true;
   }
 
+  bool pressMotorBaselineReady() const {
+    const uint32_t nowMs = millis();
+    return motorBaselineReady(config_.topology.pressMotorId, nowMs);
+  }
+
+  bool validatePressMotorBaseline() {
+    if (!pressMotorBaselineReady()) {
+      fail("press_motor_baseline_missing", "Press motor feedback baseline missing");
+      return false;
+    }
+    return true;
+  }
+
+  int32_t pressMotorSignedSteps(MotionStepKind kind) const {
+    if (kind == MotionStepKind::ServoPress) {
+      return signedStepsForDirection(config_.pressMotor.pressSteps, config_.pressMotor.pressDirection);
+    }
+    if (kind == MotionStepKind::ServoRelease) {
+      return signedStepsForDirection(config_.pressMotor.releaseSteps, config_.pressMotor.releaseDirection);
+    }
+    return 0;
+  }
+
+  int32_t pressMotorSignedSteps(PressAction action) const {
+    if (action == PressAction::Press) {
+      return signedStepsForDirection(config_.pressMotor.pressSteps, config_.pressMotor.pressDirection);
+    }
+    if (action == PressAction::Release) {
+      return signedStepsForDirection(config_.pressMotor.releaseSteps, config_.pressMotor.releaseDirection);
+    }
+    return 0;
+  }
+
   const TypingConfig& config_;
   EmmV5Driver& driver_;
-  ServoPressHal& servo_;
   MotorFeedbackStore& feedback_;
   YPairController yPair_;
   State state_;
-  const MotionBlock* blocks_;
-  size_t blockCount_;
-  size_t currentBlock_;
-  uint32_t blockStartedAtMs_;
+  const MotionStep* steps_;
+  size_t stepCount_;
+  size_t currentStep_;
+  uint32_t stepStartedAtMs_;
   uint32_t settleStartedAtMs_;
   const char* faultCode_;
   const char* faultMessage_;
@@ -644,8 +709,8 @@ class MotionExecutor {
   uint32_t lastFeedbackPollMs_;
   bool waitingForBaseline_;
   uint32_t baselineRequestedAtMs_;
-  bool currentBlockStartedEvent_;
-  size_t lastCompletedBlock_;
+  bool currentStepStartedEvent_;
+  size_t lastCompletedStep_;
   uint32_t lastCompletedDurationMs_;
 };
 

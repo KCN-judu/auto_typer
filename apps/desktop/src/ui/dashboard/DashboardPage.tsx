@@ -34,7 +34,7 @@ export function DashboardPage({ status, connectionState }: DashboardPageProps) {
         <SummaryModule item={summary.health} />
         <SummaryModule item={summary.jobState} />
         <SummaryModule item={summary.coordinates} />
-        <SummaryModule item={summary.blockProgress} />
+        <SummaryModule item={summary.groupProgress} />
         <SummaryModule item={summary.canState} />
       </div>
 

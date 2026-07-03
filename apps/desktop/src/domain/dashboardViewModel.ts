@@ -56,7 +56,7 @@ export interface DashboardSummary {
   health: SummaryItem;
   jobState: SummaryItem;
   coordinates: SummaryItem;
-  blockProgress: SummaryItem;
+  groupProgress: SummaryItem;
   canState: SummaryItem;
 }
 
@@ -93,9 +93,9 @@ export function buildDashboardSummary(
       value: job ? `${job.currentPoint.xMm.toFixed(1)}, ${job.currentPoint.yMm.toFixed(1)} mm` : "0.0, 0.0 mm",
       tone: "unknown",
     },
-    blockProgress: {
-      label: "Block",
-      value: job ? `${job.currentBlock ?? 0} / ${job.totalBlocks ?? 0}` : "— / —",
+    groupProgress: {
+      label: "Group",
+      value: job ? `${job.currentStep} / ${job.totalSteps}` : "— / —",
       tone: "unknown",
     },
     canState: {
@@ -281,8 +281,6 @@ export interface JobOverviewViewModel {
   currentIndex: number;
   currentStep: number;
   totalSteps: number;
-  currentBlock: number;
-  totalBlocks: number;
   position: string;
   message: string | null;
   progressPercent: number;
@@ -298,8 +296,6 @@ export function buildJobOverview(job?: JobStatus): JobOverviewViewModel {
       currentIndex: 0,
       currentStep: 0,
       totalSteps: 0,
-      currentBlock: 0,
-      totalBlocks: 0,
       position: "0.0, 0.0",
       message: null,
       progressPercent: 0,
@@ -314,8 +310,6 @@ export function buildJobOverview(job?: JobStatus): JobOverviewViewModel {
     currentIndex: job.currentIndex,
     currentStep: job.currentStep,
     totalSteps: job.totalSteps,
-    currentBlock: job.currentBlock ?? 0,
-    totalBlocks: job.totalBlocks ?? 0,
     position: `${job.currentPoint.xMm.toFixed(1)}, ${job.currentPoint.yMm.toFixed(1)}`,
     message: job.message ?? null,
     progressPercent: progress,

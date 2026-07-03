@@ -5,10 +5,11 @@ type StoreShape = {
   recentJobs: Array<{ jobId: string; text: string; createdAt: string }>;
 };
 
-type BlockStreamCommandMessage = {
+type GroupStreamCommandMessage = {
   v: 1;
   id: string;
   type: string;
+  timeoutMs?: number;
   [key: string]: unknown;
 };
 
@@ -22,7 +23,7 @@ type AckMessage = {
   message?: string;
 };
 
-type BlockStreamEventMessage = {
+type GroupStreamEventMessage = {
   v: 1;
   type: string;
   [key: string]: unknown;
@@ -39,16 +40,16 @@ contextBridge.exposeInMainWorld("autoTyper", {
       body: string;
       contentType: string;
     }>,
-  blockStreamConnect: (request: { host: string; port: number }) =>
-    ipcRenderer.invoke("blockStream:connect", request) as Promise<{ connected: boolean }>,
-  blockStreamDisconnect: () => ipcRenderer.invoke("blockStream:disconnect") as Promise<{ connected: boolean }>,
-  blockStreamSend: (message: BlockStreamCommandMessage) =>
-    ipcRenderer.invoke("blockStream:send", message) as Promise<AckMessage>,
-  blockStreamOnMessage: (listener: (message: BlockStreamEventMessage) => void) => {
-    const wrapped = (_event: unknown, message: BlockStreamEventMessage) => listener(message);
-    ipcRenderer.on("blockStream:message", wrapped);
+  groupStreamConnect: (request: { host: string; port: number }) =>
+    ipcRenderer.invoke("groupStream:connect", request) as Promise<{ connected: boolean }>,
+  groupStreamDisconnect: () => ipcRenderer.invoke("groupStream:disconnect") as Promise<{ connected: boolean }>,
+  groupStreamSend: (message: GroupStreamCommandMessage) =>
+    ipcRenderer.invoke("groupStream:send", message) as Promise<AckMessage>,
+  groupStreamOnMessage: (listener: (message: GroupStreamEventMessage) => void) => {
+    const wrapped = (_event: unknown, message: GroupStreamEventMessage) => listener(message);
+    ipcRenderer.on("groupStream:message", wrapped);
     return () => {
-      ipcRenderer.off("blockStream:message", wrapped);
+      ipcRenderer.off("groupStream:message", wrapped);
     };
   },
 });

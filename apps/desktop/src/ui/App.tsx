@@ -7,29 +7,36 @@ import {
   Gauge,
   Grid3X3,
   Keyboard,
+  KeyRound,
   LayoutDashboard,
   PlugZap,
   Radio,
+  RefreshCw,
   Save,
   Send,
   Settings,
   Square,
+  Wifi,
   Wrench,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type {
-  BlockFaultMessage,
-  BlockStreamEventMessage,
+  CanBusDiagnostics,
   DeviceStatus,
+  GroupFaultMessage,
+  GroupStreamEventMessage,
   KeymapDocument,
   MotorDirection,
   MotorState,
   ServoCommand,
+  TelemetryMessage,
+  WifiNetwork,
+  WifiSetupStatusResponse,
 } from "../../../../shared/protocol/auto-typer-protocol";
-import { BlockStreamClient } from "../domain/blockStreamClient";
-import type { PlannedRemoteMotionBlock } from "../domain/blockStreamPlanner";
-import { planTextToRemoteMotionBlocks } from "../domain/blockStreamPlanner";
+import { GroupStreamClient } from "../domain/groupStreamClient";
+import type { PlannedRemoteMotionGroup } from "../domain/groupStreamPlanner";
+import { planTextToRemoteMotionGroups } from "../domain/groupStreamPlanner";
 import { DeviceClient } from "../domain/deviceClient";
 import {
   displayKey,
@@ -53,7 +60,7 @@ type PrintTaskState = {
   stream: StreamState;
   running: boolean;
   currentIndex: number;
-  totalBlocks: number;
+  totalGroups: number;
   currentLabel: string;
   fault?: string;
 };
@@ -69,14 +76,21 @@ export function App() {
   const [view, setView] = useState<View>("dashboard");
   const [deviceUrl, setDeviceUrl] = useState("http://192.168.4.42");
   const [connection, setConnection] = useState<ConnectionState>("disconnected");
+  const [setupUrl, setSetupUrl] = useState("http://192.168.4.1");
   const [status, setStatus] = useState<DeviceStatus>(mockStatus);
   const [keymap, setKeymap] = useState<KeymapDocument>(mockKeymap);
   const [jobText, setJobText] = useState("asdf jkl");
+  const [skipLineFeed, setSkipLineFeed] = useState(true);
+  const [wifiStatus, setWifiStatus] = useState<WifiSetupStatusResponse | undefined>();
+  const [wifiNetworks, setWifiNetworks] = useState<WifiNetwork[]>([]);
+  const [selectedWifiSsid, setSelectedWifiSsid] = useState("");
+  const [wifiPassword, setWifiPassword] = useState("");
+  const [wifiSetupBusy, setWifiSetupBusy] = useState(false);
   const [printTask, setPrintTask] = useState<PrintTaskState>({
     stream: "disconnected",
     running: false,
     currentIndex: 0,
-    totalBlocks: 0,
+    totalGroups: 0,
     currentLabel: "",
   });
   const [logLines, setLogLines] = useState<string[]>(["等待连接 ESP32"]);
@@ -93,10 +107,11 @@ export function App() {
   });
 
   const client = useMemo(() => new DeviceClient(deviceUrl), [deviceUrl]);
-  const streamClient = useMemo(() => new BlockStreamClient(), []);
+  const setupClient = useMemo(() => new DeviceClient(setupUrl), [setupUrl]);
+  const streamClient = useMemo(() => new GroupStreamClient(), []);
   const keymapIssues = useMemo(() => validateKeymap(keymap), [keymap]);
   const printTaskRef = useRef(printTask);
-  const activeBlockIdRef = useRef<string | undefined>();
+  const activeGroupIdRef = useRef<string | undefined>();
 
   useEffect(() => {
     printTaskRef.current = printTask;
@@ -112,58 +127,165 @@ export function App() {
 
   useEffect(() => {
     return streamClient.onMessage((message) => {
-      handleBlockStreamEvent(message);
+      handleGroupStreamEvent(message);
     });
   }, [streamClient]);
 
   async function connect() {
+    await connectAt(deviceUrl);
+  }
+
+  async function connectAt(targetUrl: string) {
     setConnection("connecting");
+    const targetClient = new DeviceClient(targetUrl);
     try {
-      const nextStatus = await client.status();
-      const nextKeymap = await client.getKeymap();
+      const nextStatus = await targetClient.status();
+      const nextKeymap = await targetClient.getKeymap();
+      setDeviceUrl(targetUrl);
       setStatus(nextStatus);
       setKeymap(currentFeiyu200Keymap(sanitizeKeymap(nextKeymap)));
       setConnection("connected");
       appendLog(`已连接 ${nextStatus.deviceId} ${nextStatus.ipAddress}`);
-      await window.autoTyper?.writeStore({ lastDeviceUrl: deviceUrl, recentJobs: [] });
+      await window.autoTyper?.writeStore({ lastDeviceUrl: targetUrl, recentJobs: [] });
+      return nextStatus;
     } catch (error) {
       setConnection("fault");
       appendLog(error instanceof Error ? error.message : "连接失败");
+      throw error;
     }
+  }
+
+  async function refreshWifiStatus() {
+    setWifiSetupBusy(true);
+    try {
+      const next = await setupClient.wifiStatus();
+      setWifiStatus(next);
+      if (!selectedWifiSsid && next.staSsid) {
+        setSelectedWifiSsid(next.staSsid);
+      }
+      appendLog(`配网状态：${wifiPhaseLabel(next.phase)}`);
+    } catch (error) {
+      appendLog(error instanceof Error ? error.message : "读取配网状态失败");
+    } finally {
+      setWifiSetupBusy(false);
+    }
+  }
+
+  async function scanWifiNetworks() {
+    setWifiSetupBusy(true);
+    try {
+      const response = await setupClient.wifiNetworks();
+      setWifiNetworks(response.networks);
+      if (!selectedWifiSsid && response.networks[0]) {
+        setSelectedWifiSsid(response.networks[0].ssid);
+      }
+      appendLog(`扫描到 ${response.networks.length} 个 Wi-Fi`);
+    } catch (error) {
+      appendLog(error instanceof Error ? error.message : "Wi-Fi 扫描失败");
+    } finally {
+      setWifiSetupBusy(false);
+    }
+  }
+
+  async function configureWifi() {
+    if (!selectedWifiSsid) {
+      appendLog("请选择 Wi-Fi SSID");
+      return;
+    }
+
+    setWifiSetupBusy(true);
+    try {
+      const initial = await setupClient.configureWifi({ ssid: selectedWifiSsid, password: wifiPassword });
+      setWifiStatus(initial);
+      appendLog(`已提交 Wi-Fi 配置：${selectedWifiSsid}`);
+      const connected = await pollWifiSetupConnected();
+      if (!connected?.ipAddress) {
+        appendLog("未等到设备 STA IP，可稍后刷新配网状态");
+        return;
+      }
+
+      const nextUrl = `http://${connected.ipAddress}`;
+      setDeviceUrl(nextUrl);
+      appendLog(`设备已联网：${nextUrl}`);
+      try {
+        await connectAt(nextUrl);
+        try {
+          const finished = await new DeviceClient(nextUrl).finishWifiSetup();
+          setWifiStatus(finished);
+          appendLog("setup AP 已关闭");
+        } catch (error) {
+          appendLog(error instanceof Error ? `关闭 setup AP 失败：${error.message}` : "关闭 setup AP 失败");
+        }
+      } catch {
+        appendLog(`请将电脑切回 ${selectedWifiSsid} 后连接 ${nextUrl}`);
+      }
+    } catch (error) {
+      appendLog(error instanceof Error ? error.message : "Wi-Fi 配网失败");
+    } finally {
+      setWifiSetupBusy(false);
+    }
+  }
+
+  async function pollWifiSetupConnected(): Promise<WifiSetupStatusResponse | undefined> {
+    for (let attempt = 0; attempt < 16; attempt += 1) {
+      await delayMs(1500);
+      try {
+        const next = await setupClient.wifiStatus();
+        setWifiStatus(next);
+        if (next.staConnected && next.ipAddress) {
+          return next;
+        }
+      } catch {
+        // Keep polling while the setup link changes state.
+      }
+    }
+    return undefined;
   }
 
   async function submitJob() {
     const jobId = `job-${Date.now().toString(36)}`;
-    const plan = planTextToRemoteMotionBlocks(jobText, keymap, jobId);
+    let latestStatus = status;
+    try {
+      latestStatus = await client.probeMotors();
+      setStatus(latestStatus);
+      appendLog("已刷新电机 readiness");
+    } catch (error) {
+      appendLog(error instanceof Error ? `电机探测失败，使用当前状态规划：${error.message}` : "电机探测失败，使用当前状态规划");
+    }
+    const lineFeedAvailable = isLineFeedMotorReady(latestStatus);
+    const disableLineFeed = skipLineFeed || !lineFeedAvailable;
+    const plan = planTextToRemoteMotionGroups(jobText, keymap, jobId, { xMm: 0, yMm: 0 }, { disableLineFeed });
     setPrintTask((task) => ({
       ...task,
       currentIndex: 0,
-      totalBlocks: plan.blocks.length,
+      totalGroups: plan.groups.length,
       currentLabel: "",
       fault: plan.ok ? undefined : plan.message,
     }));
     if (!plan.ok) {
+      plan.warnings.forEach((warning) => appendLog(warning));
       appendLog(`规划失败：${plan.message}`);
       return;
     }
-    if (plan.blocks.length === 0) {
+    if (plan.groups.length === 0) {
       appendLog("任务为空");
       return;
     }
     try {
-      await ensureBlockStreamConnected();
+      await ensureGroupStreamConnected();
+      plan.warnings.forEach((warning) => appendLog(warning));
       const runningTask = {
         ...printTaskRef.current,
         running: true,
         stream: "running" as const,
-        totalBlocks: plan.blocks.length,
+        totalGroups: plan.groups.length,
         fault: undefined,
       };
       printTaskRef.current = runningTask;
       setPrintTask(runningTask);
-      appendLog(`开始块流任务：${plan.blocks.length} blocks`);
-      await runPlannedBlocks(plan.blocks);
-      appendLog("块流任务完成");
+      appendLog(`开始任务组流：${plan.groups.length} groups`);
+      await runPlannedGroups(plan.groups);
+      appendLog("任务组流完成");
       const nextStatus = await client.status();
       setStatus(nextStatus);
     } catch (error) {
@@ -171,11 +293,11 @@ export function App() {
       setPrintTask((task) => ({ ...task, running: false, stream: task.stream === "unknown" ? "unknown" : "fault", fault: message }));
       appendLog(message);
     } finally {
-      activeBlockIdRef.current = undefined;
+      activeGroupIdRef.current = undefined;
     }
   }
 
-  async function ensureBlockStreamConnected() {
+  async function ensureGroupStreamConnected() {
     if (printTaskRef.current.stream === "connected" || printTaskRef.current.stream === "running") {
       return;
     }
@@ -183,32 +305,42 @@ export function App() {
     const host = deviceUrlToHost(deviceUrl);
     await streamClient.connect({ host, port: 7777 });
     setPrintTask((task) => ({ ...task, stream: "connected" }));
-    appendLog(`块流已连接 ${host}:7777`);
+    appendLog(`任务组流已连接 ${host}:7777`);
   }
 
-  async function runPlannedBlocks(blocks: PlannedRemoteMotionBlock[]) {
-    for (let index = 0; index < blocks.length; index += 1) {
-      const planned = blocks[index];
+  async function probeGroupStreamMotors() {
+    appendLog("任务组流电机探测中");
+    const ack = await streamClient.probe();
+    if (!ack.ok || !ack.accepted) {
+      throw new Error(`Group probe rejected: ${ack.code ?? "rejected"} ${ack.message ?? ""}`.trim());
+    }
+    appendLog("任务组流电机探测完成");
+  }
+
+  async function runPlannedGroups(groups: PlannedRemoteMotionGroup[]) {
+    await probeGroupStreamMotors();
+    for (let index = 0; index < groups.length; index += 1) {
+      const planned = groups[index];
       if (!printTaskRef.current.running) {
         throw new Error("任务已取消");
       }
-      activeBlockIdRef.current = planned.blockId;
+      activeGroupIdRef.current = planned.groupId;
       setPrintTask((task) => ({
         ...task,
         currentIndex: index + 1,
-        currentLabel: blockLabel(planned),
+        currentLabel: groupLabel(planned),
       }));
-      const ack = await streamClient.sendExecBlock(planned.blockId, planned.block);
+      const ack = await streamClient.sendExecGroup(planned.groupId, planned.steps);
       if (!ack.ok || !ack.accepted) {
-        throw new Error(`Block rejected: ${ack.code ?? "rejected"} ${ack.message ?? ""}`.trim());
+        throw new Error(`Group rejected: ${ack.code ?? "rejected"} ${ack.message ?? ""}`.trim());
       }
-      await waitForBlockDone(planned);
-      activeBlockIdRef.current = undefined;
+      await waitForGroupDone(planned);
+      activeGroupIdRef.current = undefined;
     }
     setPrintTask((task) => ({ ...task, running: false, stream: "connected", currentLabel: "" }));
   }
 
-  function waitForBlockDone(planned: PlannedRemoteMotionBlock): Promise<void> {
+  function waitForGroupDone(planned: PlannedRemoteMotionGroup): Promise<void> {
     return new Promise((resolve, reject) => {
       let unsubscribe = () => {};
       let timeout: ReturnType<typeof setTimeout>;
@@ -218,10 +350,10 @@ export function App() {
       };
       timeout = setTimeout(() => {
         cleanup();
-        reject(new Error(`Block timed out: ${planned.blockId}`));
-      }, blockDoneTimeoutMs(planned));
+        reject(new Error(`Group timed out: ${planned.groupId}`));
+      }, groupDoneTimeoutMs(planned));
       unsubscribe = streamClient.onMessage((message) => {
-        if (message.type === "block_done" && message.blockId === planned.blockId) {
+        if (message.type === "group_done" && message.groupId === planned.groupId) {
           cleanup();
           resolve();
           return;
@@ -234,9 +366,9 @@ export function App() {
     });
   }
 
-  function handleBlockStreamEvent(message: BlockStreamEventMessage) {
-    if (message.type === "block_done") {
-      appendLog(`Block done ${message.blockId}${message.durationMs !== undefined ? ` ${message.durationMs}ms` : ""}`);
+  function handleGroupStreamEvent(message: GroupStreamEventMessage) {
+    if (message.type === "group_done") {
+      appendLog(`Group done ${message.groupId}${message.durationMs !== undefined ? ` ${message.durationMs}ms` : ""}`);
       if (message.currentPoint) {
         setStatus((current) => ({
           ...current,
@@ -259,6 +391,8 @@ export function App() {
       setStatus((current) => ({
         ...current,
         mode: message.executor === "faulted" ? "faulted" : message.executor === "running" ? "running" : current.mode,
+        canDiagnostics: mergeCanDiagnostics(current.canDiagnostics, message.can),
+        motors: message.motors ? mergeTelemetryMotors(current.motors, message.motors) : current.motors,
         currentJob: current.currentJob
           ? { ...current.currentJob, currentPoint: message.currentPoint }
           : {
@@ -292,12 +426,12 @@ export function App() {
       return;
     }
     if (message.type === "fault") {
-      const fault = message as BlockFaultMessage;
+      const fault = message as GroupFaultMessage;
       const text = `${fault.code}: ${fault.message}`;
       setPrintTask((task) => ({
         ...task,
         running: false,
-        stream: fault.code === "disconnect" && activeBlockIdRef.current ? "unknown" : "fault",
+        stream: fault.code === "disconnect" && activeGroupIdRef.current ? "unknown" : "fault",
         fault: text,
       }));
       appendLog(text);
@@ -310,7 +444,7 @@ export function App() {
       setPrintTask((task) => ({ ...task, running: false }));
       if (printTaskRef.current.stream === "connected" || printTaskRef.current.stream === "running") {
         const ack = await streamClient.cancel();
-        appendLog(ack.accepted ? "已取消块流任务" : `取消拒绝：${ack.message ?? ack.code ?? "rejected"}`);
+        appendLog(ack.accepted ? "已取消任务组流" : `取消拒绝：${ack.message ?? ack.code ?? "rejected"}`);
       } else {
         setStatus(await client.cancelJob());
         appendLog("已取消当前任务");
@@ -493,13 +627,17 @@ export function App() {
             <div className="panel large">
               <div className="panelHeader">
                 <h2>文本任务</h2>
-                <span>{jobText.length} 字符 / {printTask.totalBlocks} blocks</span>
+                <span>{jobText.length} 字符 / {printTask.totalGroups} groups</span>
               </div>
               <textarea value={jobText} onChange={(event) => setJobText(event.target.value)} spellCheck={false} />
+              <label className="checkbox compact">
+                <input type="checkbox" checked={skipLineFeed} onChange={(event) => setSkipLineFeed(event.target.checked)} />
+                跳过走纸
+              </label>
               <div className="actionRow">
                 <button className="primary" onClick={submitJob} disabled={connection !== "connected" || isBusy || status.mode === "faulted"}>
                   <Send size={16} />
-                  开始块流打印
+                  开始任务组流打印
                 </button>
                 {status.mode === "faulted" && <span className="inlineFault">{faultText(status)}</span>}
                 <button className="secondary" onClick={cancelJob} disabled={connection !== "connected"}>
@@ -576,14 +714,30 @@ export function App() {
 
         {view === "settings" && (
           <section className="panelGrid">
-            <TaskStatusPanel status={status} logLines={logLines} printTask={printTask} />
-            <div className="panel">
-              <div className="panelHeader">
-                <h2>映射表</h2>
-                <span>{keymapIssues.length} 项提示</span>
+            <WifiSetupPanel
+              setupUrl={setupUrl}
+              setSetupUrl={setSetupUrl}
+              wifiStatus={wifiStatus}
+              networks={wifiNetworks}
+              selectedSsid={selectedWifiSsid}
+              setSelectedSsid={setSelectedWifiSsid}
+              password={wifiPassword}
+              setPassword={setWifiPassword}
+              busy={wifiSetupBusy}
+              onRefreshStatus={refreshWifiStatus}
+              onScanNetworks={scanWifiNetworks}
+              onConfigure={configureWifi}
+            />
+            <div className="settingsStack">
+              <TaskStatusPanel status={status} logLines={logLines} printTask={printTask} />
+              <div className="panel">
+                <div className="panelHeader">
+                  <h2>映射表</h2>
+                  <span>{keymapIssues.length} 项提示</span>
+                </div>
+                <button className="secondary" onClick={() => setKeymap(emptyKeymap())}>新建空映射</button>
+                <KeymapPanel keymap={keymap} issues={keymapIssues} />
               </div>
-              <button className="secondary" onClick={() => setKeymap(emptyKeymap())}>新建空映射</button>
-              <KeymapPanel keymap={keymap} issues={keymapIssues} />
             </div>
           </section>
         )}
@@ -636,30 +790,182 @@ function deviceUrlToHost(deviceUrl: string): string {
   }
 }
 
-function blockLabel(block: PlannedRemoteMotionBlock): string {
-  const suffix = block.targetKeyLabel ? ` ${block.targetKeyLabel}` : "";
-  return `${block.kind}${suffix}`;
+function groupLabel(group: PlannedRemoteMotionGroup): string {
+  const suffix = group.targetKeyLabel ? ` ${group.targetKeyLabel}` : "";
+  return `${group.kind}${suffix}`;
 }
 
-function blockDoneTimeoutMs(planned: PlannedRemoteMotionBlock): number {
-  const block = planned.block;
+function isLineFeedMotorReady(status: DeviceStatus): boolean {
+  return status.motors?.some((motor) => motor.role === "line_feed" && motor.readiness === "ready") === true;
+}
+
+function delayMs(durationMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, durationMs);
+  });
+}
+
+function wifiPhaseLabel(phase: WifiSetupStatusResponse["phase"]): string {
+  switch (phase) {
+    case "connected":
+      return "已联网";
+    case "connecting":
+      return "连接中";
+    case "failed":
+      return "连接失败";
+    case "no_credentials":
+      return "待配网";
+    case "idle":
+    default:
+      return "空闲";
+  }
+}
+
+function mergeCanDiagnostics(
+  current: DeviceStatus["canDiagnostics"],
+  telemetry: TelemetryMessage["can"],
+): DeviceStatus["canDiagnostics"] {
+  if (!telemetry || !current) {
+    return current;
+  }
+  const merged: CanBusDiagnostics = { ...current, ...telemetry };
+  return merged;
+}
+
+function mergeTelemetryMotors(
+  current: MotorState[] | undefined,
+  telemetry: NonNullable<TelemetryMessage["motors"]>,
+): MotorState[] | undefined {
+  if (!current || !telemetry) {
+    return current;
+  }
+  return current.map((motor) => {
+    const update = telemetry.find((candidate) => candidate.id === motor.id);
+    if (!update) {
+      return motor;
+    }
+    return {
+      ...motor,
+      role: update.role,
+      readiness: update.readiness,
+      velocityRpm: update.rpm,
+      inputPulseSteps: update.inputPulse,
+      realtimeAngleRaw65536: update.angle,
+      hasRecentInputPulse: update.fresh,
+      hasRecentVelocity: update.fresh,
+    };
+  });
+}
+
+function groupDoneTimeoutMs(planned: PlannedRemoteMotionGroup): number {
   const paddingMs = 3000;
-  if (block.kind === "move_xy" && block.profile?.timeoutMs) {
-    return block.profile.timeoutMs + paddingMs;
+  const moveStep = planned.steps.find((step) => step.kind === "move_xy");
+  if (moveStep?.kind === "move_xy" && moveStep.profile?.timeoutMs) {
+    return moveStep.profile.timeoutMs + paddingMs;
   }
-  if (block.kind === "wait") {
-    return block.durationMs + paddingMs;
+  const waitStep = planned.steps.find((step) => step.kind === "wait");
+  if (waitStep?.kind === "wait") {
+    return waitStep.durationMs + paddingMs;
   }
-  if (block.kind === "servo_press" || block.kind === "servo_release") {
+  if (planned.steps.some((step) => step.kind === "servo_press" || step.kind === "servo_release")) {
     return 5000;
   }
-  if (block.kind === "line_feed") {
+  if (planned.steps.some((step) => step.kind === "line_feed")) {
     return 30000;
   }
-  if (block.kind === "character_release") {
+  if (planned.steps.some((step) => step.kind === "character_release")) {
     return 10000;
   }
   return 30000;
+}
+
+function WifiSetupPanel({
+  setupUrl,
+  setSetupUrl,
+  wifiStatus,
+  networks,
+  selectedSsid,
+  setSelectedSsid,
+  password,
+  setPassword,
+  busy,
+  onRefreshStatus,
+  onScanNetworks,
+  onConfigure,
+}: {
+  setupUrl: string;
+  setSetupUrl: (value: string) => void;
+  wifiStatus?: WifiSetupStatusResponse;
+  networks: WifiNetwork[];
+  selectedSsid: string;
+  setSelectedSsid: (value: string) => void;
+  password: string;
+  setPassword: (value: string) => void;
+  busy: boolean;
+  onRefreshStatus: () => void;
+  onScanNetworks: () => void;
+  onConfigure: () => void;
+}) {
+  return (
+    <div className="panel wifiPanel">
+      <div className="panelHeader">
+        <h2>Wi-Fi 配网</h2>
+        <span>{wifiStatus ? wifiPhaseLabel(wifiStatus.phase) : "setup AP"}</span>
+      </div>
+      <div className="wifiSetupCard">
+        <div className="wifiSetupMark">
+          <Wifi size={22} />
+        </div>
+        <div>
+          <div className="wifiSetupTitle">{wifiStatus?.setupSsid || "auto-typer-setup"}</div>
+          <div className="wifiSetupSub">{wifiStatus?.setupPassword ? `AP 密码 ${wifiStatus.setupPassword}` : "连接 setup AP 后扫描设备可用 Wi-Fi"}</div>
+        </div>
+      </div>
+      <div className="formGrid wifiFormGrid">
+        <label>
+          Setup 地址
+          <input value={setupUrl} onChange={(event) => setSetupUrl(event.target.value)} />
+        </label>
+        <label>
+          目标 Wi-Fi
+          <select value={selectedSsid} onChange={(event) => setSelectedSsid(event.target.value)}>
+            <option value="">选择 SSID</option>
+            {networks.map((network) => (
+              <option key={`${network.ssid}-${network.channel}`} value={network.ssid}>
+                {network.ssid} · {network.rssi} dBm · {network.secure ? network.encryption : "open"}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Wi-Fi 密码
+          <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
+        </label>
+      </div>
+      <div className="actionRow wrap">
+        <button className="secondary" disabled={busy} onClick={onRefreshStatus}>
+          <RefreshCw size={16} />
+          刷新状态
+        </button>
+        <button className="secondary" disabled={busy} onClick={onScanNetworks}>
+          <Radio size={16} />
+          扫描网络
+        </button>
+        <button className="primary" disabled={busy || !selectedSsid} onClick={onConfigure}>
+          <KeyRound size={16} />
+          发送配网
+        </button>
+      </div>
+      <div className="stateRows wifiStateRows">
+        <StateRow label="Setup AP" value={wifiStatus?.setupApActive ? "ACTIVE" : "OFF"} />
+        <StateRow label="STA" value={wifiStatus?.staConnected ? "CONNECTED" : wifiStatus?.staConnecting ? "CONNECTING" : "OFF"} />
+        <StateRow label="STA IP" value={wifiStatus?.ipAddress || "-"} />
+        <StateRow label="SSID" value={wifiStatus?.staSsid || selectedSsid || "-"} />
+        <StateRow label="RSSI" value={wifiStatus ? `${wifiStatus.wifiRssi} dBm` : "-"} />
+        {wifiStatus?.lastError && <StateRow label="错误" value={wifiStatus.lastError} />}
+      </div>
+    </div>
+  );
 }
 
 function TaskStatusPanel({ status, logLines, printTask }: { status: DeviceStatus; logLines: string[]; printTask: PrintTaskState }) {
@@ -672,14 +978,14 @@ function TaskStatusPanel({ status, logLines, printTask }: { status: DeviceStatus
       <div className="stateRows">
         <StateRow label="模式" value={status.mode} />
         <StateRow label="健康" value={status.health} />
-        <StateRow label="块流" value={printTask.stream} />
+        <StateRow label="任务组流" value={printTask.stream} />
         <StateRow label="舵机" value={status.servoReady ? "READY" : "WAIT"} />
         <StateRow label="运动" value={status.motionReady ? "READY" : "WAIT"} />
         <StateRow label="任务" value={status.currentJob?.state ?? "none"} />
-        <StateRow label="Block" value={`${printTask.currentIndex}/${printTask.totalBlocks}`} />
+        <StateRow label="Group" value={`${printTask.currentIndex}/${printTask.totalGroups}`} />
         <StateRow label="当前" value={printTask.currentLabel || "-"} />
         <StateRow label="坐标" value={`${status.currentJob?.currentPoint.xMm.toFixed(1) ?? "0.0"}, ${status.currentJob?.currentPoint.yMm.toFixed(1) ?? "0.0"}`} />
-        {printTask.fault && <StateRow label="块流故障" value={printTask.fault} />}
+        {printTask.fault && <StateRow label="任务组流故障" value={printTask.fault} />}
         {status.fault && <StateRow label="故障" value={`${status.fault.code}: ${status.fault.message}`} />}
       </div>
       <div className="logBox">

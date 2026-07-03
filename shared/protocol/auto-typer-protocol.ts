@@ -105,8 +105,6 @@ export interface JobStatus {
   currentIndex: number;
   currentStep: number;
   totalSteps: number;
-  currentBlock?: number;
-  totalBlocks?: number;
   currentPoint: MachinePointMm;
   message?: string;
 }
@@ -172,19 +170,57 @@ export interface ProtocolTraceResponse {
   };
 }
 
+export type WifiSetupPhase = "idle" | "connecting" | "connected" | "failed" | "no_credentials";
+
+export interface WifiSetupStatusResponse {
+  setupApActive: boolean;
+  setupSsid: string;
+  setupPassword: string;
+  setupIpAddress: string;
+  staConnected: boolean;
+  staConnecting: boolean;
+  staSsid: string;
+  ipAddress: string;
+  wifiRssi: number;
+  savedCredentials: boolean;
+  phase: WifiSetupPhase;
+  lastError?: string;
+}
+
+export interface WifiNetwork {
+  ssid: string;
+  rssi: number;
+  channel: number;
+  encryption: string;
+  secure: boolean;
+}
+
+export interface WifiNetworksResponse {
+  networks: WifiNetwork[];
+}
+
+export interface WifiConfigRequest {
+  ssid: string;
+  password: string;
+}
+
 export type RemoteMotionProfile = {
   rpm?: number;
   accelRaw?: number;
   timeoutMs?: number;
 };
 
-export type RemoteMotionBlock =
+export type RemoteMotionStep =
   | { kind: "move_xy"; dxMm: number; dyMm: number; profile?: RemoteMotionProfile }
   | { kind: "servo_press" }
   | { kind: "servo_release" }
   | { kind: "character_release" }
   | { kind: "line_feed" }
   | { kind: "wait"; durationMs: number };
+
+export type RemoteMotionGroup = {
+  steps: RemoteMotionStep[];
+};
 
 export type HelloMessage = {
   v: 1;
@@ -193,12 +229,13 @@ export type HelloMessage = {
   client: "desktop";
 };
 
-export type ExecBlockMessage = {
+export type ExecGroupMessage = {
   v: 1;
   id: string;
-  type: "exec_block";
-  blockId: string;
-  block: RemoteMotionBlock;
+  type: "exec_group";
+  groupId: string;
+  steps: RemoteMotionStep[];
+  timeoutMs?: number;
 };
 
 export type CancelMessage = {
@@ -217,6 +254,7 @@ export type ProbeMessage = {
   v: 1;
   id: string;
   type: "probe";
+  timeoutMs?: number;
 };
 
 export type AckMessage = {
@@ -229,21 +267,21 @@ export type AckMessage = {
   message?: string;
 };
 
-export type BlockStartedMessage = {
+export type GroupStartedMessage = {
   v: 1;
-  type: "block_started";
-  blockId: string;
+  type: "group_started";
+  groupId: string;
 };
 
-export type BlockDoneMessage = {
+export type GroupDoneMessage = {
   v: 1;
-  type: "block_done";
-  blockId: string;
+  type: "group_done";
+  groupId: string;
   durationMs?: number;
   currentPoint?: MachinePointMm;
 };
 
-export type BlockFaultMessage = {
+export type GroupFaultMessage = {
   v: 1;
   type: "fault";
   id?: string;
@@ -253,8 +291,8 @@ export type BlockFaultMessage = {
 
 export type LinkSnapshot = {
   mode: DeviceMode;
-  currentBlockId?: string;
-  lastCompletedBlockId?: string;
+  currentGroupId?: string;
+  lastCompletedGroupId?: string;
   currentPoint: MachinePointMm;
   fault?: {
     code: string;
@@ -267,8 +305,8 @@ export type TelemetryMessage = {
   type: "telemetry";
   executor: "idle" | "running" | "faulted";
   jobState: JobStatus["state"];
-  currentBlockId?: string;
-  lastCompletedBlockId?: string;
+  currentGroupId?: string;
+  lastCompletedGroupId?: string;
   currentPoint: MachinePointMm;
   fault?: {
     code: string;
@@ -278,6 +316,7 @@ export type TelemetryMessage = {
   motors?: Array<{
     id: number;
     role: MotorRole;
+    readiness: MotorReadiness;
     rpm: number;
     inputPulse: number;
     angle: number;
@@ -303,26 +342,26 @@ export type PongMessage = {
   id?: string;
 };
 
-export type BlockStreamCommandMessage =
+export type GroupStreamCommandMessage =
   | HelloMessage
-  | ExecBlockMessage
+  | ExecGroupMessage
   | CancelMessage
   | ResetFaultMessage
   | ProbeMessage
   | PingMessage;
 
-export type BlockStreamEventMessage =
+export type GroupStreamEventMessage =
   | AckMessage
-  | BlockStartedMessage
-  | BlockDoneMessage
-  | BlockFaultMessage
+  | GroupStartedMessage
+  | GroupDoneMessage
+  | GroupFaultMessage
   | TelemetryMessage
   | SnapshotMessage
   | PongMessage;
 
-export type BlockStreamMessage =
-  | BlockStreamCommandMessage
-  | BlockStreamEventMessage;
+export type GroupStreamMessage =
+  | GroupStreamCommandMessage
+  | GroupStreamEventMessage;
 
 export interface ApiErrorBody {
   code: string;
@@ -380,6 +419,10 @@ export const protocolRoutes = {
   probeMotors: "/api/machine/probe-motors",
   canDiagnostics: "/api/diagnostics/can",
   protocolTrace: "/api/diagnostics/protocol-trace",
+  wifiStatus: "/api/wifi/status",
+  wifiNetworks: "/api/wifi/networks",
+  wifiConfig: "/api/wifi/config",
+  wifiSetupFinish: "/api/wifi/setup/finish",
   keymap: "/api/keymap",
   events: "/api/events",
   debugMotorMoveRelative: "/api/debug/motor/move-relative",

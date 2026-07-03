@@ -28,24 +28,11 @@ inline TypingConfig defaultTypingConfig() {
 
   config.oled = {0x3C, 0x3D, 128, 32, 400000, 100000};
 
-  config.servo.address = 0x40;
-  config.servo.channels[0] = 0;
-  config.servo.channels[1] = 1;
-  config.servo.channelCount = 2;
-  config.servo.pwmFrequencyHz = 50.0f;
-  config.servo.oscillatorHz = 27000000;
-  config.servo.neutralPulseUs = 1500;
-  config.servo.forwardPulseUs = 2400;
-  config.servo.reversePulseUs = 600;
-  config.servo.releaseMs = 300;
-  config.servo.pressMs = 600;
-  config.servo.settleMs = 80;
-  config.servo.semantics = {ServoMotion::Reverse, ServoMotion::Forward};
-
   config.topology = {1, 2, 3, 4, 5};
   config.calibration = {2.0f, 20, 3200};
 
   config.motionRuntime = defaultMotionRuntimeConfig();
+  config.pressMotor = {500, 10, 2700, MotorDirection::Ccw, 2700, MotorDirection::Cw, 600, 300, 80, 8000};
   config.xProfile = {config.motionRuntime.defaultMoveRpm, config.motionRuntime.defaultAccelerationRaw, 120};
   config.yProfile = {config.motionRuntime.defaultMoveRpm, config.motionRuntime.defaultAccelerationRaw, 120};
   config.xReturn = {true, 200, 3, 200, 180};

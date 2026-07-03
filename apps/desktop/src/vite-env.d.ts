@@ -2,8 +2,8 @@
 
 import type {
   AckMessage,
-  BlockStreamCommandMessage,
-  BlockStreamEventMessage,
+  GroupStreamCommandMessage,
+  GroupStreamEventMessage,
 } from "../../../shared/protocol/auto-typer-protocol";
 
 type DesktopStore = {
@@ -20,10 +20,10 @@ declare global {
         url: string,
         init?: RequestInit,
       ) => Promise<{ ok: boolean; status: number; statusText: string; body: string; contentType: string }>;
-      blockStreamConnect: (request: { host: string; port: number }) => Promise<{ connected: boolean }>;
-      blockStreamDisconnect: () => Promise<{ connected: boolean }>;
-      blockStreamSend: (message: BlockStreamCommandMessage) => Promise<AckMessage>;
-      blockStreamOnMessage: (listener: (message: BlockStreamEventMessage) => void) => () => void;
+      groupStreamConnect: (request: { host: string; port: number }) => Promise<{ connected: boolean }>;
+      groupStreamDisconnect: () => Promise<{ connected: boolean }>;
+      groupStreamSend: (message: GroupStreamCommandMessage) => Promise<AckMessage>;
+      groupStreamOnMessage: (listener: (message: GroupStreamEventMessage) => void) => () => void;
     };
   }
 }

@@ -7,8 +7,8 @@ import { fileURLToPath, URL } from "node:url";
 import { DeviceLink } from "./device-link.js";
 import type {
   AckMessage,
-  BlockStreamCommandMessage,
-  BlockStreamEventMessage,
+  GroupStreamCommandMessage,
+  GroupStreamEventMessage,
 } from "./device-link.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -201,40 +201,43 @@ async function createWindow() {
   }
 }
 
-function emitBlockStreamMessage(message: BlockStreamEventMessage) {
-  mainWindowRef?.webContents.send("blockStream:message", message);
+function emitGroupStreamMessage(message: GroupStreamEventMessage) {
+  mainWindowRef?.webContents.send("groupStream:message", message);
 }
 
-function closeBlockStream() {
+function closeGroupStream() {
   deviceLink?.close();
   deviceLink = undefined;
 }
 
-async function connectBlockStream(host: string, port: number): Promise<void> {
-  closeBlockStream();
+async function connectGroupStream(host: string, port: number): Promise<void> {
+  closeGroupStream();
   const link = new DeviceLink();
-  link.on("message", emitBlockStreamMessage);
+  link.on("message", emitGroupStreamMessage);
   link.on("disconnect", (error) => {
     if (deviceLink === link) {
       deviceLink = undefined;
     }
-    emitBlockStreamMessage({ v: 1, type: "fault", code: "disconnect", message: error.message || "Block stream disconnected" });
+    emitGroupStreamMessage({ v: 1, type: "fault", code: "disconnect", message: error.message || "Group stream disconnected" });
   });
   deviceLink = link;
   await link.connect(host, port);
 }
 
-function sendBlockStreamMessage(message: BlockStreamCommandMessage): Promise<AckMessage> {
+function sendGroupStreamMessage(message: GroupStreamCommandMessage): Promise<AckMessage> {
   if (!deviceLink) {
-    return Promise.reject(new Error("Block stream is not connected"));
+    return Promise.reject(new Error("Group stream is not connected"));
   }
-  if (!["exec_block", "cancel", "reset_fault", "probe", "ping"].includes(message.type)) {
-    return Promise.reject(new Error("Unsupported block stream message type"));
+  if (!["exec_group", "cancel", "reset_fault", "probe", "ping"].includes(message.type)) {
+    return Promise.reject(new Error("Unsupported group stream message type"));
   }
   if (typeof message.id !== "string" || message.id.length === 0) {
-    return Promise.reject(new Error("Block stream message id is required"));
+    return Promise.reject(new Error("Group stream message id is required"));
   }
-  return deviceLink.sendCommand(message);
+  const timeoutMs = typeof message.timeoutMs === "number" && Number.isFinite(message.timeoutMs) ? message.timeoutMs : undefined;
+  const outbound = { ...message };
+  delete outbound.timeoutMs;
+  return timeoutMs === undefined ? deviceLink.sendCommand(outbound) : deviceLink.sendCommand(outbound, timeoutMs);
 }
 
 ipcMain.handle("store:read", async () => readStore());
@@ -252,17 +255,17 @@ ipcMain.handle("network:request", async (_event, request: { url: string; init?: 
   }
 });
 
-ipcMain.handle("blockStream:connect", async (_event, request: { host: string; port: number }) => {
-  await connectBlockStream(request.host, request.port);
+ipcMain.handle("groupStream:connect", async (_event, request: { host: string; port: number }) => {
+  await connectGroupStream(request.host, request.port);
   return { connected: true };
 });
 
-ipcMain.handle("blockStream:disconnect", async () => {
-  closeBlockStream();
+ipcMain.handle("groupStream:disconnect", async () => {
+  closeGroupStream();
   return { connected: false };
 });
 
-ipcMain.handle("blockStream:send", async (_event, message: BlockStreamCommandMessage) => sendBlockStreamMessage(message));
+ipcMain.handle("groupStream:send", async (_event, message: GroupStreamCommandMessage) => sendGroupStreamMessage(message));
 
 app.whenReady().then(createWindow);
 

@@ -9,9 +9,8 @@
 #include "can/ProtocolTrace.h"
 #include "drivers/EmmV5Driver.h"
 #include "hal_display.h"
-#include "hal_servo_press.h"
 #include "http_control_server.h"
-#include "transport/BlockCommandServer.h"
+#include "transport/GroupCommandServer.h"
 
 namespace {
 
@@ -26,20 +25,18 @@ ProtocolTrace gTrace;
 CanTxQueue gCanTx(gCanBus, &gTrace);
 CanRxTask gCanRx(gCanBus, gFeedback, gEvents, gTrace);
 EmmV5Driver gMotion(gCanTx, &gTrace);
-ServoPressHal gServo(kConfig.servo);
 AutoTyperApplication gApp(kConfig,
                           gDisplay,
                           gCanBus,
                           gCanTx,
                           gCanRx,
                           gMotion,
-                          gServo,
                           gFeedback,
                           gEvents,
                           gTrace,
                           Serial);
 HttpControlServer gHttp(kConfig, gApp, Serial);
-BlockCommandServer gBlockServer(kConfig, gApp, Serial);
+GroupCommandServer gGroupServer(kConfig, gApp, Serial);
 
 }  // namespace
 
@@ -49,12 +46,12 @@ void setup() {
   gApp.setup();
   WiFi.setSleep(false);
   gHttp.begin();
-  gBlockServer.begin();
+  gGroupServer.begin();
 }
 
 void loop() {
   gHttp.tick();
-  gBlockServer.tick();
+  gGroupServer.tick();
   gApp.tick();
   delay(1);
 }
