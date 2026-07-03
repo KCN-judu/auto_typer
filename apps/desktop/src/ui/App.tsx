@@ -20,6 +20,7 @@ import type { ReactNode } from "react";
 import type {
   DeviceStatus,
   GroupFaultMessage,
+  GroupFinalMessage,
   GroupStreamEventMessage,
   KeymapDocument,
   MotorEventMessage,
@@ -31,6 +32,11 @@ import type {
   WifiNetwork,
   WifiStatus,
 } from "../../../../shared/protocol/auto-typer-protocol";
+import {
+  formatExecutionTimeout,
+  GroupExecutionWatchdog,
+} from "../domain/groupExecutionWatchdog";
+import type { GroupExecutionOutcome } from "../domain/groupExecutionWatchdog";
 import { GroupStreamClient } from "../domain/groupStreamClient";
 import type { PlannedRemoteMotionGroup } from "../domain/groupStreamPlanner";
 import { planTextToRemoteMotionGroups } from "../domain/groupStreamPlanner";
@@ -40,7 +46,7 @@ import { DashboardPage } from "./dashboard/DashboardPage";
 import { KeymapPage } from "./keymap/KeymapPage";
 
 type View = "dashboard" | "job" | "debug" | "settings" | "keymap";
-type ConnectionState = "disconnected" | "connecting" | "connected" | "fault";
+type ConnectionState = "disconnected" | "connecting" | "connected" | "desync" | "transport_fault";
 type StreamState = "disconnected" | "connecting" | "connected" | "running" | "fault";
 
 type PrintTaskState = {
@@ -82,6 +88,7 @@ export function App() {
   const keymapIssues = useMemo(() => validateKeymap(keymap), [keymap]);
   const printTaskRef = useRef(printTask);
   const activeGroupIdRef = useRef<string | undefined>();
+  const activeGroupSeqRef = useRef<number | undefined>();
 
   useEffect(() => {
     printTaskRef.current = printTask;
@@ -124,7 +131,7 @@ export function App() {
     } catch (error) {
       await streamClient.disconnect().catch(() => undefined);
       const message = error instanceof Error ? error.message : "TCP 连接失败";
-      setConnection("fault");
+      setConnection("transport_fault");
       setPrintTask((task) => ({ ...task, stream: "fault", fault: message }));
       appendLog(message);
     }
@@ -169,10 +176,19 @@ export function App() {
       appendLog("任务组流完成");
     } catch (error) {
       const message = error instanceof Error ? error.message : "任务组流失败";
-      setPrintTask((task) => ({ ...task, running: false, stream: "fault", fault: message }));
+      const watchdogCancelled = message.startsWith("execution_timeout:");
+      const userCancelled = message.startsWith("group_cancelled:");
+      setPrintTask((task) => ({
+        ...task,
+        running: false,
+        stream: userCancelled ? "connected" : "fault",
+        currentLabel: "",
+        fault: watchdogCancelled ? `desktop execution watchdog cancelled group: ${message}` : message,
+      }));
       appendLog(message);
     } finally {
       activeGroupIdRef.current = undefined;
+      activeGroupSeqRef.current = undefined;
     }
   }
 
@@ -183,39 +199,55 @@ export function App() {
         throw new Error("任务已取消");
       }
       activeGroupIdRef.current = group.groupId;
+      activeGroupSeqRef.current = group.seq;
       setPrintTask((task) => ({
         ...task,
         currentIndex: index + 1,
         currentLabel: groupLabel(group),
       }));
       await streamClient.sendExecGroup(group);
-      await waitForGroupDone(group);
+      const outcome = await waitForGroupDone(group);
+      if (outcome.status !== "done") {
+        const code = outcome.status === "cancelled" ? "group_cancelled" : outcome.code ?? `group_${outcome.status}`;
+        throw new Error(`${code}: ${outcome.message ?? outcome.status}`);
+      }
       setPrintTask((task) => ({ ...task, completedGroups: index + 1 }));
       activeGroupIdRef.current = undefined;
+      activeGroupSeqRef.current = undefined;
     }
   }
 
-  function waitForGroupDone(group: TaskGroup): Promise<void> {
+  function waitForGroupDone(group: TaskGroup): Promise<GroupExecutionOutcome> {
     return new Promise((resolve, reject) => {
       let unsubscribe = () => {};
-      const timeout = setTimeout(() => {
+      const watchdog = new GroupExecutionWatchdog(group, Date.now());
+      const timer = window.setInterval(() => {
+        const timeout = watchdog.checkTimeout(Date.now());
+        if (!timeout) {
+          return;
+        }
         cleanup();
+        const message = formatExecutionTimeout(timeout);
+        appendLog(message);
         void streamClient.cancel();
-        reject(new Error(`Group ${group.groupId} 等待 group_done 超时`));
-      }, group.policy.maxRuntimeMs + 5000);
+        reject(new Error(message));
+      }, 250);
       const cleanup = () => {
-        clearTimeout(timeout);
+        window.clearInterval(timer);
         unsubscribe();
       };
       unsubscribe = streamClient.onMessage((message) => {
-        if (message.type === "group_done" && message.groupId === group.groupId) {
+        const observation = watchdog.observe(message, Date.now());
+        if (observation.kind === "final") {
           cleanup();
-          resolve();
+          resolve(observation.outcome);
           return;
         }
-        if (message.type === "fault") {
-          cleanup();
-          reject(new Error(`${message.code}: ${message.message}`));
+        if (observation.kind === "progress" && observation.progress.event === "block_started") {
+          const label = observation.progress.blockType
+            ? `Block ${observation.progress.blockIndex} ${observation.progress.blockType}`
+            : `Block ${observation.progress.blockIndex}`;
+          setPrintTask((task) => ({ ...task, currentLabel: label }));
         }
       });
     });
@@ -310,12 +342,11 @@ export function App() {
   }
 
   async function pressMotorTest(type: "press_down" | "press_up") {
-    const group: PlannedRemoteMotionGroup = {
+    const group: TaskGroup = {
       groupId: `debug-${Date.now().toString(36)}-${type}`,
       seq: 0,
       policy: { maxRuntimeMs: 5000, onDisconnect: "cancel" },
-      blocks: [{ type, rpm: 1600, accelRaw: 128, timeoutMs: 3000 }],
-      kind: type,
+      blocks: [{ type, rpm: 3000, accelRaw: 255, timeoutMs: 3000 }],
     };
     try {
       await streamClient.sendExecGroup(group);
@@ -353,18 +384,61 @@ export function App() {
     }
     if (message.type === "block_started") {
       appendLog(`Block ${message.blockIndex} ${message.blockType}`);
+      if (matchesActiveGroup(message.groupId, message.seq)) {
+        setPrintTask((task) => ({ ...task, currentLabel: `Block ${message.blockIndex} ${message.blockType}` }));
+      }
       return;
     }
     if (message.type === "group_done") {
       appendLog(`Group done ${message.groupId}`);
+      if (matchesActiveGroup(message.groupId, message.seq)) {
+        setPrintTask((task) => ({ ...task, currentLabel: "" }));
+      }
+      return;
+    }
+    if (message.type === "group_final") {
+      const final = message as GroupFinalMessage;
+      appendLog(`Group final ${final.groupId} ${final.status}${final.code ? ` ${final.code}` : ""}`);
+      if (matchesActiveGroup(final.groupId, final.seq)) {
+        setPrintTask((task) => ({
+          ...task,
+          running: final.status === "done" ? task.running : false,
+          stream: final.status === "done" || final.status === "cancelled" ? "connected" : "fault",
+          currentLabel: "",
+          fault: final.status === "cancelled"
+            ? `${final.code ?? "group_cancelled"}: ${final.message ?? "cancelled"}`
+            : task.fault,
+        }));
+      }
+      if (final.status !== "done") {
+        const code = final.code ?? `group_${final.status}`;
+        const text = final.status === "cancelled"
+          ? `${code}: ${final.message ?? "cancelled"}`
+          : code === "motion_feedback_timeout"
+          ? "motion_feedback_timeout: Motion feedback timed out"
+          : `${code}: ${final.message ?? final.status}`;
+        setPrintTask((task) => ({
+          ...task,
+          running: false,
+          stream: final.status === "cancelled" ? "connected" : "fault",
+          currentLabel: "",
+          fault: text,
+        }));
+      }
       return;
     }
     if (message.type === "fault") {
       const fault = message as GroupFaultMessage;
       const text = `${fault.code}: ${fault.message}`;
-      setPrintTask((task) => ({ ...task, running: false, stream: "fault", fault: text }));
+      if (!fault.groupId || matchesActiveGroup(fault.groupId, fault.seq ?? activeGroupSeqRef.current ?? 0)) {
+        setPrintTask((task) => ({ ...task, running: false, stream: "fault", currentLabel: "", fault: text }));
+      }
       appendLog(text);
     }
+  }
+
+  function matchesActiveGroup(groupId: string, seq: number) {
+    return activeGroupIdRef.current === groupId && activeGroupSeqRef.current === seq;
   }
 
   function appendLog(line: string) {
@@ -623,8 +697,10 @@ function connectionText(connection: ConnectionState) {
       return "ONLINE";
     case "connecting":
       return "CONNECT";
-    case "fault":
-      return "FAULT";
+    case "desync":
+      return "DESYNC";
+    case "transport_fault":
+      return "TRANSPORT";
     case "disconnected":
     default:
       return "OFFLINE";

@@ -10,6 +10,7 @@ import {
   MAX_BLOCKS_PER_GROUP,
   MAX_GROUP_RUNTIME_MS,
 } from "../../../../shared/protocol/auto-typer-protocol";
+import { estimateGroupRuntimeMs } from "./groupRuntime";
 import { displayKey, normalizeKey } from "./keymap";
 
 export type PlannedMotionBlock = {
@@ -24,6 +25,8 @@ export type PlannedRemoteMotionGroup = TaskGroup & {
   targetKeyLabel?: string;
   displayCoordinates?: MachinePointMm;
   kind: MotionBlock["type"];
+  estimatedRuntimeMs: number;
+  absoluteMaxRuntimeMs: number;
 };
 
 export type GroupStreamPlan =
@@ -43,10 +46,10 @@ export type GroupStreamPlan =
       warnings: string[];
     };
 
-const defaultMotion = { rpm: 1600, accelRaw: 128, timeoutMs: 3000 } as const;
+const defaultMotion = { rpm: 2000, accelRaw: 128, timeoutMs: 3000 } as const;
+const pressMotion = { rpm: 3000, accelRaw: 255, timeoutMs: 3000 } as const;
 const lineFeedMotion = { rpm: 1600, accelRaw: 128, timeoutMs: 10000 } as const;
 const maxGroups = 1024;
-const maxRuntimeMs = 5000;
 const stepsPerMm = 80;
 
 export type GroupStreamPlanningOptions = {
@@ -111,8 +114,8 @@ export function planTextToBlocks(
     if (dxSteps !== 0 || dySteps !== 0) {
       blocks.push({ block: { type: "move_xy", dxSteps, dySteps, ...defaultMotion }, ...meta });
     }
-    blocks.push({ block: { type: "press_down", ...defaultMotion }, ...meta });
-    blocks.push({ block: { type: "press_up", ...defaultMotion }, ...meta });
+    blocks.push({ block: { type: "press_down", ...pressMotion }, ...meta });
+    blocks.push({ block: { type: "press_up", ...pressMotion }, ...meta });
     if (!disableLineFeed) {
       blocks.push({ block: { type: "character_release", ...defaultMotion }, ...meta });
     }
@@ -131,15 +134,19 @@ export function chunkBlocksIntoGroups(blocks: PlannedMotionBlock[], jobId: strin
     const chunk = blocks.slice(index, index + MAX_BLOCKS_PER_GROUP);
     const seq = groups.length;
     const first = chunk[0];
+    const estimatedRuntimeMs = estimateGroupRuntimeMs(chunk.map((entry) => entry.block));
+    const absoluteMaxRuntimeMs = Math.max(Math.ceil(estimatedRuntimeMs * 2), 12000);
     groups.push({
       groupId: `${jobId}-${String(seq).padStart(4, "0")}`,
       seq,
-      policy: { maxRuntimeMs: Math.min(maxRuntimeMs, MAX_GROUP_RUNTIME_MS), onDisconnect: "cancel" },
+      policy: { maxRuntimeMs: Math.min(absoluteMaxRuntimeMs, MAX_GROUP_RUNTIME_MS), onDisconnect: "cancel" },
       blocks: chunk.map((entry) => entry.block),
       kind: first?.block.type ?? "wait",
       sourceCharacter: first?.sourceCharacter,
       targetKeyLabel: first?.targetKeyLabel,
       displayCoordinates: first?.displayCoordinates,
+      estimatedRuntimeMs,
+      absoluteMaxRuntimeMs,
     });
   }
   return groups;
