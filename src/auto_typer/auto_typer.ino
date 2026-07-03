@@ -10,12 +10,24 @@
 #include "drivers/EmmV5Driver.h"
 #include "hal_display.h"
 #include "transport/GroupCommandServer.h"
+#include "transport/NullPrint.h"
+#include "transport/SerialWifiSetup.h"
+
+#ifndef AUTO_TYPER_SERIAL_DEBUG_LOGS
+#define AUTO_TYPER_SERIAL_DEBUG_LOGS 0
+#endif
 
 namespace {
 
 using namespace auto_typer;
 
 const TypingConfig kConfig = defaultTypingConfig();
+#if AUTO_TYPER_SERIAL_DEBUG_LOGS
+Print& gLog = Serial;
+#else
+NullPrint gNullLog;
+Print& gLog = gNullLog;
+#endif
 DisplayHal gDisplay(kConfig.oled);
 CanBus gCanBus(kConfig.canBus);
 MotorFeedbackStore gFeedback;
@@ -34,8 +46,9 @@ AutoTyperApplication gApp(kConfig,
                           gFeedback,
                           gEvents,
                           gTrace,
-                          Serial);
-GroupCommandServer gGroupServer(kConfig, gApp, gMotorTelemetry, Serial);
+                          gLog);
+GroupCommandServer gGroupServer(kConfig, gApp, gMotorTelemetry, gLog);
+SerialWifiSetup gSerialWifi(kConfig, gApp, Serial, gLog);
 
 }  // namespace
 
@@ -43,11 +56,13 @@ void setup() {
   Serial.begin(kConfig.serialBaudrate);
   delay(300);
   gApp.setup();
+  gSerialWifi.begin();
   gGroupServer.begin();
   WiFi.setSleep(false);
 }
 
 void loop() {
+  gSerialWifi.tick();
   gGroupServer.tick();
   gApp.tick();
   delay(1);

@@ -214,6 +214,8 @@ enum class MotionStepKind : uint8_t {
   CharacterRelease,
   PressDown,
   PressUp,
+  LineFeedHome,
+  LineFeedHomeRelease,
   ReturnZero,
   Wait,
 };
@@ -247,6 +249,7 @@ enum class RemoteMotionStepKind : uint8_t {
   PressUp,
   CharacterRelease,
   LineFeed,
+  LineFeedHome,
   ReturnZero,
   Wait,
 };

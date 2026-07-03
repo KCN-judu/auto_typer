@@ -1,6 +1,7 @@
 import type {
   CancelResultMessage,
   DeviceStatus,
+  FinishTaskResultMessage,
   GroupAcceptedMessage,
   GroupRejectedMessage,
   GroupStreamCommandMessage,
@@ -9,6 +10,7 @@ import type {
   KeymapMessage,
   PressDiagM5ResultMessage,
   ProbeResultMessage,
+  ReleaseLineFeedOriginResultMessage,
   ResetFaultResultMessage,
   StatusMessage,
   TaskGroup,
@@ -154,12 +156,32 @@ export class GroupStreamClient {
     return message as CancelResultMessage;
   }
 
+  async finishTask(): Promise<FinishTaskResultMessage> {
+    const message = await this.sendCommand({ v: 1, requestId: this.nextId("finish-task"), type: "finish_task" });
+    if (message.type !== "finish_task_result") {
+      throw responseError(message, "finish_task");
+    }
+    return message as FinishTaskResultMessage;
+  }
+
   async resetFault(): Promise<ResetFaultResultMessage> {
     const message = await this.sendCommand({ v: 1, requestId: this.nextId("reset"), type: "reset_fault" });
     if (message.type !== "reset_fault_result") {
       throw responseError(message, "reset_fault");
     }
     return message as ResetFaultResultMessage;
+  }
+
+  async releaseLineFeedOrigin(): Promise<ReleaseLineFeedOriginResultMessage> {
+    const message = await this.sendCommand({
+      v: 1,
+      requestId: this.nextId("release-line-feed"),
+      type: "release_line_feed_origin",
+    });
+    if (message.type !== "release_line_feed_origin_result") {
+      throw responseError(message, "release_line_feed_origin");
+    }
+    return message as ReleaseLineFeedOriginResultMessage;
   }
 
   async probe(): Promise<ProbeResultMessage> {

@@ -3,9 +3,9 @@ import { readFileSync } from "node:fs";
 
 const keys = "1234567890-qwertyuiopasdfghjkl;'zxcvbnm,.- ".split("");
 const keyPitchX = 19.25;
-const originX = 18.75;
-const rowOffsets = [0, 22.5, 25, 37.5, 137.5];
-const rowY = [106, 87, 68, 49, 30];
+const originX = 28.775;
+const rowOffsets = [19, 22.5, 25, 37.5, 137.5];
+const rowY = [108.925, 89.9625, 68, 52.4625, 30];
 const physicalRows = ["1234567890-=", "qwertyuiop[]", "asdfghjkl;'", "zxcvbnm,./"];
 const keySet = new Set(keys);
 
@@ -353,11 +353,11 @@ const config = {
 const keymap = buildKeymap();
 
 assert.equal(keymap.length, keySet.size, "Feiyu 200 key count changed");
-assert.deepEqual(lookupKey("1", keymap), { xMm: 18.75, yMm: 106 });
-assert.deepEqual(lookupKey("q", keymap), { xMm: 41.25, yMm: 87 });
-assert.deepEqual(lookupKey("a", keymap), { xMm: 43.75, yMm: 68 });
-assert.deepEqual(lookupKey("z", keymap), { xMm: 56.25, yMm: 49 });
-assert.deepEqual(lookupKey(" ", keymap), { xMm: 156.25, yMm: 30 });
+assert.deepEqual(lookupKey("1", keymap), { xMm: 47.775, yMm: 108.925 });
+assert.deepEqual(lookupKey("q", keymap), { xMm: 51.275, yMm: 89.9625 });
+assert.deepEqual(lookupKey("a", keymap), { xMm: 53.775, yMm: 68 });
+assert.deepEqual(lookupKey("z", keymap), { xMm: 66.275, yMm: 52.4625 });
+assert.deepEqual(lookupKey(" ", keymap), { xMm: 166.275, yMm: 30 });
 
 const charPlan = planText("a", keymap, config);
 assert.equal(charPlan.status, "Ok");
@@ -493,21 +493,33 @@ assert.equal(yPairSkewExceeded({ leftStart: 100, rightStart: -100, leftNow: -220
 assert.equal(yPairSkewExceeded({ leftStart: 100, rightStart: -100, leftNow: -220, rightNow: 260, tolerance: 10 }), true);
 
 const httpServer = readFileSync(new URL("../http_control_server.h", import.meta.url), "utf8");
+const serialWifiSetup = readFileSync(new URL("../transport/SerialWifiSetup.h", import.meta.url), "utf8");
+const autoTyperIno = readFileSync(new URL("../auto_typer.ino", import.meta.url), "utf8");
+const nullPrint = readFileSync(new URL("../transport/NullPrint.h", import.meta.url), "utf8");
 assert.match(httpServer, /case JobState::None:[\s\S]*return "none";/, "JobState::None must serialize to none");
 assert.match(httpServer, /request\["point"\]/, "ProbeKeyRequest must read nested point");
 assert.match(httpServer, /sendJson\(200, response\);/, "Create job business rejections must return HTTP 200");
 assert.match(httpServer, /rejectionMessage/, "CreateJobResponse must include rejection details");
 assert.match(httpServer, /diagnostics\/protocol-trace/, "Protocol trace diagnostics route must be registered");
 assert.match(httpServer, /machine\/probe-motors/, "Motor probe route must be registered");
-assert.match(httpServer, /\/api\/wifi\/status/, "WiFi setup status route must be registered");
-assert.match(httpServer, /\/api\/wifi\/networks/, "WiFi network scan route must be registered");
-assert.match(httpServer, /\/api\/wifi\/config/, "WiFi config route must be registered");
-assert.match(httpServer, /\/api\/wifi\/setup\/finish/, "WiFi setup finish route must be registered");
-assert.match(httpServer, /WIFI_AP_STA/, "WiFi setup must use AP+STA mode");
-assert.match(httpServer, /Preferences prefs;[\s\S]*wifiSsid[\s\S]*wifiPass/, "WiFi credentials must be saved in Preferences");
-assert.match(httpServer, /WiFi\.scanNetworks/, "WiFi setup must scan networks from the ESP32");
+assert.match(serialWifiSetup, /ATWIFI>/, "WiFi setup must accept USB serial control messages");
+assert.match(serialWifiSetup, /ATWIFI</, "WiFi setup must return USB serial control messages");
+assert.match(serialWifiSetup, /type"\]\s*=\s*"wifi_network"/, "Serial WiFi scan must stream one network per frame");
+assert.match(serialWifiSetup, /sendWifiNetworksComplete/, "Serial WiFi scan must send a small completion frame");
+assert.doesNotMatch(serialWifiSetup, /DynamicJsonDocument doc\(4096\)/, "Serial WiFi scan must not build a large networks JSON frame");
+assert.match(serialWifiSetup, /kSerialTxChunkBytes\s*=\s*96/, "Serial WiFi responses must use small USB CDC TX chunks");
+assert.match(serialWifiSetup, /serial_\.write\(reinterpret_cast<const uint8_t\*>\(data\),\s*chunk\);[\s\S]*delay\(1\);[\s\S]*serial_\.flush\(\);/, "Serial WiFi responses must pace chunked USB CDC TX");
+assert.doesNotMatch(serialWifiSetup, /serial_\.print\(line\)/, "Serial WiFi responses must not write large protocol frames in one print");
+assert.match(autoTyperIno, /AUTO_TYPER_SERIAL_DEBUG_LOGS[\s\S]*#define AUTO_TYPER_SERIAL_DEBUG_LOGS 0/, "Serial debug logs must default off");
+assert.match(autoTyperIno, /NullPrint gNullLog;[\s\S]*Print& gLog = gNullLog;/, "Default firmware logs must route to NullPrint");
+assert.match(autoTyperIno, /SerialWifiSetup gSerialWifi\(kConfig, gApp, Serial, gLog\);/, "Serial WiFi protocol must keep using the hardware Serial stream");
+assert.match(nullPrint, /class NullPrint : public Print/, "NullPrint must provide a Print-compatible log sink");
+assert.match(serialWifiSetup, /WiFi\.mode\(WIFI_STA\)/, "WiFi setup must use station mode over serial");
+assert.match(serialWifiSetup, /Preferences prefs;[\s\S]*wifiSsid[\s\S]*wifiPass/, "WiFi credentials must be saved in Preferences");
+assert.match(serialWifiSetup, /WiFi\.scanNetworks/, "WiFi setup must scan networks from the ESP32");
+assert.doesNotMatch(serialWifiSetup, /waitForStation/, "Serial WiFi setup must stay available instead of blocking startup");
 assert.doesNotMatch(
-  httpServer,
+  serialWifiSetup,
   /json\["staPassword"\]|json\["wifiPassword"\]|response\["staPassword"\]|response\["wifiPassword"\]/,
   "WiFi status must not return station WiFi password",
 );
@@ -528,7 +540,6 @@ const motionExecutor = readFileSync(new URL("../motion/MotionExecutor.h", import
 const sharedProtocol = readFileSync(new URL("../../../shared/protocol/auto-typer-protocol.ts", import.meta.url), "utf8");
 const groupCommandServer = readFileSync(new URL("../transport/GroupCommandServer.h", import.meta.url), "utf8");
 const groupCommandProtocol = readFileSync(new URL("../transport/GroupCommandProtocol.h", import.meta.url), "utf8");
-const autoTyperIno = readFileSync(new URL("../auto_typer.ino", import.meta.url), "utf8");
 const appTsx = readFileSync(new URL("../../../apps/desktop/src/ui/App.tsx", import.meta.url), "utf8");
 const groupStreamPlanner = readFileSync(new URL("../../../apps/desktop/src/domain/groupStreamPlanner.ts", import.meta.url), "utf8");
 const deviceLink = readFileSync(new URL("../../../apps/desktop/electron/device-link.ts", import.meta.url), "utf8");
@@ -539,6 +550,8 @@ const firmwareSetupBody = autoTyperRuntime.slice(
 );
 
 assert.match(canRxTask, /class MotorTelemetryBuffer/, "CAN data plane must define a bounded motor telemetry buffer");
+assert.doesNotMatch(motionExecutor, /Serial\.print|Serial\.println/, "Motion executor diagnostics must use injected log sink");
+assert.match(motionExecutor, /Print& log_;/, "Motion executor must keep diagnostics on the configured log sink");
 assert.match(canRxTask, /void observe\(const EmmV5Event& event, const MotorFeedbackStore& feedback\)/, "Telemetry buffer must observe parsed EMM events");
 assert.match(canRxTask, /pushCriticalMotorEvent/, "Telemetry buffer must support critical motor events");
 assert.match(canRxTask, /markDirtyMotor/, "Telemetry buffer must support dirty motor coalescing");
@@ -560,7 +573,7 @@ assert.doesNotMatch(autoTyperRuntime, /KeymapStore|keymapStore_/, "Firmware runt
 assert.doesNotMatch(firmwareSetupBody, /keymapStore_\.load|keymapStore_\.save|layoutVersion\(\)/, "Firmware setup must not load or save stored keymap coordinates");
 assert.match(autoTyperIno, /MotorTelemetryBuffer gMotorTelemetry/, "Sketch must own the motor telemetry buffer");
 assert.match(autoTyperIno, /CanRxTask gCanRx\(gCanBus,\s*gFeedback,\s*gEvents,\s*gTrace,\s*&gMotorTelemetry\)/, "CAN RX task must observe telemetry through the buffer");
-assert.match(autoTyperIno, /GroupCommandServer gGroupServer\(kConfig,\s*gApp,\s*gMotorTelemetry,\s*Serial\)/, "Existing TCP server must drain the telemetry buffer");
+assert.match(autoTyperIno, /GroupCommandServer gGroupServer\(kConfig,\s*gApp,\s*gMotorTelemetry,\s*gLog\)/, "Existing TCP server must drain telemetry and use configured log sink");
 
 assert.match(groupCommandServer, /sendMotorTelemetry\(\)/, "TCP server tick must drain outbound motor telemetry");
 assert.match(groupCommandServer, /drainCriticalEvents/, "TCP server must drain critical motor events");
@@ -930,6 +943,9 @@ assert.match(sharedProtocol, /type: "move_xy"[\s\S]*dxSteps: number[\s\S]*dyStep
 assert.match(sharedProtocol, /type: "press_down"/, "Motion blocks must expose press_down");
 assert.match(sharedProtocol, /type: "press_up"/, "Motion blocks must expose press_up");
 assert.match(sharedProtocol, /type: "return_zero"/, "Motion blocks must expose final non-feed return-to-zero");
+assert.match(sharedProtocol, /type: "line_feed_home"/, "Motion blocks must expose line-feed homing");
+assert.match(sharedProtocol, /type: "release_line_feed_origin"/, "Group stream must expose line-feed origin release");
+assert.match(sharedProtocol, /lineFeedPrimeRequired: boolean/, "Device status must expose line-feed prime state");
 assert.match(sharedProtocol, /type: "group_done"[\s\S]*groupId: string/, "Group DONE must identify the completed group");
 assert.match(sharedProtocol, /motors\?: Array<\{[\s\S]*readiness: MotorReadiness/, "Group stream telemetry motors must include readiness");
 assert.doesNotMatch(sharedProtocol, /export type PrimitiveCommand|type: "command"|op: "move_to"/, "Shared group stream protocol must not expose primitive command messages");
@@ -941,11 +957,12 @@ assert.match(groupStreamPlanner, /dxSteps = mmToSteps\(target\.xMm - current\.xM
 assert.doesNotMatch(groupStreamPlanner, /toSvgCoords|svgY|bbox\.maxY|RemoteMotionBlock/, "Desktop planner must not use SVG coordinates or legacy block payloads");
 assert.match(groupStreamPlanner, /type: "move_xy"[\s\S]*type: "press_down"[\s\S]*type: "press_up"/, "Text planning must emit move and M5 press blocks");
 assert.match(groupStreamPlanner, /blocks\.push\(\{ block: \{ type: "return_zero"/, "Text planning must append final return_zero block");
-assert.match(groupStreamPlanner, /!disableLineFeed\)[\s\S]*type: "character_release"/, "Line-feed degraded planning must skip character_release blocks");
-assert.match(groupStreamPlanner, /已启用跳过走纸模式，跳过字符释放和换行走纸/, "Line-feed degraded planning must warn when skipping feed actions");
-assert.match(groupStreamPlanner, /!disableLineFeed\)[\s\S]*type: "line_feed"/, "Line-feed degraded planning must skip line_feed blocks");
-assert.doesNotMatch(groupStreamPlanner, /line_feed_disabled/, "Line-feed degraded planning must not reject newline tasks");
+assert.match(groupStreamPlanner, /type: "return_zero"[\s\S]*type: "line_feed_home"/, "Text planning must append line-feed home after return_zero");
+assert.doesNotMatch(groupStreamPlanner, /disableLineFeed|跳过走纸|line_feed_disabled/, "Text planning must not keep a skip line-feed mode");
+assert.match(groupStreamPlanner, /appendKeyPressBlocks\(blocks,\s*binding,\s*rawChar,\s*current,\s*!isModifierKey\(plannedKey\)\)/, "Text planning must suppress character release for modifier keys");
+assert.match(groupStreamPlanner, /if \(includeCharacterRelease\)[\s\S]*type: "character_release"/, "Text planning must only emit character release when requested");
 assert.match(groupStreamPlanner, /type: "line_feed"/, "Newline planning must create line_feed block");
+assert.match(groupStreamPlanner, /type: "line_feed"[\s\S]*type: "return_zero"[\s\S]*current = initialPoint/, "Newline planning must return XY and press axes to origin before continuing");
 assert.match(groupStreamPlanner, /MAX_BLOCKS_PER_GROUP/, "Desktop planner must chunk groups using shared firmware bounds");
 assert.match(groupStreamPlanner, /encodeExecGroup/, "Desktop planner must expose exec_group encoding");
 
@@ -1004,7 +1021,7 @@ assert.doesNotMatch(appTsx, /getKeymap\(\)/, "Desktop connect must not fetch dev
 assert.match(appTsx, /setKeymap\(currentFeiyu200Keymap\(\)\)/, "Desktop connect must reset to the desktop-owned fixed keymap");
 
 assert.match(appTsx, /planTextToRemoteMotionGroups/, "Print Task must plan text locally");
-assert.match(appTsx, /checked=\{skipLineFeed\}/, "Print Task must expose a skip line-feed mode");
+assert.doesNotMatch(appTsx, /skipLineFeed|跳过走纸/, "Print Task must not expose a skip line-feed mode");
 assert.match(appTsx, /streamClient\.sendExecGroup/, "Print Task must send exec_group messages over TCP");
 assert.match(appTsx, /waitForGroupDone\(group\)/, "Print Task must wait for group_done before sending the next group");
 assert.match(appTsx, /message\.type === "fault"/, "Print Task must stop on fault events");
@@ -1014,9 +1031,6 @@ assert.doesNotMatch(appTsx, /client\.createJob/, "Print Task must not call POST 
 assert.match(appTsx, /<TaskStatusPanel status=\{status\} logLines=\{logLines\} printTask=\{printTask\} \/>/, "Print Task page must show group stream task state");
 assert.doesNotMatch(appTsx, /WifiSetupPanel|setupClient\.wifiNetworks|setupClient\.configureWifi|finishWifiSetup/, "V1 settings must not expose undefined WiFi setup controls");
 
-const groupCommandServer = readFileSync(new URL("../transport/GroupCommandServer.h", import.meta.url), "utf8");
-const groupCommandProtocol = readFileSync(new URL("../transport/GroupCommandProtocol.h", import.meta.url), "utf8");
-const autoTyperIno = readFileSync(new URL("../auto_typer.ino", import.meta.url), "utf8");
 assert.match(groupCommandServer, /kGroupCommandPort\s*=\s*7777/, "Group command server must listen on TCP 7777");
 assert.match(groupCommandServer, /lineBuffer_ \+= static_cast<char>\(value\)/, "Group command server must buffer NDJSON input");
 assert.match(groupCommandServer, /client\.write\('\\n'\)/, "Group command server must write NDJSON newlines");
@@ -1028,6 +1042,7 @@ assert.match(groupCommandServer, /strcmp\(type,\s*"probe"\)[\s\S]*app_\.probeMot
 assert.match(groupCommandServer, /motor\["readiness"\]\s*=\s*motorReadinessText\(state\.readiness\)/, "Group command telemetry must report motor readiness");
 assert.match(groupCommandProtocol, /dxSteps[\s\S]*dySteps/, "Group command protocol must parse move_xy step deltas");
 assert.match(groupCommandProtocol, /strcmp\(kind,\s*"return_zero"\)[\s\S]*RemoteMotionStepKind::ReturnZero/, "Group command protocol must parse return_zero blocks");
+assert.match(groupCommandProtocol, /strcmp\(kind,\s*"line_feed_home"\)[\s\S]*RemoteMotionStepKind::LineFeedHome/, "Group command protocol must parse line_feed_home blocks");
 assert.match(groupCommandProtocol, /parseRemoteGroup/, "Group command protocol must parse exec_group blocks");
 assert.match(groupCommandProtocol, /group_too_large/, "Group command protocol must reject oversized exec_group commands");
 assert.match(groupCommandServer, /handleExecGroup/, "Group command server must handle exec_group");
@@ -1061,7 +1076,15 @@ assert.doesNotMatch(autoTyperRuntime, /MotionStepPlan single/, "Remote group sub
 assert.match(autoTyperRuntime, /executor_\.start\(activeMotionSteps_\.steps,\s*activeMotionSteps_\.count,\s*startPoint\)/, "Remote groups must start through MotionExecutor");
 assert.match(autoTyperRuntime, /remoteStep\.dxSteps[\s\S]*remoteStep\.dySteps/, "Remote move_xy must use desktop-planned step deltas");
 assert.match(autoTyperRuntime, /RemoteMotionStepKind::ReturnZero[\s\S]*MotionStepKind::ReturnZero/, "Firmware must convert remote return_zero blocks");
+assert.match(autoTyperRuntime, /RemoteMotionStepKind::LineFeed \|\| steps\[i\]\.kind == RemoteMotionStepKind::LineFeedHome[\s\S]*appendLineFeedHomeSteps/, "Firmware must expand remote line_feed through pulse-position line-feed return stages");
+assert.match(autoTyperRuntime, /RemoteMotionStepKind::LineFeed[\s\S]*line_feed must be expanded before conversion/, "Firmware must not convert remote line_feed into relative steps");
+assert.match(autoTyperRuntime, /RemoteMotionStepKind::LineFeedHome[\s\S]*line_feed_home must be expanded/, "Firmware must reserve line_feed_home for expanded conversion");
+assert.match(autoTyperRuntime, /appendLineFeedHomeSteps[\s\S]*MotionStepKind::LineFeedHome[\s\S]*MotionStepKind::LineFeedHomeRelease/, "Firmware must expand line_feed_home to forward and release stages");
+assert.doesNotMatch(autoTyperRuntime, /returnTotalSteps \* remoteStep\.lines/, "Remote line_feed must not use relative total-step movement");
+assert.match(autoTyperRuntime, /releaseLineFeedOrigin[\s\S]*disableMotor\(config_\.topology\.lineFeedMotorId/, "Firmware must disable M4 for manual line-feed origin release");
 assert.match(motionExecutor, /MotionStepKind::ReturnZero[\s\S]*startReturnZero/, "MotionExecutor must execute return_zero steps");
+assert.match(motionExecutor, /makeLineFeedHomeSupervision[\s\S]*config_\.lineFeed\.returnTotalSteps[\s\S]*targetPulse - state\.inputPulseSteps/, "Line-feed home must target configured absolute return total");
+assert.match(motionExecutor, /MotionStepKind::LineFeedHomeRelease[\s\S]*return "line_feed_home"/, "Line-feed home release must report line_feed_home progress");
 assert.match(motionExecutor, /makeReturnZeroSupervision[\s\S]*targetPulse = 0[\s\S]*deltaSteps = -state\.inputPulseSteps/, "Return-to-zero supervision must target absolute pulse 0");
 assert.match(motionExecutor, /requestReturnZeroFeedback\(\)[\s\S]*xMotorId[\s\S]*yLeftMotorId[\s\S]*yRightMotorId[\s\S]*pressMotorId/, "Return-to-zero feedback must cover X, Y-left, Y-right, and press motors");
 const returnZeroExecutorBody = motionExecutor.slice(

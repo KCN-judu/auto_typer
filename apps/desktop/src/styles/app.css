@@ -182,7 +182,8 @@ button:disabled {
 }
 
 h1,
-h2 {
+h2,
+h3 {
   margin: 0;
   letter-spacing: 0;
 }
@@ -193,6 +194,10 @@ h1 {
 
 h2 {
   font-size: 16px;
+}
+
+h3 {
+  font-size: 13px;
 }
 
 .connectionBox {
@@ -438,6 +443,134 @@ label.checkbox.compact {
   max-width: 180px;
 }
 
+.xyDebugPanel {
+  min-height: 480px;
+}
+
+.pulseReadoutGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.pulseReadout {
+  min-height: 82px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  display: grid;
+  align-content: space-between;
+  background: #fffdf8;
+}
+
+.pulseReadout span,
+.pressJogTitle span {
+  color: var(--ink-muted);
+  font-size: 12px;
+}
+
+.pulseReadout strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 22px;
+  line-height: 1.05;
+}
+
+.pulseReadout.fresh {
+  border-color: rgba(47, 125, 87, 0.45);
+}
+
+.debugControlGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.xyJogPad {
+  width: min(100%, 360px);
+  display: grid;
+  grid-template-columns: repeat(3, 82px);
+  grid-template-rows: repeat(3, 62px);
+  gap: 8px;
+  justify-content: center;
+  margin: 0 auto;
+}
+
+.xyJogButton,
+.pressJogButton {
+  min-height: 0;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  gap: 2px;
+  font-weight: 700;
+}
+
+.xyJogButton span,
+.pressJogButton span {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+.xyJogButton.yPlus {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.xyJogButton.xMinus {
+  grid-column: 1;
+  grid-row: 2;
+}
+
+.xyJogButton.xPlus {
+  grid-column: 3;
+  grid-row: 2;
+}
+
+.xyJogButton.yMinus {
+  grid-column: 2;
+  grid-row: 3;
+}
+
+.xyJogCenter {
+  grid-column: 2;
+  grid-row: 2;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  color: var(--ink-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 720;
+}
+
+.pressJogSection {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.pressJogTitle {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.pressJogPad {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(92px, 132px));
+  gap: 8px;
+}
+
+.pressJogButton {
+  height: 58px;
+}
+
 .wifiPanel {
   min-height: 480px;
 }
@@ -492,6 +625,9 @@ label.checkbox.compact {
   margin-top: 12px;
   display: grid;
   gap: 6px;
+  max-height: 260px;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .networkRow {

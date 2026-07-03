@@ -3,6 +3,8 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DeviceLink } from "./device-link.js";
+import { listSerialPorts, SerialWifiLink } from "./serial-wifi-link.js";
+import type { SerialWifiLogEvent } from "./serial-wifi-link.js";
 import type {
   GroupStreamCommandMessage,
   GroupStreamEventMessage,
@@ -27,6 +29,7 @@ const defaultStore: StoreShape = {
 
 let mainWindowRef: BrowserWindow | undefined;
 let deviceLink: DeviceLink | undefined;
+let serialWifiLink: SerialWifiLink | undefined;
 
 function storePath() {
   return path.join(app.getPath("userData"), "controller-store.json");
@@ -79,9 +82,19 @@ function emitGroupStreamMessage(message: GroupStreamEventMessage) {
   mainWindowRef?.webContents.send("groupStream:message", message);
 }
 
+function emitSerialWifiLog(event: SerialWifiLogEvent) {
+  console.info(`[serial] ${event.line}`);
+  mainWindowRef?.webContents.send("serialWifi:log", event);
+}
+
 function closeGroupStream() {
   deviceLink?.close();
   deviceLink = undefined;
+}
+
+async function closeSerialWifi() {
+  await serialWifiLink?.close({ rejectPending: false });
+  serialWifiLink = undefined;
 }
 
 async function connectGroupStream(host: string, port: number): Promise<void> {
@@ -138,6 +151,42 @@ ipcMain.handle("groupStream:disconnect", async () => {
 });
 
 ipcMain.handle("groupStream:send", async (_event, message: GroupStreamCommandMessage) => sendGroupStreamMessage(message));
+
+ipcMain.handle("serialWifi:listPorts", async () => listSerialPorts());
+
+ipcMain.handle("serialWifi:connect", async (_event, request?: { path?: string }) => {
+  await closeSerialWifi();
+  const link = new SerialWifiLink(emitSerialWifiLog);
+  const selected = await link.connect(request?.path);
+  serialWifiLink = link;
+  return { connected: true, port: selected };
+});
+
+ipcMain.handle("serialWifi:disconnect", async () => {
+  await closeSerialWifi();
+  return { connected: false };
+});
+
+ipcMain.handle("serialWifi:getWifiStatus", async () => {
+  if (!serialWifiLink) {
+    throw new Error("serial_not_connected: USB 串口未连接");
+  }
+  return serialWifiLink.getWifiStatus();
+});
+
+ipcMain.handle("serialWifi:scanWifi", async () => {
+  if (!serialWifiLink) {
+    throw new Error("serial_not_connected: USB 串口未连接");
+  }
+  return serialWifiLink.scanWifi();
+});
+
+ipcMain.handle("serialWifi:configureWifi", async (_event, request: { ssid: string; password: string }) => {
+  if (!serialWifiLink) {
+    throw new Error("serial_not_connected: USB 串口未连接");
+  }
+  return serialWifiLink.configureWifi(request.ssid, request.password);
+});
 
 app.whenReady().then(createWindow);
 

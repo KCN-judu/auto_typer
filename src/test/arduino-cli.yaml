@@ -1,0 +1,11 @@
+board_manager:
+  additional_urls:
+    - https://espressif.github.io/arduino-esp32/package_esp32_index.json
+
+directories:
+  data: src/test/.arduino-cli/data
+  downloads: src/test/.arduino-cli/downloads
+  user: src/test/.arduino-cli/user
+
+library:
+  enable_unsafe_install: false

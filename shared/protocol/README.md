@@ -7,6 +7,7 @@ This directory defines the JSON contract between the Electron controller and the
 - Raw TCP NDJSON on port `7777`.
 - One JSON object per line.
 - The desktop sends one bounded `exec_group` at a time and waits for `group_done` or `fault`.
+- After the final group, the desktop sends `finish_task`; until then the firmware keeps the printing display active.
 - Firmware accepts at most one active group and rejects additional groups with `device_busy`.
 
 ## Responsibilities
@@ -25,7 +26,9 @@ Client messages:
 - `get_keymap`
 - `probe`
 - `reset_fault`
+- `release_line_feed_origin`
 - `cancel`
+- `finish_task`
 - `exec_group`
 - `ping`
 
@@ -38,7 +41,9 @@ Firmware messages:
 - `keymap`
 - `probe_result`
 - `reset_fault_result`
+- `release_line_feed_origin_result`
 - `cancel_result`
+- `finish_task_result`
 - `group_accepted`
 - `group_rejected`
 - `group_started`
@@ -58,9 +63,12 @@ Primary block types are:
 - `press_up`
 - `character_release`
 - `line_feed`
+- `line_feed_home`
+- `return_zero`
 - `wait`
 
 `move_xy` uses signed `dxSteps` and `dySteps` in machine coordinates. Press blocks use firmware M5 calibration deltas.
+`line_feed_home` enables M4, moves to the configured line-feed return total, then releases by the configured return-release steps. `release_line_feed_origin` disables M4 while idle so the operator can manually return paper feed to origin; status then reports `lineFeedPrimeRequired`.
 
 ## Bounds
 

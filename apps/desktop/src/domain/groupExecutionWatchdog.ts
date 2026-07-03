@@ -71,7 +71,7 @@ export class GroupExecutionWatchdog {
   constructor(group: TaskGroup & { absoluteMaxRuntimeMs?: number }, startedAtMs: number, options: GroupExecutionWatchdogOptions = {}) {
     this.groupId = group.groupId;
     this.seq = group.seq;
-    this.expectedBlockCount = group.blocks.length;
+    this.expectedBlockCount = expandedBlockCount(group.blocks);
     this.startedAtMs = startedAtMs;
     this.lastProgressAtMs = startedAtMs;
     this.progressTimeoutMs = options.progressTimeoutMs ?? defaultProgressTimeoutMs;
@@ -197,6 +197,10 @@ export class GroupExecutionWatchdog {
       timeoutKind,
     };
   }
+}
+
+function expandedBlockCount(blocks: MotionBlock[]): number {
+  return blocks.reduce((count, block) => count + (block.type === "line_feed" || block.type === "line_feed_home" ? 2 : 1), 0);
 }
 
 export function formatExecutionTimeout(timeout: GroupExecutionTimeout): string {

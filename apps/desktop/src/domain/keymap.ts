@@ -6,15 +6,31 @@ export type KeymapIssue = {
   key?: string;
 };
 
-export const poetryFeiyu200Keys = "1234567890-qwertyuiopasdfghjkl;'zxcvbnm,.- ".split("");
+export const capsLockKey = "CAPSLOCK";
+export const leftShiftKey = "LSHIFT";
+export const poetryFeiyu200Keys = "1234567890-qwertyuiopasdfghjkl;zxcvbnm,.- ".split("");
+export const feiyu200SymbolBaseKeys = ["/", "=", "#"] as const;
+export const feiyu200ModifierKeys = [capsLockKey, leftShiftKey] as const;
+export const feiyu200BaseKeys = [...poetryFeiyu200Keys, ...feiyu200SymbolBaseKeys];
+export const feiyu200MappedKeys = [...feiyu200BaseKeys, ...feiyu200ModifierKeys];
 export const poetryFeiyu200KeyCount = poetryFeiyu200Keys.length;
 
-const poetryKeyOrder = new Map(poetryFeiyu200Keys.map((key, index) => [key, index]));
+const keyOrder = new Map(feiyu200MappedKeys.map((key, index) => [key, index]));
 const feiyu200KeyPitchX = 19.25;
-const feiyu200OriginX = 18.75;
-const feiyu200RowOffsets = [0, 22.5, 25, 37.5, 137.5] as const;
-const feiyu200RowY = [106, 87, 68, 49, 30] as const;
-const feiyu200PhysicalRows = ["1234567890-=", "qwertyuiop[]", "asdfghjkl;'", "zxcvbnm,./"] as const;
+const feiyu200OriginX = 28.775;
+const feiyu200RowOffsets = [9, 19.5, 25, 37.5, 137.5] as const;
+const feiyu200RowY = [108.925, 89.9625, 68, 52.4625, 30] as const;
+const feiyu200PhysicalRows = ["1234567890-=", "qwertyuiop[]", "asdfghjkl;#", "zxcvbnm,./"] as const;
+const modifierKeyPoints = {
+  [capsLockKey]: {
+    xMm: feiyu200OriginX + feiyu200RowOffsets[2] - feiyu200KeyPitchX,
+    yMm: feiyu200RowY[2],
+  },
+  [leftShiftKey]: {
+    xMm: feiyu200OriginX + feiyu200RowOffsets[3] - feiyu200KeyPitchX - 5,
+    yMm: feiyu200RowY[3],
+  },
+} as const;
 
 export function emptyKeymap(): KeymapDocument {
   return {
@@ -32,8 +48,8 @@ export function validateKeymap(keymap: KeymapDocument): KeymapIssue[] {
   keymap.bindings.forEach((binding) => {
     const key = normalizeKey(binding.key);
     seen.set(key, (seen.get(key) ?? 0) + 1);
-    if (!isPoetryFeiyu200Key(key)) {
-      issues.push({ level: "warning", key, message: `${displayKey(key)} 不在诗歌字符集内` });
+    if (!isFeiyu200MappedKey(key)) {
+      issues.push({ level: "warning", key, message: `${displayKey(key)} 不在飞宇 200 映射集内` });
     }
     if (!Number.isFinite(binding.point.xMm) || !Number.isFinite(binding.point.yMm)) {
       issues.push({ level: "error", key, message: "坐标必须是有效数字" });
@@ -46,7 +62,7 @@ export function validateKeymap(keymap: KeymapDocument): KeymapIssue[] {
     }
   }
 
-  poetryFeiyu200Keys.forEach((key) => {
+  feiyu200MappedKeys.forEach((key) => {
     if (!seen.has(key)) {
       issues.push({ level: "warning", key, message: `缺少 ${displayKey(key)} 的坐标` });
     }
@@ -72,7 +88,7 @@ export function sanitizeKeymap(keymap: KeymapDocument): KeymapDocument {
   const byKey = new Map<string, KeyBinding>();
   keymap.bindings.forEach((binding) => {
     const normalized = normalizeKey(binding.key);
-    if (isPoetryFeiyu200Key(normalized)) {
+    if (isFeiyu200MappedKey(normalized)) {
       byKey.set(normalized, { key: normalized, point: binding.point });
     }
   });
@@ -98,7 +114,7 @@ export function currentFeiyu200Keymap(base?: Partial<KeymapDocument>): KeymapDoc
   feiyu200PhysicalRows.forEach((rowKeys, row) => {
     for (let index = 0; index < rowKeys.length; index += 1) {
       const key = rowKeys[index];
-      if (!isPoetryFeiyu200Key(key)) {
+      if (!isFeiyu200BaseKey(key)) {
         continue;
       }
       bindings.push({
@@ -118,6 +134,12 @@ export function currentFeiyu200Keymap(base?: Partial<KeymapDocument>): KeymapDoc
       yMm: feiyu200RowY[4],
     },
   });
+  feiyu200ModifierKeys.forEach((key) => {
+    bindings.push({
+      key,
+      point: modifierKeyPoints[key],
+    });
+  });
 
   return sanitizeKeymap({
     version: base?.version ?? 1,
@@ -131,20 +153,45 @@ export function normalizeKey(key: string): string {
   if (key === "Space") {
     return " ";
   }
+  const upper = key.toUpperCase();
+  if (upper === capsLockKey || upper === "CAPS_LOCK") {
+    return capsLockKey;
+  }
+  if (upper === leftShiftKey || upper === "LEFTSHIFT" || upper === "LEFT_SHIFT") {
+    return leftShiftKey;
+  }
   return key.length === 1 ? key.toLowerCase() : key;
 }
 
 export function displayKey(key: string): string {
-  return key === " " ? "Space" : key;
+  const normalized = normalizeKey(key);
+  if (normalized === " ") {
+    return "Space";
+  }
+  if (normalized === capsLockKey) {
+    return "CapsLock";
+  }
+  if (normalized === leftShiftKey) {
+    return "LShift";
+  }
+  return normalized;
 }
 
 export function isPoetryFeiyu200Key(key: string): boolean {
-  return poetryKeyOrder.has(normalizeKey(key));
+  return poetryFeiyu200Keys.includes(normalizeKey(key));
+}
+
+export function isFeiyu200BaseKey(key: string): boolean {
+  return feiyu200BaseKeys.includes(normalizeKey(key));
+}
+
+export function isFeiyu200MappedKey(key: string): boolean {
+  return keyOrder.has(normalizeKey(key));
 }
 
 function compareBindings(a: KeyBinding, b: KeyBinding): number {
-  const aOrder = poetryKeyOrder.get(normalizeKey(a.key));
-  const bOrder = poetryKeyOrder.get(normalizeKey(b.key));
+  const aOrder = keyOrder.get(normalizeKey(a.key));
+  const bOrder = keyOrder.get(normalizeKey(b.key));
   if (aOrder !== undefined && bOrder !== undefined) {
     return aOrder - bOrder;
   }

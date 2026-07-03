@@ -12,7 +12,7 @@ import {
   MAX_GROUP_RUNTIME_MS,
 } from "../../../../shared/protocol/auto-typer-protocol";
 import { estimateGroupRuntimeMs } from "./groupRuntime";
-import { displayKey, normalizeKey } from "./keymap";
+import { capsLockKey, displayKey, leftShiftKey, normalizeKey } from "./keymap";
 
 export type PlannedMotionBlock = {
   block: MotionBlock;
@@ -53,6 +53,7 @@ const pressDownMotion = { rpm: 3000, accelRaw: 255, timeoutMs: 3000 } as const;
 const pressUpMotion = { rpm: 3000, accelRaw: 255, timeoutMs: 3000 } as const;
 const characterReleaseMotion = { rpm: 1600, accelRaw: 128, timeoutMs: 10000 } as const;
 const lineFeedMotion = { rpm: 1600, accelRaw: 128, timeoutMs: 10000 } as const;
+const lineFeedHomeMotion = { rpm: 1600, accelRaw: 128, timeoutMs: 10000 } as const;
 const returnZeroMotion = { rpm: 1600, accelRaw: 128, timeoutMs: 10000 } as const;
 const maxGroups = 1024;
 const stepsPerMm = 80;
@@ -60,9 +61,23 @@ const moveXYMinimumTimeoutMs = 5000;
 const moveXYBaseTimeoutMs = 3000;
 const moveXYTimeoutMsPerStep = 2;
 const maxEstimatedGroupRuntimeMs = Math.floor(MAX_GROUP_RUNTIME_MS / 2);
-
-export type GroupStreamPlanningOptions = {
-  disableLineFeed?: boolean;
+const shiftedSymbolKeys: Record<string, string> = {
+  "!": ",",
+  "·": ".",
+  "?": "/",
+  "¥": "1",
+  "£": "3",
+  "%": "5",
+  "_": "6",
+  "&": "7",
+  "(": "9",
+  ")": "0",
+  "*": "-",
+  "+": "=",
+  ":": ";",
+  "@": "#",
+  "'": "8",
+  "\"": "2",
 };
 
 export function parseText(text: string): string[] {
@@ -82,7 +97,6 @@ export function planTextToBlocks(
   text: string,
   keymap: KeymapDocument,
   initialPoint: MachinePointMm = { xMm: 0, yMm: 0 },
-  options: GroupStreamPlanningOptions = {},
 ): GroupStreamPlan {
   const bindings = new Map<string, KeyBinding>();
   keymap.bindings.forEach((binding) => {
@@ -91,51 +105,29 @@ export function planTextToBlocks(
 
   const blocks: PlannedMotionBlock[] = [];
   const warnings: string[] = [];
-  const disableLineFeed = options.disableLineFeed === true;
-  if (disableLineFeed) {
-    warnings.push("已启用跳过走纸模式，跳过字符释放和换行走纸");
-  }
   let current = initialPoint;
 
   for (const rawChar of parseText(text)) {
     if (rawChar === "\n" || rawChar === "\r") {
-      if (!disableLineFeed) {
-        blocks.push({ block: { type: "line_feed", lines: 1, ...lineFeedMotion }, sourceCharacter: "\n" });
-      }
-      current = { ...current, xMm: initialPoint.xMm };
+      blocks.push({ block: { type: "line_feed", lines: 1, ...lineFeedMotion }, sourceCharacter: "\n" });
+      blocks.push({ block: { type: "return_zero", ...returnZeroMotion }, sourceCharacter: "\n" });
+      current = initialPoint;
       continue;
     }
 
-    const key = normalizeKey(rawChar);
-    const binding = bindings.get(key);
-    if (!binding) {
-      return planFailed("key_not_found", `缺少 ${displayKey(rawChar)} 的坐标`, rawChar, blocks, warnings);
+    for (const plannedKey of keysForGlyph(rawChar)) {
+      const binding = bindings.get(plannedKey);
+      if (!binding) {
+        return planFailed("key_not_found", `缺少 ${displayKey(plannedKey)} 的坐标`, rawChar, blocks, warnings);
+      }
+      appendKeyPressBlocks(blocks, binding, rawChar, current, !isModifierKey(plannedKey));
+      current = binding.point;
     }
-
-    const target = binding.point;
-    const meta = {
-      sourceCharacter: rawChar,
-      targetKeyLabel: displayKey(binding.key),
-      displayCoordinates: target,
-    };
-    const dxSteps = mmToSteps(target.xMm - current.xMm);
-    const dySteps = mmToSteps(target.yMm - current.yMm);
-    if (dxSteps !== 0 || dySteps !== 0) {
-      blocks.push({
-        block: { type: "move_xy", dxSteps, dySteps, ...moveXYMotion, timeoutMs: moveXYTimeoutMs(dxSteps, dySteps) },
-        ...meta,
-      });
-    }
-    blocks.push({ block: { type: "press_down", ...pressDownMotion }, ...meta });
-    blocks.push({ block: { type: "press_up", ...pressUpMotion }, ...meta });
-    if (!disableLineFeed) {
-      blocks.push({ block: { type: "character_release", ...characterReleaseMotion }, ...meta });
-    }
-    current = target;
   }
 
   if (blocks.length > 0) {
     blocks.push({ block: { type: "return_zero", ...returnZeroMotion } });
+    blocks.push({ block: { type: "line_feed_home", ...lineFeedHomeMotion } });
   }
 
   if (Math.ceil(blocks.length / MAX_BLOCKS_PER_GROUP) > maxGroups) {
@@ -206,9 +198,8 @@ export function planTextToRemoteMotionGroups(
   keymap: KeymapDocument,
   jobId: string,
   initialPoint: MachinePointMm = { xMm: 0, yMm: 0 },
-  options: GroupStreamPlanningOptions = {},
 ): GroupStreamPlan {
-  const plan = planTextToBlocks(text, keymap, initialPoint, options);
+  const plan = planTextToBlocks(text, keymap, initialPoint);
   const groups = chunkBlocksIntoGroups(plan.blocks, jobId);
   if (!plan.ok) {
     return { ...plan, groups } as GroupStreamPlan;
@@ -228,6 +219,49 @@ function moveXYTimeoutMs(dxSteps: number, dySteps: number): number {
   const distanceSteps = Math.max(Math.abs(dxSteps), Math.abs(dySteps));
   const timeoutMs = moveXYBaseTimeoutMs + distanceSteps * moveXYTimeoutMsPerStep;
   return clamp(timeoutMs, moveXYMinimumTimeoutMs, MAX_BLOCK_TIMEOUT_MS);
+}
+
+function keysForGlyph(rawChar: string): string[] {
+  const shiftedBaseKey = shiftedSymbolKeys[rawChar];
+  if (shiftedBaseKey) {
+    return [capsLockKey, shiftedBaseKey, leftShiftKey];
+  }
+  if (/^[A-Z]$/.test(rawChar)) {
+    return [capsLockKey, rawChar.toLowerCase(), leftShiftKey];
+  }
+  return [normalizeKey(rawChar)];
+}
+
+function appendKeyPressBlocks(
+  blocks: PlannedMotionBlock[],
+  binding: KeyBinding,
+  sourceCharacter: string,
+  current: MachinePointMm,
+  includeCharacterRelease: boolean,
+): void {
+  const target = binding.point;
+  const meta = {
+    sourceCharacter,
+    targetKeyLabel: displayKey(binding.key),
+    displayCoordinates: target,
+  };
+  const dxSteps = mmToSteps(target.xMm - current.xMm);
+  const dySteps = mmToSteps(target.yMm - current.yMm);
+  if (dxSteps !== 0 || dySteps !== 0) {
+    blocks.push({
+      block: { type: "move_xy", dxSteps, dySteps, ...moveXYMotion, timeoutMs: moveXYTimeoutMs(dxSteps, dySteps) },
+      ...meta,
+    });
+  }
+  blocks.push({ block: { type: "press_down", ...pressDownMotion }, ...meta });
+  blocks.push({ block: { type: "press_up", ...pressUpMotion }, ...meta });
+  if (includeCharacterRelease) {
+    blocks.push({ block: { type: "character_release", ...characterReleaseMotion }, ...meta });
+  }
+}
+
+function isModifierKey(key: string): boolean {
+  return key === capsLockKey || key === leftShiftKey;
 }
 
 function clamp(value: number, minValue: number, maxValue: number): number {

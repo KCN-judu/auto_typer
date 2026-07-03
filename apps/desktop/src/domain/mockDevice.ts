@@ -46,6 +46,7 @@ export const mockStatus: DeviceStatus = {
   wifiRssi: -48,
   pressReady: true,
   motionReady: true,
+  lineFeedPrimeRequired: true,
   keymapVersion: 1,
   currentJob: undefined,
   canDiagnostics: {

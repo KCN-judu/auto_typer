@@ -25,7 +25,9 @@ export const TCP_COMMAND_TYPES = [
   "probe",
   "press_diag_m5",
   "reset_fault",
+  "release_line_feed_origin",
   "cancel",
+  "finish_task",
   "exec_group",
   "ping",
 ] as const;
@@ -36,13 +38,16 @@ export const TCP_TERMINAL_RESPONSE_TYPES = [
   "telemetry_subscribed",
   "keymap",
   "wifi_status",
+  "wifi_network",
   "wifi_networks",
   "wifi_config_result",
   "wifi_setup_finished",
   "probe_result",
   "press_diag_m5_result",
   "reset_fault_result",
+  "release_line_feed_origin_result",
   "cancel_result",
+  "finish_task_result",
   "group_accepted",
   "group_rejected",
   "protocol_error",
@@ -55,6 +60,7 @@ export const MOTION_BLOCK_TYPES = [
   "press_up",
   "character_release",
   "line_feed",
+  "line_feed_home",
   "return_zero",
   "wait",
 ] as const;
@@ -112,6 +118,7 @@ export interface DeviceStatus {
   wifiRssi: number;
   pressReady: boolean;
   motionReady: boolean;
+  lineFeedPrimeRequired: boolean;
   keymapVersion: number;
   currentJob?: JobStatus;
   fault?: DeviceFault;
@@ -321,6 +328,7 @@ export type MotionBlock =
   | ({ type: "press_up" } & RemoteMotionProfile)
   | ({ type: "character_release" } & RemoteMotionProfile)
   | ({ type: "line_feed"; lines: number } & RemoteMotionProfile)
+  | ({ type: "line_feed_home" } & RemoteMotionProfile)
   | ({ type: "return_zero" } & RemoteMotionProfile)
   | { type: "wait"; durationMs: number };
 
@@ -405,10 +413,22 @@ export type CancelMessage = {
   seq?: number;
 };
 
+export type FinishTaskMessage = {
+  v: 1;
+  requestId: string;
+  type: "finish_task";
+};
+
 export type ResetFaultMessage = {
   v: 1;
   requestId: string;
   type: "reset_fault";
+};
+
+export type ReleaseLineFeedOriginMessage = {
+  v: 1;
+  requestId: string;
+  type: "release_line_feed_origin";
 };
 
 export type ProbeMessage = {
@@ -480,6 +500,13 @@ export type WifiStatusMessage = {
   wifi: WifiStatus;
 };
 
+export type WifiNetworkMessage = {
+  v: 1;
+  type: "wifi_network";
+  requestId: string;
+  network: WifiNetwork;
+};
+
 export type WifiNetworksMessage = {
   v: 1;
   type: "wifi_networks";
@@ -545,9 +572,24 @@ export type ResetFaultResultMessage = {
   status?: DeviceStatus;
 };
 
+export type ReleaseLineFeedOriginResultMessage = {
+  v: 1;
+  type: "release_line_feed_origin_result";
+  requestId: string;
+  ok: boolean;
+  status?: DeviceStatus;
+};
+
 export type CancelResultMessage = {
   v: 1;
   type: "cancel_result";
+  requestId: string;
+  ok: boolean;
+};
+
+export type FinishTaskResultMessage = {
+  v: 1;
+  type: "finish_task_result";
   requestId: string;
   ok: boolean;
 };
@@ -559,6 +601,7 @@ export type GroupRejectReason =
   | "group_too_large"
   | "device_busy"
   | "device_fault"
+  | "line_feed_prime_required"
   | "motion_transport_not_ready"
   | "queue_full";
 
@@ -670,7 +713,9 @@ export type GroupStreamCommandMessage =
   | FinishWifiSetupMessage
   | ExecGroupMessage
   | CancelMessage
+  | FinishTaskMessage
   | ResetFaultMessage
+  | ReleaseLineFeedOriginMessage
   | ProbeMessage
   | PressDiagM5Message
   | PingMessage;
@@ -681,13 +726,16 @@ export type GroupStreamEventMessage =
   | TelemetrySubscribedMessage
   | KeymapMessage
   | WifiStatusMessage
+  | WifiNetworkMessage
   | WifiNetworksMessage
   | WifiConfigResultMessage
   | WifiSetupFinishedMessage
   | ProbeResultMessage
   | PressDiagM5ResultMessage
   | ResetFaultResultMessage
+  | ReleaseLineFeedOriginResultMessage
   | CancelResultMessage
+  | FinishTaskResultMessage
   | GroupAcceptedMessage
   | GroupRejectedMessage
   | GroupStartedMessage

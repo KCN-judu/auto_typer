@@ -73,6 +73,10 @@ inline bool parseRemoteStep(JsonVariantConst value,
     out.lines = block["lines"].as<uint8_t>();
     return parseRequiredProfile(block, out.profile, code, message);
   }
+  if (strcmp(kind, "line_feed_home") == 0) {
+    out.kind = RemoteMotionStepKind::LineFeedHome;
+    return parseRequiredProfile(block, out.profile, code, message);
+  }
   if (strcmp(kind, "return_zero") == 0) {
     out.kind = RemoteMotionStepKind::ReturnZero;
     return parseRequiredProfile(block, out.profile, code, message);
@@ -138,6 +142,8 @@ inline const char* remoteStepKindText(RemoteMotionStepKind kind) {
       return "character_release";
     case RemoteMotionStepKind::LineFeed:
       return "line_feed";
+    case RemoteMotionStepKind::LineFeedHome:
+      return "line_feed_home";
     case RemoteMotionStepKind::ReturnZero:
       return "return_zero";
     case RemoteMotionStepKind::Wait:

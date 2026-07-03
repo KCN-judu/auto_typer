@@ -41,9 +41,11 @@ class GroupCommandServer {
   void begin() {
     clearOutboundQueue();
     clearDedupeLedger();
-    beginWifi();
+    updateWifiConnectionState();
     server_.begin();
     server_.setNoDelay(true);
+    log_.print("[tcp] WiFi IP: ");
+    log_.println(currentIp());
     log_.print("[tcp] NDJSON ready on port ");
     log_.println(kGroupCommandPort);
   }
@@ -244,6 +246,12 @@ class GroupCommandServer {
       requestTelemetrySnapshot();
       return;
     }
+    if (strcmp(type, "release_line_feed_origin") == 0) {
+      const bool ok = app_.releaseLineFeedOrigin();
+      sendReleaseLineFeedOriginResult(requestId, ok);
+      requestTelemetrySnapshot();
+      return;
+    }
     if (strcmp(type, "cancel") == 0) {
       const char* groupId = request["groupId"] | "";
       const uint32_t seq = request["seq"] | app_.currentRemoteSeq();
@@ -251,6 +259,12 @@ class GroupCommandServer {
                                  (strcmp(groupId, app_.currentRemoteCommandId()) == 0 && seq == app_.currentRemoteSeq());
       const bool ok = targetMatches && app_.cancelCurrentJob();
       sendCancelResult(requestId, ok);
+      requestTelemetrySnapshot();
+      return;
+    }
+    if (strcmp(type, "finish_task") == 0) {
+      const bool ok = app_.finishRemoteTask();
+      sendFinishTaskResult(requestId, ok);
       requestTelemetrySnapshot();
       return;
     }
@@ -392,7 +406,10 @@ class GroupCommandServer {
     caps.add("get_keymap");
     caps.add("probe");
     caps.add("cancel");
+    caps.add("finish_task");
     caps.add("reset_fault");
+    caps.add("release_line_feed_origin");
+    caps.add("line_feed_home");
     caps.add("wifi_setup");
     caps.add("press_motor");
     caps.add("press_diag_m5");
@@ -659,10 +676,29 @@ class GroupCommandServer {
     enqueueJson(0, doc);
   }
 
+  void sendReleaseLineFeedOriginResult(const char* requestId, bool ok) {
+    DynamicJsonDocument doc(3072);
+    doc["v"] = 1;
+    doc["type"] = "release_line_feed_origin_result";
+    doc["requestId"] = requestId != nullptr ? requestId : "";
+    doc["ok"] = ok;
+    writeStatus(doc.createNestedObject("status"));
+    enqueueJson(0, doc);
+  }
+
   void sendCancelResult(const char* requestId, bool ok) {
     StaticJsonDocument<128> doc;
     doc["v"] = 1;
     doc["type"] = "cancel_result";
+    doc["requestId"] = requestId != nullptr ? requestId : "";
+    doc["ok"] = ok;
+    enqueueJson(0, doc);
+  }
+
+  void sendFinishTaskResult(const char* requestId, bool ok) {
+    StaticJsonDocument<128> doc;
+    doc["v"] = 1;
+    doc["type"] = "finish_task_result";
     doc["requestId"] = requestId != nullptr ? requestId : "";
     doc["ok"] = ok;
     enqueueJson(0, doc);
@@ -827,6 +863,7 @@ class GroupCommandServer {
     status["wifiRssi"] = WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0;
     status["pressReady"] = app_.pressReady();
     status["motionReady"] = app_.motionReady();
+    status["lineFeedPrimeRequired"] = app_.lineFeedPrimeRequired();
     status["keymapVersion"] = app_.keymapVersion();
     const JobSnapshot snapshot = app_.snapshot();
     JsonObject job = status.createNestedObject("currentJob");
@@ -989,7 +1026,7 @@ class GroupCommandServer {
       suffix = suffix.substring(suffix.length() - 6);
     }
     setupSsid_ = String("auto-typer-setup-") + suffix.substring(suffix.length() > 4 ? suffix.length() - 4 : 0);
-    setupPassword_ = String("ATSETUP-") + suffix;
+    setupPassword_ = String("admin123");
   }
 
   bool loadWifiCredentials(String& ssid, String& password) {

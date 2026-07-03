@@ -453,8 +453,10 @@ class HttpControlServer {
     response["health"] =
         app_.mode() == DeviceMode::Faulted ? "fault" : (app_.healthNotReady() ? "not_ready" : (app_.healthWarning() ? "warning" : "ok"));
     response["wifiRssi"] = WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0;
-    response["servoReady"] = app_.servoReady();
+    response["servoReady"] = app_.pressReady();
+    response["pressReady"] = app_.pressReady();
     response["motionReady"] = app_.motionReady();
+    response["lineFeedPrimeRequired"] = app_.lineFeedPrimeRequired();
     response["keymapVersion"] = app_.keymapVersion();
     const JobSnapshot snapshot = app_.snapshot();
     if (snapshot.state == JobState::None) {
@@ -661,7 +663,7 @@ class HttpControlServer {
       suffix = suffix.substring(suffix.length() - 6);
     }
     setupSsid_ = String("auto-typer-setup-") + suffix.substring(suffix.length() > 4 ? suffix.length() - 4 : 0);
-    setupPassword_ = String("ATSETUP-") + suffix;
+    setupPassword_ = String("admin123");
   }
 
   bool loadWifiCredentials(String& ssid, String& password) {

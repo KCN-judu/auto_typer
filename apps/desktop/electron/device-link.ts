@@ -12,13 +12,23 @@ import {
 } from "../../../shared/protocol/auto-typer-protocol.js";
 
 const requestTimeoutMs = 5000;
+const wifiScanTimeoutMs = 15000;
+const wifiConfigureTimeoutMs = 18000;
 const tcpConnectTimeoutMs = 5000;
 const helloTimeoutMs = 3000;
 const groupAdmissionTimeoutMs = 3000;
 const writeTimeoutMs = 2000;
 const heartbeatIntervalMs = 1000;
 const terminalResponseTypes = new Set<string>(TCP_TERMINAL_RESPONSE_TYPES);
-const mutatingCommandTypes = new Set<string>(["exec_group", "cancel", "reset_fault", "probe", "press_diag_m5"]);
+const mutatingCommandTypes = new Set<string>([
+  "exec_group",
+  "finish_task",
+  "cancel",
+  "reset_fault",
+  "release_line_feed_origin",
+  "probe",
+  "press_diag_m5",
+]);
 
 type PendingRequest = {
   requestId: string;
@@ -363,7 +373,7 @@ export class DeviceLink extends EventEmitter<DeviceLinkEvents> {
   private startHeartbeat(): void {
     this.stopHeartbeat();
     this.heartbeatTimer = setInterval(() => {
-      if (this.socket?.writable && !this.pingInFlight) {
+      if (this.socket?.writable && !this.pingInFlight && this.pending.size === 0) {
         this.pingInFlight = true;
         this.sendCommand({ v: 1, requestId: this.nextId("ping"), type: "ping" }, 1500)
           .catch((error) => this.handleDisconnect(error instanceof Error ? error : new Error("TCP ping failed")))
@@ -477,7 +487,9 @@ function terminalTypesFor(commandType: GroupStreamCommandMessage["type"]): Set<s
     probe: "probe_result",
     press_diag_m5: "press_diag_m5_result",
     reset_fault: "reset_fault_result",
+    release_line_feed_origin: "release_line_feed_origin_result",
     cancel: "cancel_result",
+    finish_task: "finish_task_result",
     exec_group: "group_accepted",
     ping: "pong",
   };
@@ -485,7 +497,16 @@ function terminalTypesFor(commandType: GroupStreamCommandMessage["type"]): Set<s
 }
 
 function defaultTimeoutFor(message: GroupStreamCommandMessage): number {
-  return message.type === "exec_group" ? groupAdmissionTimeoutMs : requestTimeoutMs;
+  if (message.type === "exec_group") {
+    return groupAdmissionTimeoutMs;
+  }
+  if (message.type === "scan_wifi") {
+    return wifiScanTimeoutMs;
+  }
+  if (message.type === "configure_wifi") {
+    return wifiConfigureTimeoutMs;
+  }
+  return requestTimeoutMs;
 }
 
 function timeoutCode(commandType: GroupStreamCommandMessage["type"]): string {

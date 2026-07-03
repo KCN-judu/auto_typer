@@ -16,11 +16,13 @@ class MotionExecutor {
   MotionExecutor(const TypingConfig& config,
                  EmmV5Driver& driver,
                  MotorFeedbackStore& feedback,
-                 ProtocolTrace& trace)
+                 ProtocolTrace& trace,
+                 Print& log)
       : config_(config),
         driver_(driver),
         feedback_(feedback),
         trace_(trace),
+        log_(log),
         yPair_(config, driver),
         state_(State::Idle),
         phase_(Phase::Idle),
@@ -276,6 +278,9 @@ class MotionExecutor {
         return startLineFeed(step);
       case MotionStepKind::LineFeed:
         return startLineFeed(step);
+      case MotionStepKind::LineFeedHome:
+      case MotionStepKind::LineFeedHomeRelease:
+        return startLineFeedHome(step);
       case MotionStepKind::MoveXY:
         return startMoveXY(step);
       case MotionStepKind::ReturnZero:
@@ -442,6 +447,37 @@ class MotionExecutor {
     return ok;
   }
 
+  bool startLineFeedHome(const MotionStep& step) {
+    if (!driver_.enableMotor(config_.topology.lineFeedMotorId)) {
+      return false;
+    }
+    const int32_t signedSteps = activeSupervision_.lineFeed.deltaSteps;
+    const uint32_t steps = absoluteSteps(signedSteps);
+    if (steps == 0) {
+      return true;
+    }
+    const MotorDirection direction = directionForSignedSteps(signedSteps);
+    const size_t queueBefore = driver_.availableForWrite();
+    const bool ok = driver_.moveRelative(config_.topology.lineFeedMotorId,
+                                         direction,
+                                         step.profile.maxRpm,
+                                         step.profile.acceleration,
+                                         steps,
+                                         false,
+                                         true);
+    logMoveCommandIssueResult(step,
+                              config_.topology.lineFeedMotorId,
+                              signedSteps,
+                              direction,
+                              step.profile.maxRpm,
+                              step.profile.acceleration,
+                              false,
+                              queueBefore,
+                              ok,
+                              EmmV5Driver::moveRelativeFrameCount());
+    return ok;
+  }
+
   bool startPressMotor(const MotionStep& step) {
     const int32_t signedSteps = step.deltaSteps.press;
     const uint32_t steps = absoluteSteps(signedSteps);
@@ -584,7 +620,8 @@ class MotionExecutor {
         driver_.requestVelocity(config_.topology.yRightMotorId);
       }
     }
-    if (step.kind == MotionStepKind::LineFeed || step.kind == MotionStepKind::CharacterRelease) {
+    if (step.kind == MotionStepKind::LineFeed || step.kind == MotionStepKind::CharacterRelease ||
+        step.kind == MotionStepKind::LineFeedHome || step.kind == MotionStepKind::LineFeedHomeRelease) {
       driver_.requestInputPulseCount(config_.topology.lineFeedMotorId);
       driver_.requestVelocity(config_.topology.lineFeedMotorId);
     }
@@ -624,7 +661,8 @@ class MotionExecutor {
       }
       return true;
     }
-    if (step.kind == MotionStepKind::LineFeed || step.kind == MotionStepKind::CharacterRelease) {
+    if (step.kind == MotionStepKind::LineFeed || step.kind == MotionStepKind::CharacterRelease ||
+        step.kind == MotionStepKind::LineFeedHome || step.kind == MotionStepKind::LineFeedHomeRelease) {
       if (commandResponseFault(activeSupervision_.lineFeed)) {
         return false;
       }
@@ -653,7 +691,8 @@ class MotionExecutor {
     if (step.kind == MotionStepKind::MoveXY) {
       currentPoint_ = step.targetMm;
     }
-    if (step.kind == MotionStepKind::LineFeed) {
+    if (step.kind == MotionStepKind::LineFeed || step.kind == MotionStepKind::LineFeedHome ||
+        step.kind == MotionStepKind::LineFeedHomeRelease) {
       currentPoint_.xMm = config_.homePoint.xMm;
     }
     if (step.kind == MotionStepKind::ReturnZero) {
@@ -675,27 +714,27 @@ class MotionExecutor {
   void logMotionTimeoutDiagnostics(const MotionStep& step, uint32_t elapsedMs) {
     const uint32_t nowMs = millis();
     updateActiveSupervision(nowMs);
-    Serial.print("[motion_timeout] blockIndex=");
-    Serial.print(currentStep_);
-    Serial.print(" blockKind=");
-    Serial.print(motionStepKindName(step.kind));
-    Serial.print(" elapsedMs=");
-    Serial.print(elapsedMs);
-    Serial.print(" timeoutMs=");
-    Serial.print(step.profile.timeoutMs);
-    Serial.print(" dxSteps=");
-    Serial.print(step.deltaSteps.x);
-    Serial.print(" dySteps=");
-    Serial.print(step.deltaSteps.yRight);
-    Serial.print(" pressSteps=");
-    Serial.print(step.deltaSteps.press);
-    Serial.print(" lineFeedSteps=");
-    Serial.print(step.deltaSteps.lineFeed);
-    Serial.print(" completionSampleCount=");
-    Serial.print(completionSampleCount_);
-    Serial.print(" settleStartedAtMs=");
-    Serial.print(settleStartedAtMs_);
-    Serial.println();
+    log_.print("[motion_timeout] blockIndex=");
+    log_.print(currentStep_);
+    log_.print(" blockKind=");
+    log_.print(motionStepKindName(step.kind));
+    log_.print(" elapsedMs=");
+    log_.print(elapsedMs);
+    log_.print(" timeoutMs=");
+    log_.print(step.profile.timeoutMs);
+    log_.print(" dxSteps=");
+    log_.print(step.deltaSteps.x);
+    log_.print(" dySteps=");
+    log_.print(step.deltaSteps.yRight);
+    log_.print(" pressSteps=");
+    log_.print(step.deltaSteps.press);
+    log_.print(" lineFeedSteps=");
+    log_.print(step.deltaSteps.lineFeed);
+    log_.print(" completionSampleCount=");
+    log_.print(completionSampleCount_);
+    log_.print(" settleStartedAtMs=");
+    log_.print(settleStartedAtMs_);
+    log_.println();
 
     logMotorTimeoutDiagnostics("x", activeSupervision_.x, nowMs);
     logMotorTimeoutDiagnostics("y_left", activeSupervision_.yLeft, nowMs);
@@ -707,21 +746,21 @@ class MotionExecutor {
   void logMotionCommandNoAckDiagnostics(const MotionStep& step, uint32_t elapsedMs) {
     const uint32_t nowMs = millis();
     updateActiveSupervision(nowMs);
-    Serial.print("[motion_command_no_ack] groupId=");
-    Serial.print(context_.groupId);
-    Serial.print(" seq=");
-    Serial.print(context_.seq);
-    Serial.print(" blockIndex=");
-    Serial.print(currentStep_);
-    Serial.print(" blockKind=");
-    Serial.print(motionStepKindName(step.kind));
-    Serial.print(" elapsedMs=");
-    Serial.print(elapsedMs);
-    Serial.print(" ackTimeoutMs=");
-    Serial.print(config_.motionRuntime.motionCommandAckTimeoutMs);
-    Serial.print(" commandIssueMs=");
-    Serial.print(commandIssueMs_);
-    Serial.println();
+    log_.print("[motion_command_no_ack] groupId=");
+    log_.print(context_.groupId);
+    log_.print(" seq=");
+    log_.print(context_.seq);
+    log_.print(" blockIndex=");
+    log_.print(currentStep_);
+    log_.print(" blockKind=");
+    log_.print(motionStepKindName(step.kind));
+    log_.print(" elapsedMs=");
+    log_.print(elapsedMs);
+    log_.print(" ackTimeoutMs=");
+    log_.print(config_.motionRuntime.motionCommandAckTimeoutMs);
+    log_.print(" commandIssueMs=");
+    log_.print(commandIssueMs_);
+    log_.println();
     logMotorTimeoutDiagnostics("x", activeSupervision_.x, nowMs);
     logMotorTimeoutDiagnostics("y_left", activeSupervision_.yLeft, nowMs);
     logMotorTimeoutDiagnostics("y_right", activeSupervision_.yRight, nowMs);
@@ -732,19 +771,19 @@ class MotionExecutor {
   void logMotionNoMovementDiagnostics(const MotionStep& step, uint32_t elapsedMs) {
     const uint32_t nowMs = millis();
     updateActiveSupervision(nowMs);
-    Serial.print("[motion_no_movement] groupId=");
-    Serial.print(context_.groupId);
-    Serial.print(" seq=");
-    Serial.print(context_.seq);
-    Serial.print(" blockIndex=");
-    Serial.print(currentStep_);
-    Serial.print(" blockKind=");
-    Serial.print(motionStepKindName(step.kind));
-    Serial.print(" elapsedMs=");
-    Serial.print(elapsedMs);
-    Serial.print(" noMovementTimeoutMs=");
-    Serial.print(config_.motionRuntime.motionNoMovementTimeoutMs);
-    Serial.println();
+    log_.print("[motion_no_movement] groupId=");
+    log_.print(context_.groupId);
+    log_.print(" seq=");
+    log_.print(context_.seq);
+    log_.print(" blockIndex=");
+    log_.print(currentStep_);
+    log_.print(" blockKind=");
+    log_.print(motionStepKindName(step.kind));
+    log_.print(" elapsedMs=");
+    log_.print(elapsedMs);
+    log_.print(" noMovementTimeoutMs=");
+    log_.print(config_.motionRuntime.motionNoMovementTimeoutMs);
+    log_.println();
     logMotorTimeoutDiagnostics("x", activeSupervision_.x, nowMs);
     logMotorTimeoutDiagnostics("y_left", activeSupervision_.yLeft, nowMs);
     logMotorTimeoutDiagnostics("y_right", activeSupervision_.yRight, nowMs);
@@ -787,35 +826,35 @@ class MotionExecutor {
                                  size_t queueBefore,
                                  bool enqueueResult,
                                  size_t frameCount) const {
-    Serial.print("[motion_command_issue] groupId=");
-    Serial.print(context_.groupId);
-    Serial.print(" seq=");
-    Serial.print(context_.seq);
-    Serial.print(" blockIndex=");
-    Serial.print(currentStep_);
-    Serial.print(" blockKind=");
-    Serial.print(motionStepKindName(step.kind));
-    Serial.print(" motorId=");
-    Serial.print(motorId);
-    Serial.print(" command=moveRelative commandByte=0xFD signedSteps=");
-    Serial.print(signedSteps);
-    Serial.print(" direction=");
-    Serial.print(direction == MotorDirection::Cw ? "cw" : "ccw");
-    Serial.print(" rpm=");
-    Serial.print(rpm);
-    Serial.print(" acceleration=");
-    Serial.print(acceleration);
-    Serial.print(" sync=");
-    Serial.print(sync ? 1 : 0);
-    Serial.print(" canTxAvailableForWriteBefore=");
-    Serial.print(queueBefore);
-    Serial.print(" enqueueResult=");
-    Serial.print(enqueueResult ? 1 : 0);
-    Serial.print(" framesEnqueued=");
-    Serial.print(enqueueResult ? frameCount : 0);
-    Serial.print(" commandIssueMs=");
-    Serial.print(commandIssueMs_);
-    Serial.println();
+    log_.print("[motion_command_issue] groupId=");
+    log_.print(context_.groupId);
+    log_.print(" seq=");
+    log_.print(context_.seq);
+    log_.print(" blockIndex=");
+    log_.print(currentStep_);
+    log_.print(" blockKind=");
+    log_.print(motionStepKindName(step.kind));
+    log_.print(" motorId=");
+    log_.print(motorId);
+    log_.print(" command=moveRelative commandByte=0xFD signedSteps=");
+    log_.print(signedSteps);
+    log_.print(" direction=");
+    log_.print(direction == MotorDirection::Cw ? "cw" : "ccw");
+    log_.print(" rpm=");
+    log_.print(rpm);
+    log_.print(" acceleration=");
+    log_.print(acceleration);
+    log_.print(" sync=");
+    log_.print(sync ? 1 : 0);
+    log_.print(" canTxAvailableForWriteBefore=");
+    log_.print(queueBefore);
+    log_.print(" enqueueResult=");
+    log_.print(enqueueResult ? 1 : 0);
+    log_.print(" framesEnqueued=");
+    log_.print(enqueueResult ? frameCount : 0);
+    log_.print(" commandIssueMs=");
+    log_.print(commandIssueMs_);
+    log_.println();
   }
 
   void logMotorTimeoutDiagnostics(const char* label,
@@ -828,49 +867,49 @@ class MotionExecutor {
     const bool pulseFresh = freshInputPulse(state, nowMs);
     const bool velocityFresh = freshVelocity(state, nowMs);
     const bool hasPositionError = supervision.pulseReferenceKnown && state.hasInputPulse;
-    Serial.print("[motion_timeout] motor=");
-    Serial.print(label);
-    Serial.print(" id=");
-    Serial.print(supervision.motorId);
-    Serial.print(" deltaSteps=");
-    Serial.print(supervision.deltaSteps);
-    Serial.print(" baselineKnown=");
-    Serial.print(supervision.baselineKnown ? 1 : 0);
-    Serial.print(" initialPulse=");
-    Serial.print(supervision.pulseReferenceKnown ? supervision.initialPulse : 0);
-    Serial.print(" currentPulse=");
-    Serial.print(state.hasInputPulse ? state.inputPulseSteps : 0);
-    Serial.print(" targetPulse=");
-    Serial.print(supervision.pulseReferenceKnown ? supervision.targetPulse : 0);
-    Serial.print(" positionError=");
-    Serial.print(hasPositionError ? state.inputPulseSteps - supervision.targetPulse : 0);
-    Serial.print(" velocityRpm=");
-    Serial.print(state.hasVelocity ? state.velocityRpm : 0.0f);
-    Serial.print(" pulseFresh=");
-    Serial.print(pulseFresh ? 1 : 0);
-    Serial.print(" velocityFresh=");
-    Serial.print(velocityFresh ? 1 : 0);
-    Serial.print(" firstFeedbackMs=");
-    Serial.print(supervision.firstFeedbackMs);
-    Serial.print(" ackSeen=");
-    Serial.print(supervision.ackSeenForCurrentBlock ? 1 : 0);
-    Serial.print(" reachedSeen=");
-    Serial.print(supervision.reachedSeenForCurrentBlock ? 1 : 0);
-    Serial.print(" velocitySeen=");
-    Serial.print(supervision.velocitySeen ? 1 : 0);
-    Serial.print(" velocityEverNonZero=");
-    Serial.print(supervision.velocityEverNonZero ? 1 : 0);
-    Serial.print(" lastInputPulseMs=");
-    Serial.print(state.lastInputPulseMs);
-    Serial.print(" lastVelocityMs=");
-    Serial.print(state.lastVelocityMs);
-    Serial.print(" lastAckMs=");
-    Serial.print(state.lastAckMs);
-    Serial.print(" lastMotionReachedMs=");
-    Serial.print(state.lastMotionReachedMs);
-    Serial.print(" driverFault=");
-    Serial.print(state.driverFault ? 1 : 0);
-    Serial.println();
+    log_.print("[motion_timeout] motor=");
+    log_.print(label);
+    log_.print(" id=");
+    log_.print(supervision.motorId);
+    log_.print(" deltaSteps=");
+    log_.print(supervision.deltaSteps);
+    log_.print(" baselineKnown=");
+    log_.print(supervision.baselineKnown ? 1 : 0);
+    log_.print(" initialPulse=");
+    log_.print(supervision.pulseReferenceKnown ? supervision.initialPulse : 0);
+    log_.print(" currentPulse=");
+    log_.print(state.hasInputPulse ? state.inputPulseSteps : 0);
+    log_.print(" targetPulse=");
+    log_.print(supervision.pulseReferenceKnown ? supervision.targetPulse : 0);
+    log_.print(" positionError=");
+    log_.print(hasPositionError ? state.inputPulseSteps - supervision.targetPulse : 0);
+    log_.print(" velocityRpm=");
+    log_.print(state.hasVelocity ? state.velocityRpm : 0.0f);
+    log_.print(" pulseFresh=");
+    log_.print(pulseFresh ? 1 : 0);
+    log_.print(" velocityFresh=");
+    log_.print(velocityFresh ? 1 : 0);
+    log_.print(" firstFeedbackMs=");
+    log_.print(supervision.firstFeedbackMs);
+    log_.print(" ackSeen=");
+    log_.print(supervision.ackSeenForCurrentBlock ? 1 : 0);
+    log_.print(" reachedSeen=");
+    log_.print(supervision.reachedSeenForCurrentBlock ? 1 : 0);
+    log_.print(" velocitySeen=");
+    log_.print(supervision.velocitySeen ? 1 : 0);
+    log_.print(" velocityEverNonZero=");
+    log_.print(supervision.velocityEverNonZero ? 1 : 0);
+    log_.print(" lastInputPulseMs=");
+    log_.print(state.lastInputPulseMs);
+    log_.print(" lastVelocityMs=");
+    log_.print(state.lastVelocityMs);
+    log_.print(" lastAckMs=");
+    log_.print(state.lastAckMs);
+    log_.print(" lastMotionReachedMs=");
+    log_.print(state.lastMotionReachedMs);
+    log_.print(" driverFault=");
+    log_.print(state.driverFault ? 1 : 0);
+    log_.println();
   }
 
   void captureSupervisionState(const MotionStep& step, uint32_t startedAtMs) {
@@ -882,6 +921,10 @@ class MotionExecutor {
       activeSupervision_.press = makeReturnZeroSupervision(config_.topology.pressMotorId, startedAtMs);
       return;
     }
+    if (step.kind == MotionStepKind::LineFeedHome) {
+      activeSupervision_.lineFeed = makeLineFeedHomeSupervision(startedAtMs);
+      return;
+    }
     activeSupervision_.x = makeSupervision(config_.topology.xMotorId, step.deltaSteps.x, startedAtMs);
     activeSupervision_.yLeft = makeSupervision(config_.topology.yLeftMotorId, step.deltaSteps.yLeft, startedAtMs);
     activeSupervision_.yRight = makeSupervision(config_.topology.yRightMotorId, step.deltaSteps.yRight, startedAtMs);
@@ -891,7 +934,7 @@ class MotionExecutor {
   }
 
   bool stepHasActiveMotion(const MotionStep& step) const {
-    if (step.kind == MotionStepKind::ReturnZero) {
+    if (step.kind == MotionStepKind::ReturnZero || step.kind == MotionStepKind::LineFeedHome) {
       return true;
     }
     return step.deltaSteps.x != 0 || step.deltaSteps.yLeft != 0 || step.deltaSteps.yRight != 0 ||
@@ -904,6 +947,9 @@ class MotionExecutor {
              motorBaselineReady(feedback_.get(config_.topology.yLeftMotorId), nowMs) &&
              motorBaselineReady(feedback_.get(config_.topology.yRightMotorId), nowMs) &&
              motorBaselineReady(feedback_.get(config_.topology.pressMotorId), nowMs);
+    }
+    if (step.kind == MotionStepKind::LineFeedHome) {
+      return motorBaselineReady(feedback_.get(config_.topology.lineFeedMotorId), nowMs);
     }
     if (step.deltaSteps.x != 0 && !motorBaselineReady(feedback_.get(config_.topology.xMotorId), nowMs)) {
       return false;
@@ -970,6 +1016,31 @@ class MotionExecutor {
     supervision.initialPulse = state.inputPulseSteps;
     supervision.targetPulse = 0;
     supervision.deltaSteps = -state.inputPulseSteps;
+    supervision.pulseReferenceKnown = true;
+    return supervision;
+  }
+
+  MotorSupervisionState makeLineFeedHomeSupervision(uint32_t startedAtMs) const {
+    MotorSupervisionState supervision{};
+    supervision.motorId = config_.topology.lineFeedMotorId;
+    supervision.startedAtMs = startedAtMs;
+    supervision.commandIssueMs = startedAtMs;
+    const uint32_t nowMs = millis();
+    const MotorState state = feedback_.get(config_.topology.lineFeedMotorId);
+    supervision.baselineKnown = motorBaselineReady(state, nowMs);
+    if (!supervision.baselineKnown) {
+      return supervision;
+    }
+    const int32_t targetPulse =
+        signedStepsForDirection(config_.lineFeed.returnTotalSteps, config_.lineFeed.returnDirection);
+    const int32_t deltaSteps = targetPulse - state.inputPulseSteps;
+    if (absoluteSigned(deltaSteps) <= config_.motionRuntime.positionToleranceSteps) {
+      return supervision;
+    }
+    supervision.active = true;
+    supervision.initialPulse = state.inputPulseSteps;
+    supervision.targetPulse = targetPulse;
+    supervision.deltaSteps = deltaSteps;
     supervision.pulseReferenceKnown = true;
     return supervision;
   }
@@ -1205,6 +1276,9 @@ class MotionExecutor {
         return "character_release";
       case MotionStepKind::LineFeed:
         return "line_feed";
+      case MotionStepKind::LineFeedHome:
+      case MotionStepKind::LineFeedHomeRelease:
+        return "line_feed_home";
       case MotionStepKind::ReturnZero:
         return "return_zero";
       case MotionStepKind::Wait:
@@ -1232,11 +1306,12 @@ class MotionExecutor {
   }
 
   uint32_t expectedMoveMs(const MotionStep& step) const {
-    if (step.kind == MotionStepKind::ReturnZero) {
+    if (step.kind == MotionStepKind::ReturnZero || step.kind == MotionStepKind::LineFeedHome) {
       uint32_t maxSteps = absoluteSteps(activeSupervision_.x.deltaSteps);
       const uint32_t yLeftSteps = absoluteSteps(activeSupervision_.yLeft.deltaSteps);
       const uint32_t yRightSteps = absoluteSteps(activeSupervision_.yRight.deltaSteps);
       const uint32_t pressSteps = absoluteSteps(activeSupervision_.press.deltaSteps);
+      const uint32_t homeLineFeedSteps = absoluteSteps(activeSupervision_.lineFeed.deltaSteps);
       if (yLeftSteps > maxSteps) {
         maxSteps = yLeftSteps;
       }
@@ -1245,6 +1320,9 @@ class MotionExecutor {
       }
       if (pressSteps > maxSteps) {
         maxSteps = pressSteps;
+      }
+      if (homeLineFeedSteps > maxSteps) {
+        maxSteps = homeLineFeedSteps;
       }
       if (maxSteps == 0 || step.profile.maxRpm == 0 || config_.calibration.stepsPerRev == 0) {
         return 0;
@@ -1301,6 +1379,7 @@ class MotionExecutor {
   EmmV5Driver& driver_;
   MotorFeedbackStore& feedback_;
   ProtocolTrace& trace_;
+  Print& log_;
   YPairController yPair_;
   State state_;
   Phase phase_;
