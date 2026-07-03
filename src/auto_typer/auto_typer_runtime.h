@@ -10,7 +10,6 @@
 #include "drivers/EmmV5Driver.h"
 #include "hal_display.h"
 #include "keymap_feiyu200.h"
-#include "keymap_store.h"
 #include "motion/MachineKinematics.h"
 #include "motion/MotionExecutor.h"
 #include "motion/MotionPlanner.h"
@@ -87,7 +86,6 @@ class AutoTyperApplication {
 
   void setup() {
     buildKeymap();
-    keymapStore_.save(keymap_, keymapCount_);
     printBanner();
 
     Wire.begin(6, 7);
@@ -594,11 +592,10 @@ class AutoTyperApplication {
     for (size_t i = 0; i < keymapCount_; ++i) {
       if (keymap_[i].key == normalized) {
         keymap_[i].point = point;
-        return keymapStore_.save(keymap_, keymapCount_, kFeiyu200KeymapLayoutVersion);
+        return true;
       }
     }
-    return appendKey(keymap_, sizeof(keymap_) / sizeof(keymap_[0]), keymapCount_, normalized, point) &&
-           keymapStore_.save(keymap_, keymapCount_, kFeiyu200KeymapLayoutVersion);
+    return appendKey(keymap_, sizeof(keymap_) / sizeof(keymap_[0]), keymapCount_, normalized, point);
   }
 
   bool replaceKeymap(const KeyBinding* bindings, size_t count) {
@@ -609,7 +606,7 @@ class AutoTyperApplication {
       keymap_[i] = bindings[i];
     }
     keymapCount_ = count;
-    return keymapStore_.save(keymap_, keymapCount_, kFeiyu200KeymapLayoutVersion);
+    return true;
   }
 
   const KeyBinding* keymap() const {
@@ -621,7 +618,7 @@ class AutoTyperApplication {
   }
 
   uint32_t keymapVersion() const {
-    return keymapStore_.version();
+    return kFeiyu200KeymapLayoutVersion;
   }
 
   MotorState motorState(uint8_t motorId) const {
@@ -1367,7 +1364,6 @@ class AutoTyperApplication {
   ProtocolTrace& protocolTrace_;
   MotionExecutor executor_;
   Print& log_;
-  KeymapStore keymapStore_;
   KeyBinding keymap_[64];
   size_t keymapCount_;
   JobState jobState_;

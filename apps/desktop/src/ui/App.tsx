@@ -40,7 +40,7 @@ import type { GroupExecutionOutcome } from "../domain/groupExecutionWatchdog";
 import { GroupStreamClient } from "../domain/groupStreamClient";
 import type { PlannedRemoteMotionGroup } from "../domain/groupStreamPlanner";
 import { planTextToRemoteMotionGroups } from "../domain/groupStreamPlanner";
-import { currentFeiyu200Keymap, sanitizeKeymap, validateKeymap } from "../domain/keymap";
+import { currentFeiyu200Keymap, validateKeymap } from "../domain/keymap";
 import { mockKeymap, mockStatus } from "../domain/mockDevice";
 import { DashboardPage } from "./dashboard/DashboardPage";
 import { KeymapPage } from "./keymap/KeymapPage";
@@ -114,14 +114,13 @@ export function App() {
     setPrintTask((task) => ({ ...task, stream: "connecting" }));
     try {
       await streamClient.connect({ host: tcpHost, port: tcpPort });
-      const [nextStatus, nextKeymap, nextWifi] = await Promise.all([
+      const [nextStatus, nextWifi] = await Promise.all([
         streamClient.getStatus(),
-        streamClient.getKeymap(),
         streamClient.getWifiStatus(),
       ]);
       await streamClient.subscribeTelemetry(100);
       setStatus(nextStatus);
-      setKeymap(currentFeiyu200Keymap(sanitizeKeymap(nextKeymap)));
+      setKeymap(currentFeiyu200Keymap());
       setWifiStatus(nextWifi);
       if (nextWifi.staSsid) {
         setWifiSsid(nextWifi.staSsid);

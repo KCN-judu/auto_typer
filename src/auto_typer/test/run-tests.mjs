@@ -555,8 +555,9 @@ assert.match(canRxTask, /RealtimeAngleFeedback[\s\S]*markDirtyMotor/, "Realtime 
 assert.match(canRxTask, /StatusFlagsFeedback[\s\S]*markDirtyMotor/, "Status flags feedback must mark motor state dirty");
 assert.doesNotMatch(canRxTask, /WiFiClient|serializeJson|client_\.write|sendJson/, "CAN RX task must not perform TCP/socket IO");
 
-assert.match(firmwareSetupBody, /buildKeymap\(\);[\s\S]*keymapStore_\.save\(keymap_,\s*keymapCount_\)/, "Firmware setup must overwrite stored keymap with the fixed default table");
-assert.doesNotMatch(firmwareSetupBody, /keymapStore_\.load|layoutVersion\(\)/, "Firmware setup must not keep old stored keymap coordinates based on layout version");
+assert.match(firmwareSetupBody, /buildKeymap\(\);/, "Firmware setup must keep only a RAM fallback keymap");
+assert.doesNotMatch(autoTyperRuntime, /KeymapStore|keymapStore_/, "Firmware runtime must not persist keymap coordinates");
+assert.doesNotMatch(firmwareSetupBody, /keymapStore_\.load|keymapStore_\.save|layoutVersion\(\)/, "Firmware setup must not load or save stored keymap coordinates");
 assert.match(autoTyperIno, /MotorTelemetryBuffer gMotorTelemetry/, "Sketch must own the motor telemetry buffer");
 assert.match(autoTyperIno, /CanRxTask gCanRx\(gCanBus,\s*gFeedback,\s*gEvents,\s*gTrace,\s*&gMotorTelemetry\)/, "CAN RX task must observe telemetry through the buffer");
 assert.match(autoTyperIno, /GroupCommandServer gGroupServer\(kConfig,\s*gApp,\s*gMotorTelemetry,\s*Serial\)/, "Existing TCP server must drain the telemetry buffer");
@@ -934,7 +935,7 @@ assert.match(sharedProtocol, /motors\?: Array<\{[\s\S]*readiness: MotorReadiness
 assert.doesNotMatch(sharedProtocol, /export type PrimitiveCommand|type: "command"|op: "move_to"/, "Shared group stream protocol must not expose primitive command messages");
 
 const keymapDomain = readFileSync(new URL("../../../apps/desktop/src/domain/keymap.ts", import.meta.url), "utf8");
-assert.match(keymapDomain, /if \(base\?\.bindings && base\.bindings\.length > 0\)/, "Desktop keymap must preserve existing device bindings");
+assert.match(keymapDomain, /currentFeiyu200Keymap/, "Desktop keymap module must own the Feiyu 200 mapping");
 const groupStreamPlanner = readFileSync(new URL("../../../apps/desktop/src/domain/groupStreamPlanner.ts", import.meta.url), "utf8");
 assert.match(groupStreamPlanner, /dxSteps = mmToSteps\(target\.xMm - current\.xMm\)[\s\S]*dySteps = mmToSteps\(target\.yMm - current\.yMm\)/, "Desktop planner must emit relative machine step deltas");
 assert.doesNotMatch(groupStreamPlanner, /toSvgCoords|svgY|bbox\.maxY|RemoteMotionBlock/, "Desktop planner must not use SVG coordinates or legacy block payloads");
@@ -999,9 +1000,9 @@ assert.match(httpServer, /\[http\] POST \/api\/jobs textLength=/, "Create job mu
 assert.match(httpServer, /\[http\] POST \/api\/jobs missing text/, "Create job must log missing text");
 assert.match(httpServer, /\[http\] POST \/api\/jobs accepted=/, "Create job must log submit result");
 assert.match(httpServer, /\[http\] POST \/api\/jobs response sent/, "Create job must log response completion");
-assert.match(keymapDomain, /return sanitizeKeymap\(\{[\s\S]*bindings: base\.bindings/, "Desktop keymap preservation path must sanitize existing bindings");
+assert.doesNotMatch(appTsx, /getKeymap\(\)/, "Desktop connect must not fetch device keymap over the fixed desktop keymap");
+assert.match(appTsx, /setKeymap\(currentFeiyu200Keymap\(\)\)/, "Desktop connect must reset to the desktop-owned fixed keymap");
 
-const appTsx = readFileSync(new URL("../../../apps/desktop/src/ui/App.tsx", import.meta.url), "utf8");
 assert.match(appTsx, /planTextToRemoteMotionGroups/, "Print Task must plan text locally");
 assert.match(appTsx, /checked=\{skipLineFeed\}/, "Print Task must expose a skip line-feed mode");
 assert.match(appTsx, /streamClient\.sendExecGroup/, "Print Task must send exec_group messages over TCP");
