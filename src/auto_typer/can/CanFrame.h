@@ -1,11 +1,16 @@
 #pragma once
 
 #include <Arduino.h>
-#include "driver/twai.h"
 
 namespace auto_typer {
 
-using CanFrame = twai_message_t;
+struct CanFrame {
+  uint32_t identifier;
+  uint8_t data_length_code;
+  uint8_t data[8];
+  bool extd;
+  bool rtr;
+};
 
 enum class CanBusFault : uint8_t {
   None,

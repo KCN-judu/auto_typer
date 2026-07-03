@@ -525,7 +525,7 @@ const autoTyperRuntime = readFileSync(new URL("../auto_typer_runtime.h", import.
 assert.match(autoTyperRuntime, /prepareMotorsBestEffort/, "Startup motor preparation must be best effort");
 assert.match(
   autoTyperRuntime,
-  /void prepareMotorsBestEffort\(\)\s*\{\s*probeMotorsBestEffort\(150\);\s*\}/,
+  /void prepareMotorsBestEffort\(\)\s*\{\s*probeMotorsBestEffort\(150,\s*true\);\s*\}/,
   "Startup motor preparation must only run the best-effort probe",
 );
 assert.doesNotMatch(autoTyperRuntime, /deviceReadyWarning_/, "Readiness warning must not be sticky state");
@@ -578,17 +578,22 @@ assert.match(
 );
 
 const emmV5Driver = readFileSync(new URL("../drivers/EmmV5Driver.h", import.meta.url), "utf8");
+const emmV5CommandCodec = readFileSync(new URL("../protocol/EmmV5CommandCodec.h", import.meta.url), "utf8");
 assert.match(emmV5Driver, /triggerSynchronousMotionBroadcast\(\)/, "EMM_V5 driver must expose broadcast sync trigger");
 assert.match(emmV5Driver, /requestRealtimeAngle/, "EMM_V5 realtime-angle request must be named explicitly");
+assert.match(emmV5Driver, /requestHomeStatusFlags/, "EMM_V5 driver must expose home-status feedback request");
 assert.doesNotMatch(emmV5Driver, /requestPosition\(/, "EMM_V5 realtime angle request must not be exposed as requestPosition");
 assert.match(
-  emmV5Driver,
+  emmV5CommandCodec,
   /\{\s*0x00,\s*0xFF,\s*0x66,\s*0x6B\s*\}/,
   "Broadcast sync trigger must send address 0 with FF 66 6B",
 );
 assert.match(emmV5Driver, /MoveRelativeCommand/, "EMM_V5 driver must expose a batchable move descriptor");
 assert.match(emmV5Driver, /moveRelativeBatch/, "EMM_V5 driver must support atomic grouped moves");
-assert.match(emmV5Driver, /appendCommandFrames/, "EMM_V5 commands must be fully encoded before enqueue");
+assert.match(emmV5CommandCodec, /class EmmV5CommandCodec/, "EMM_V5 commands must be encoded by the trusted codec");
+assert.match(emmV5CommandCodec, /static bool encode/, "EMM_V5 codec must expose pure command-to-frame encoding");
+assert.match(emmV5CommandCodec, /\{\s*motorId,\s*0x3B,\s*0x6B\s*\}/, "EMM_V5 codec must encode home-status feedback requests");
+assert.doesNotMatch(emmV5CommandCodec, /CanTxQueue|ProtocolTrace|millis\(\)|twai_/, "EMM_V5 codec must stay pure and transport-free");
 assert.match(
   emmV5Driver,
   /enqueueBatch\(frames,\s*frameCount/,
@@ -599,6 +604,7 @@ assert.doesNotMatch(
   /while\s*\(\s*offset\s*<\s*payloadLen\s*\)[\s\S]*?tx_\.enqueue\(/,
   "EMM_V5 driver must not enqueue frames while encoding a command",
 );
+assert.doesNotMatch(emmV5Driver, /ProtocolTrace/, "EMM_V5 driver must not own trace side effects");
 
 const yPairController = readFileSync(new URL("../motion/YPairController.h", import.meta.url), "utf8");
 assert.match(yPairController, /triggerSynchronousMotionBroadcast\(\)/, "YPair move must use broadcast sync trigger");
@@ -635,6 +641,7 @@ assert.match(canTxQueue, /pendingValid_/, "CAN TX queue must keep a pending fram
 assert.match(canTxQueue, /pendingFrame_/, "CAN TX queue must store the frame being retried");
 assert.match(canTxQueue, /recordTxRetry\(\)/, "CAN TX retry must increment diagnostics");
 assert.match(canTxQueue, /addTxRetry/, "CAN TX retry must be visible in protocol trace");
+assert.match(canTxQueue, /addTxQueued/, "CAN TX queue must own queued-frame trace side effects");
 assert.match(
   canTxQueue,
   /if\s*\(\s*!bus_\.transmit\(pendingFrame_\.frame\)\s*\)[\s\S]*?return;/,
@@ -645,33 +652,19 @@ assert.match(
   /pendingValid_\s*=\s*false;[\s\S]*?setPendingFrameValid\(false\);[\s\S]*?\+\+sent;/,
   "CAN TX pending frame must clear only after transmit success",
 );
-assert.match(
-  canTxQueue,
-  /hasFatalFault\(\)[\s\S]*?!pendingFrame_\.highPriority[\s\S]*?pendingValid_\s*=\s*false/,
-  "Fatal CAN fault must drop ordinary pending frames",
-);
-assert.match(
-  canTxQueue,
-  /hasFatalFault\(\)[\s\S]*?!item\.highPriority[\s\S]*?continue;/,
-  "Fatal CAN fault must skip ordinary queued frames so stop frames can pass",
-);
+assert.doesNotMatch(canTxQueue, /hasFatalFault|fatalFault/, "CAN TX queue must not know application fault policy");
 
-function simulateCanTxQueue({ frames, failAttempts = new Set(), fatalFault = false }) {
+function simulateCanTxQueue({ frames, failAttempts = new Set() }) {
   const queue = [...frames];
   const sent = [];
   const retries = [];
-  const dropped = [];
   let pendingValid = false;
   let pendingFrame = undefined;
   let attempt = 0;
 
   function loadNextPendingFrame() {
-    while (queue.length > 0) {
-      const item = queue.shift();
-      if (fatalFault && !item.highPriority) {
-        dropped.push(item.frame.id);
-        continue;
-      }
+    const item = queue.shift();
+    if (item) {
       pendingFrame = item;
       pendingValid = true;
       return true;
@@ -682,10 +675,6 @@ function simulateCanTxQueue({ frames, failAttempts = new Set(), fatalFault = fal
   function tick(maxFrames = 4) {
     let sentThisTick = 0;
     while (sentThisTick < maxFrames) {
-      if (fatalFault && pendingValid && !pendingFrame.highPriority) {
-        dropped.push(pendingFrame.frame.id);
-        pendingValid = false;
-      }
       if (!pendingValid && !loadNextPendingFrame()) {
         return;
       }
@@ -704,7 +693,6 @@ function simulateCanTxQueue({ frames, failAttempts = new Set(), fatalFault = fal
     tick,
     sent,
     retries,
-    dropped,
     pendingId: () => (pendingValid ? pendingFrame.frame.id : undefined),
   };
 }
@@ -738,22 +726,12 @@ assert.deepEqual(
   "Multi-frame FD commands must not lose or reorder packets after a TX failure",
 );
 
-const fatalQueue = simulateCanTxQueue({
-  frames: [
-    { frame: { id: "normal" }, highPriority: false },
-    { frame: { id: "stop" }, highPriority: true },
-  ],
-  fatalFault: true,
-});
-fatalQueue.tick();
-assert.deepEqual(fatalQueue.dropped, ["normal"], "Fatal CAN fault may drop ordinary queued frames");
-assert.deepEqual(fatalQueue.sent, ["stop"], "Fatal CAN fault must still attempt high-priority stop frames");
-
 const protocolTypes = readFileSync(new URL("../protocol/EmmV5ProtocolParser.h", import.meta.url), "utf8");
 assert.match(protocolTypes, /InputPulseFeedback/, "Parser event model must include input pulse feedback");
 assert.match(protocolTypes, /RealtimeAngleFeedback/, "Parser event model must keep realtime angle separate");
 assert.match(protocolTypes, /event\.command == 0x32/, "Parser must prioritize 0x32 input pulse telemetry");
 assert.match(protocolTypes, /event\.dlc == 3 && event\.raw\[0\] == 0xFD && event\.raw\[1\] == 0x02/, "Parser ACK detection must be constrained to short FD ACK frames");
+assert.doesNotMatch(protocolTypes, /millis\(\)/, "Parser must receive event time from the RX effect boundary");
 
 const protocolTrace = readFileSync(new URL("../can/ProtocolTrace.h", import.meta.url), "utf8");
 assert.match(protocolTrace, /kCapacity\s*=\s*128/, "Protocol trace must retain at least 128 frames");
@@ -766,8 +744,14 @@ assert.match(eventStore, /InvalidFrame[\s\S]*\+\+invalidFrameCount_/, "Invalid f
 
 const canBus = readFileSync(new URL("../can/CanBus.h", import.meta.url), "utf8");
 assert.doesNotMatch(canBus, /registerSoftFault/, "Soft CAN faults must not escalate into fatal faults");
-assert.match(canBus, /TWAI_ALERT_BUS_OFF/, "CAN bus-off must still be handled as fatal");
+assert.match(canBus, /TWAI_ALERT_BUS_OFF[\s\S]*recoverBus\(\)[\s\S]*recordTransportFault\(CanBusFault::BusOff/, "CAN bus-off must attempt recovery before reporting a transport fault");
+assert.match(canBus, /snapshot\.recoverable = true/, "CAN bus-off diagnostics must remain resettable");
 assert.match(canBus, /const esp_err_t startResult = twai_start\(\);/, "CAN bus recovery must not call twai_start twice");
+assert.doesNotMatch(canBus, /hasFatalFault\(\)|fault_\s*=/, "CAN bus must not expose application-level fault state");
+assert.doesNotMatch(canBus, /EmmV5|Motor|MotionExecutor|MotionStep/, "CAN bus must not know instruction or motion semantics");
+
+const canFrame = readFileSync(new URL("../can/CanFrame.h", import.meta.url), "utf8");
+assert.doesNotMatch(canFrame, /twai_message_t|using CanFrame =/, "Project CAN frame must not alias TWAI transport types");
 
 const machineKinematics = readFileSync(new URL("../motion/MachineKinematics.h", import.meta.url), "utf8");
 assert.match(machineKinematics, /signedStepsForDirection/, "Machine kinematics must expose signed direction helper");
@@ -952,7 +936,7 @@ assert.match(autoTyperRuntime, /finishRemoteTask/, "Firmware must expose remote 
 assert.match(autoTyperRuntime, /convertRemoteStep/, "Firmware must convert remote steps before execution");
 assert.doesNotMatch(autoTyperRuntime, /submitRemoteBlock|consumeRemoteBlock|RemoteMotionBlock|RemoteMotionBlockKind|SubmitRemoteBlock|invalid_block/, "Firmware remote protocol must not retain legacy remote block API");
 assert.match(autoTyperRuntime, /actuatorProbeMayRecover/, "Remote group submission must retry stale actuator readiness after probing");
-assert.match(autoTyperRuntime, /probeMotorsBestEffort\(400\)[\s\S]*required = checkRequiredActuators\(activeMotionSteps_\)/, "Remote group submission must recheck required actuators after probing");
+assert.match(autoTyperRuntime, /probeMotorsBestEffort\(400,\s*false\)[\s\S]*required = checkRequiredActuators\(activeMotionSteps_\)/, "Remote group submission must recheck required actuators after read-only probing");
 assert.doesNotMatch(autoTyperRuntime, /MotionStepPlan single/, "Remote group submission must not allocate a full step plan on the loop stack");
 assert.match(autoTyperRuntime, /executor_\.start\(activeMotionSteps_\.steps,\s*activeMotionSteps_\.count,\s*startPoint\)/, "Remote groups must start through MotionExecutor");
 assert.match(autoTyperRuntime, /xyDeltaSteps\(currentPoint,\s*target,\s*config_\.calibration\)/, "Remote move_to must use firmware kinematics");

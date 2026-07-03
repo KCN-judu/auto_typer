@@ -24,7 +24,7 @@ EmmV5EventStore gEvents;
 ProtocolTrace gTrace;
 CanTxQueue gCanTx(gCanBus, &gTrace);
 CanRxTask gCanRx(gCanBus, gFeedback, gEvents, gTrace);
-EmmV5Driver gMotion(gCanTx, &gTrace);
+EmmV5Driver gMotion(gCanTx);
 AutoTyperApplication gApp(kConfig,
                           gDisplay,
                           gCanBus,

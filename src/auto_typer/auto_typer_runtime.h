@@ -109,10 +109,10 @@ class AutoTyperApplication {
     canRx_.tick(16);
     canTx_.tick(4);
 
-    if (canBus_.hasFatalFault()) {
+    const CanBusDiagnostics loopCanDiagnostics = canBus_.diagnostics();
+    if (loopCanDiagnostics.fatalFault) {
       if (!faulted_) {
-        const CanBusDiagnostics diagnostics = canBus_.diagnostics();
-        setFault(diagnostics.lastFaultCode, diagnostics.lastFaultMessage);
+        setFault(loopCanDiagnostics.lastFaultCode, loopCanDiagnostics.lastFaultMessage);
         executor_.stopAll();
         jobState_ = JobState::Failed;
         showError();
@@ -322,7 +322,7 @@ class AutoTyperApplication {
 
     RequiredActuatorCheck required = checkRequiredActuators(activeMotionSteps_);
     if (!required.ready && actuatorProbeMayRecover(required)) {
-      probeMotorsBestEffort(400);
+      probeMotorsBestEffort(400, false);
       required = checkRequiredActuators(activeMotionSteps_);
     }
     if (!required.ready) {
@@ -405,9 +405,9 @@ class AutoTyperApplication {
     remoteCommandActive_ = false;
     currentRemoteCommandId_[0] = '\0';
     remoteWarnNotified_ = false;
-    probeMotorsBestEffort(300);
-    if (!recovered || canBus_.hasFatalFault()) {
-      const CanBusDiagnostics diagnostics = canBus_.diagnostics();
+    probeMotorsBestEffort(300, true);
+    const CanBusDiagnostics diagnostics = canBus_.diagnostics();
+    if (!recovered || diagnostics.fatalFault) {
       setFault(diagnostics.lastFaultCode, diagnostics.lastFaultMessage);
       showError();
       return false;
@@ -421,7 +421,7 @@ class AutoTyperApplication {
         jobState_ == JobState::Cancelling) {
       return false;
     }
-    probeMotorsBestEffort(400);
+    probeMotorsBestEffort(400, false);
     return true;
   }
 
@@ -644,7 +644,7 @@ class AutoTyperApplication {
   }
 
   void prepareMotorsBestEffort() {
-    probeMotorsBestEffort(150);
+    probeMotorsBestEffort(150, true);
   }
 
   bool emergencyStopWithReason(const char* code, const char* message) {
@@ -838,8 +838,8 @@ class AutoTyperApplication {
     }
   }
 
-  void probeMotorsBestEffort(uint16_t pumpMs) {
-    requestMotorFeedback(true);
+  void probeMotorsBestEffort(uint16_t pumpMs, bool includeConfig) {
+    requestMotorFeedback(includeConfig);
     const uint32_t startedAt = millis();
     while (millis() - startedAt < pumpMs) {
       canTx_.tick(4);
@@ -956,7 +956,7 @@ class AutoTyperApplication {
     if (state.lastConditionNotMetMs != 0 && state.lastConditionNotMetMs >= lastProbeMs) {
       return MotorReadiness::ConditionNotMet;
     }
-    if (state.hasRecentStatus && state.hasRecentInputPulse && state.hasRecentVelocity) {
+    if (state.hasRecentInputPulse && state.hasRecentVelocity) {
       return MotorReadiness::Ready;
     }
     if (state.lastAckMs != 0 && state.lastAckMs >= lastProbeMs) {

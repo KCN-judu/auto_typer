@@ -13,7 +13,7 @@ inline MotionRuntimeConfig defaultMotionRuntimeConfig() {
   config.positionToleranceSteps = 16;
   config.ySkewToleranceSteps = 80;
   config.idleVelocityThresholdRpm = 1.0f;
-  config.motionPollIntervalMs = 20;
+  config.motionPollIntervalMs = 80;
   config.motionTimeoutMs = 15000;
   config.completionSamples = 3;
   config.minimumCoordinatedRpm = 50;

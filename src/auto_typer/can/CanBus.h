@@ -13,8 +13,6 @@ class CanBus {
   explicit CanBus(const CanBusConfig& config)
       : config_(config),
         ready_(false),
-        fatalFault_(false),
-        fault_(CanBusFault::None),
         diagnostics_{} {
     diagnostics_.lastTxError = "";
     diagnostics_.lastCommandQueueError = "";
@@ -68,7 +66,8 @@ class CanBus {
       diagnostics_.lastTxError = "driver_not_ready";
       return false;
     }
-    const esp_err_t result = twai_transmit(&frame, timeoutTicks);
+    const twai_message_t message = toTwaiFrame(frame);
+    const esp_err_t result = twai_transmit(&message, timeoutTicks);
     if (result != ESP_OK) {
       ++diagnostics_.txFailedCount;
       diagnostics_.lastTxError = txErrorText(result);
@@ -82,7 +81,12 @@ class CanBus {
     if (!ready_) {
       return false;
     }
-    return twai_receive(&frame, timeoutTicks) == ESP_OK;
+    twai_message_t message{};
+    if (twai_receive(&message, timeoutTicks) != ESP_OK) {
+      return false;
+    }
+    frame = fromTwaiFrame(message);
+    return true;
   }
 
   uint32_t readAlerts(TickType_t timeoutTicks = 0) {
@@ -97,7 +101,17 @@ class CanBus {
     diagnostics_.lastAlertAtMs = millis();
     if ((alerts & TWAI_ALERT_BUS_OFF) != 0) {
       ++diagnostics_.busOffCount;
-      setFatalFault(CanBusFault::BusOff, "can_bus_off", "CAN controller entered bus-off");
+      if (recoverBus()) {
+        diagnostics_.fatalFault = false;
+        diagnostics_.lastFault = CanBusFault::BusOff;
+        diagnostics_.lastFaultAtMs = millis();
+        diagnostics_.lastFaultCode = "can_bus_off_recovered";
+        diagnostics_.lastFaultMessage = "CAN controller recovered from bus-off";
+        diagnostics_.recoverable = true;
+        flushRx();
+      } else {
+        recordTransportFault(CanBusFault::BusOff, "can_bus_off", "CAN bus-off recovery failed");
+      }
     }
     if ((alerts & TWAI_ALERT_RX_QUEUE_FULL) != 0) {
       ++diagnostics_.rxQueueFullCount;
@@ -122,25 +136,15 @@ class CanBus {
     return ready_;
   }
 
-  bool hasFatalFault() const {
-    return fatalFault_;
-  }
-
   bool motionReady() const {
-    return ready_ && !fatalFault_;
-  }
-
-  CanBusFault fault() const {
-    return fault_;
+    return ready_ && !diagnostics_.fatalFault;
   }
 
   CanBusDiagnostics diagnostics() const {
     CanBusDiagnostics snapshot = diagnostics_;
     snapshot.driverReady = ready_;
     snapshot.motionReady = motionReady();
-    snapshot.fatalFault = fatalFault_;
-    snapshot.lastFault = fault_;
-    snapshot.recoverable = fault_ != CanBusFault::BusOff;
+    snapshot.recoverable = true;
     return snapshot;
   }
 
@@ -163,9 +167,9 @@ class CanBus {
     if (!ready_) {
       return begin();
     }
-    if (fault_ == CanBusFault::BusOff || diagnostics_.busOffCount > 0) {
+    if (diagnostics_.busOffCount > 0) {
       if (!recoverBus()) {
-        setFatalFault(CanBusFault::BusOff, "can_bus_off", "CAN bus-off recovery failed");
+        recordTransportFault(CanBusFault::BusOff, "can_bus_off", "CAN bus-off recovery failed");
         return false;
       }
     }
@@ -202,23 +206,43 @@ class CanBus {
     }
   }
 
-  void setFatalFault(CanBusFault fault, const char* code, const char* message) {
-    fatalFault_ = true;
-    fault_ = fault;
+  static twai_message_t toTwaiFrame(const CanFrame& frame) {
+    twai_message_t message{};
+    message.identifier = frame.identifier;
+    message.data_length_code = frame.data_length_code > 8 ? 8 : frame.data_length_code;
+    message.extd = frame.extd ? 1 : 0;
+    message.rtr = frame.rtr ? 1 : 0;
+    for (uint8_t i = 0; i < message.data_length_code; ++i) {
+      message.data[i] = frame.data[i];
+    }
+    return message;
+  }
+
+  static CanFrame fromTwaiFrame(const twai_message_t& message) {
+    CanFrame frame{};
+    frame.identifier = message.identifier;
+    frame.data_length_code = message.data_length_code > 8 ? 8 : message.data_length_code;
+    frame.extd = message.extd != 0;
+    frame.rtr = message.rtr != 0;
+    for (uint8_t i = 0; i < frame.data_length_code; ++i) {
+      frame.data[i] = message.data[i];
+    }
+    return frame;
+  }
+
+  void recordTransportFault(CanBusFault fault, const char* code, const char* message) {
     diagnostics_.fatalFault = true;
     diagnostics_.lastFault = fault;
     diagnostics_.lastFaultAtMs = millis();
     diagnostics_.lastFaultCode = code;
     diagnostics_.lastFaultMessage = message;
-    diagnostics_.recoverable = fault != CanBusFault::BusOff;
+    diagnostics_.recoverable = true;
   }
 
   void clearDiagnostics() {
-    fatalFault_ = false;
-    fault_ = CanBusFault::None;
     diagnostics_.lastAlerts = 0;
     diagnostics_.driverReady = ready_;
-    diagnostics_.motionReady = motionReady();
+    diagnostics_.motionReady = ready_;
     diagnostics_.txFailedCount = 0;
     diagnostics_.txRetryCount = 0;
     diagnostics_.commandQueueFullCount = 0;
@@ -239,8 +263,8 @@ class CanBus {
   }
 
   void flushRx() {
-    CanFrame frame{};
-    for (uint8_t i = 0; i < 32 && twai_receive(&frame, 0) == ESP_OK; ++i) {
+    twai_message_t message{};
+    for (uint8_t i = 0; i < 32 && twai_receive(&message, 0) == ESP_OK; ++i) {
     }
     uint32_t ignoredAlerts = 0;
     twai_read_alerts(&ignoredAlerts, 0);
@@ -275,8 +299,6 @@ class CanBus {
 
   CanBusConfig config_;
   bool ready_;
-  bool fatalFault_;
-  CanBusFault fault_;
   CanBusDiagnostics diagnostics_;
 };
 

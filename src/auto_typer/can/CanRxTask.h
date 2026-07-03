@@ -154,7 +154,7 @@ class CanRxTask {
     CanFrame frame{};
     size_t received = 0;
     while (received < maxFrames && bus_.receive(frame, 0)) {
-      EmmV5Event event = parser_.parse(frame);
+      EmmV5Event event = parser_.parse(frame, millis());
       trace_.addRx(frame, event);
       events_.push(event);
       feedback_.apply(event);

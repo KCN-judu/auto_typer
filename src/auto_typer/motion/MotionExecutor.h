@@ -577,7 +577,7 @@ class MotionExecutor {
 
   static constexpr uint32_t kBaselineFreshMs = 1500;
   static constexpr uint32_t kBaselineAcquireTimeoutMs = 1500;
-  static constexpr uint32_t kFeedbackFreshMs = 300;
+  static constexpr uint32_t kFeedbackFreshMs = 1000;
 
   bool requiresFeedbackBaseline(const MotionStep& step) const {
     if (step.kind == MotionStepKind::MoveXY) {

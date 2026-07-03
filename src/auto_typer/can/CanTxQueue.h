@@ -65,6 +65,11 @@ class CanTxQueue {
         xQueueSendToBack(queue_, &item, 0);
       }
     }
+    if (trace_ != nullptr) {
+      for (size_t i = 0; i < count; ++i) {
+        trace_->addTxQueued(frames[i]);
+      }
+    }
     unlock();
     return true;
   }
@@ -75,10 +80,6 @@ class CanTxQueue {
     }
     size_t sent = 0;
     while (sent < maxFrames) {
-      if (bus_.hasFatalFault() && pendingValid_ && !pendingFrame_.highPriority) {
-        pendingValid_ = false;
-        bus_.setPendingFrameValid(false);
-      }
       if (!pendingValid_ && !loadNextPendingFrame()) {
         return;
       }
@@ -114,10 +115,7 @@ class CanTxQueue {
 
   bool loadNextPendingFrame() {
     QueuedFrame item{};
-    while (xQueueReceive(queue_, &item, 0) == pdTRUE) {
-      if (bus_.hasFatalFault() && !item.highPriority) {
-        continue;
-      }
+    if (xQueueReceive(queue_, &item, 0) == pdTRUE) {
       pendingFrame_ = item;
       pendingValid_ = true;
       bus_.setPendingFrameValid(true);

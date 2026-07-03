@@ -42,12 +42,12 @@ struct EmmV5Event {
 
 class EmmV5ProtocolParser {
  public:
-  EmmV5Event parse(const CanFrame& frame) const {
+  EmmV5Event parse(const CanFrame& frame, uint32_t timeMs) const {
     EmmV5Event event{};
     event.kind = EmmV5EventKind::None;
     event.canId = frame.identifier;
     event.dlc = frame.data_length_code > 8 ? 8 : frame.data_length_code;
-    event.timeMs = millis();
+    event.timeMs = timeMs;
     event.errorCode = "";
     for (uint8_t i = 0; i < event.dlc; ++i) {
       event.raw[i] = frame.data[i];
