@@ -8,6 +8,7 @@ const pressEstimateMs = 2000;
 const pressReleaseEstimateMs = 2000;
 const characterReleaseEstimateMs = 2500;
 const lineFeedEstimateMs = 6000;
+const returnZeroEstimateMs = 10000;
 const waitMarginMs = 500;
 
 export function estimateBlockRuntimeMs(block: MotionBlock): number {
@@ -28,6 +29,8 @@ export function estimateBlockRuntimeMs(block: MotionBlock): number {
       return Math.max(characterReleaseEstimateMs, block.timeoutMs);
     case "line_feed":
       return Math.max(lineFeedEstimateMs, block.timeoutMs);
+    case "return_zero":
+      return Math.max(returnZeroEstimateMs, block.timeoutMs);
     case "wait":
       return block.durationMs + waitMarginMs;
     default:

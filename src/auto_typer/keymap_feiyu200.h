@@ -4,7 +4,7 @@
 
 namespace auto_typer {
 
-static const uint32_t kFeiyu200KeymapLayoutVersion = 6;
+static const uint32_t kFeiyu200KeymapLayoutVersion = 8;
 
 struct Feiyu200LayoutConfig {
   MachinePointMm origin;
@@ -15,17 +15,17 @@ struct Feiyu200LayoutConfig {
 
 inline Feiyu200LayoutConfig defaultFeiyu200LayoutConfig() {
   Feiyu200LayoutConfig config{};
-  config.origin = {0.0f, 0.0f};
-  config.keyPitchX = 19.0f;
+  config.origin = {18.75f, 0.0f};
+  config.keyPitchX = 19.25f;
   config.rowY[0] = 106.0f;
   config.rowY[1] = 87.0f;
   config.rowY[2] = 68.0f;
   config.rowY[3] = 49.0f;
   config.rowY[4] = 30.0f;
   config.rowOffsets[0] = 0.0f;
-  config.rowOffsets[1] = 42.5f;
+  config.rowOffsets[1] = 62.5f;
   config.rowOffsets[2] = 25.0f;
-  config.rowOffsets[3] = 57.5f;
+  config.rowOffsets[3] = 77.5f;
   config.rowOffsets[4] = 137.5f;
   return config;
 }

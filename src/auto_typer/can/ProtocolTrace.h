@@ -19,15 +19,42 @@ struct ProtocolTraceItem {
   char dataHex[24];
   const char* parsed;
   uint8_t motorId;
+  uint8_t command;
+  uint8_t status;
   uint8_t packetIndex;
+  bool hasMotionContext;
+  char groupId[49];
+  uint32_t seq;
+  size_t blockIndex;
+  char blockKind[24];
 };
 
 class ProtocolTrace {
  public:
-  ProtocolTrace() : mutex_(nullptr), next_(0), count_(0) {
+  ProtocolTrace() : mutex_(nullptr), next_(0), count_(0), context_{} {
     for (uint8_t i = 0; i < kCapacity; ++i) {
       items_[i] = {};
     }
+  }
+
+  void setMotionContext(const char* groupId, uint32_t seq, size_t blockIndex, const char* blockKind) {
+    if (!lock()) {
+      return;
+    }
+    context_.active = true;
+    copyText(context_.groupId, sizeof(context_.groupId), groupId);
+    context_.seq = seq;
+    context_.blockIndex = blockIndex;
+    copyText(context_.blockKind, sizeof(context_.blockKind), blockKind);
+    unlock();
+  }
+
+  void clearMotionContext() {
+    if (!lock()) {
+      return;
+    }
+    context_ = {};
+    unlock();
   }
 
   void addTxQueued(const CanFrame& frame) {
@@ -54,6 +81,10 @@ class ProtocolTrace {
                                                         ? event.errorCode
                                                         : EmmV5ProtocolParser::kindText(event.kind));
     item.motorId = event.motorId;
+    item.command = event.command;
+    if (event.dlc > 1) {
+      item.status = event.raw[1];
+    }
     item.packetIndex = event.packetIndex;
     push(item);
   }
@@ -78,6 +109,14 @@ class ProtocolTrace {
  private:
   static constexpr size_t kCapacity = 128;
 
+  struct MotionContext {
+    bool active;
+    char groupId[49];
+    uint32_t seq;
+    size_t blockIndex;
+    char blockKind[24];
+  };
+
   static ProtocolTraceItem frameItem(const CanFrame& frame, const char* dir, const char* parsed) {
     ProtocolTraceItem item{};
     item.timeMs = millis();
@@ -88,6 +127,8 @@ class ProtocolTrace {
     item.parsed = parsed;
     item.motorId = frame.extd ? static_cast<uint8_t>((frame.identifier >> 8) & 0xFF) : 0;
     item.packetIndex = frame.extd ? static_cast<uint8_t>(frame.identifier & 0xFF) : 0;
+    item.command = item.dlc > 0 ? frame.data[0] : 0;
+    item.status = item.dlc > 1 ? frame.data[1] : 0;
     for (uint8_t i = 0; i < item.dlc; ++i) {
       item.data[i] = frame.data[i];
     }
@@ -112,12 +153,37 @@ class ProtocolTrace {
     if (!lock()) {
       return;
     }
-    items_[next_] = item;
+    ProtocolTraceItem stored = item;
+    applyContextLocked(stored);
+    items_[next_] = stored;
     next_ = (next_ + 1) % kCapacity;
     if (count_ < kCapacity) {
       ++count_;
     }
     unlock();
+  }
+
+  void applyContextLocked(ProtocolTraceItem& item) const {
+    if (!context_.active) {
+      return;
+    }
+    item.hasMotionContext = true;
+    copyText(item.groupId, sizeof(item.groupId), context_.groupId);
+    item.seq = context_.seq;
+    item.blockIndex = context_.blockIndex;
+    copyText(item.blockKind, sizeof(item.blockKind), context_.blockKind);
+  }
+
+  static void copyText(char* out, size_t outSize, const char* value) {
+    if (outSize == 0) {
+      return;
+    }
+    const char* source = value != nullptr ? value : "";
+    size_t i = 0;
+    for (; i + 1 < outSize && source[i] != '\0'; ++i) {
+      out[i] = source[i];
+    }
+    out[i] = '\0';
   }
 
   bool lock() const {
@@ -141,6 +207,7 @@ class ProtocolTrace {
   ProtocolTraceItem items_[kCapacity];
   size_t next_;
   size_t count_;
+  MotionContext context_;
 };
 
 }  // namespace auto_typer

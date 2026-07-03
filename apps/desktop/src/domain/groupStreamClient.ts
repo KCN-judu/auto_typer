@@ -7,6 +7,7 @@ import type {
   GroupStreamEventMessage,
   KeymapDocument,
   KeymapMessage,
+  PressDiagM5ResultMessage,
   ProbeResultMessage,
   ResetFaultResultMessage,
   StatusMessage,
@@ -167,6 +168,18 @@ export class GroupStreamClient {
       throw responseError(message, "probe");
     }
     return message as ProbeResultMessage;
+  }
+
+  async pressDiagM5(): Promise<PressDiagM5ResultMessage> {
+    const message = await this.sendCommand({
+      v: 1,
+      requestId: this.nextId("press-diag-m5"),
+      type: "press_diag_m5",
+    });
+    if (message.type !== "press_diag_m5_result") {
+      throw responseError(message, "press_diag_m5");
+    }
+    return message as PressDiagM5ResultMessage;
   }
 
   private async sendCommand(message: GroupStreamCommandMessage): Promise<GroupStreamEventMessage> {

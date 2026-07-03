@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const keys = "1234567890-qwertyuiopasdfghjkl;'zxcvbnm,.- ".split("");
-const keyPitchX = 19;
-const rowOffsets = [0, 42.5, 25, 57.5, 137.5];
+const keyPitchX = 19.25;
+const originX = 18.75;
+const rowOffsets = [0, 62.5, 25, 77.5, 137.5];
 const rowY = [106, 87, 68, 49, 30];
 const physicalRows = ["1234567890-=", "qwertyuiop[]", "asdfghjkl;'", "zxcvbnm,./"];
 const keySet = new Set(keys);
@@ -16,10 +17,10 @@ function buildKeymap() {
       if (!keySet.has(key)) {
         continue;
       }
-      bindings.push({ key, point: { xMm: rowOffsets[row] + index * keyPitchX, yMm: rowY[row] } });
+      bindings.push({ key, point: { xMm: originX + rowOffsets[row] + index * keyPitchX, yMm: rowY[row] } });
     }
   });
-  bindings.push({ key: " ", point: { xMm: rowOffsets[4], yMm: rowY[4] } });
+  bindings.push({ key: " ", point: { xMm: originX + rowOffsets[4], yMm: rowY[4] } });
   return bindings;
 }
 
@@ -352,11 +353,11 @@ const config = {
 const keymap = buildKeymap();
 
 assert.equal(keymap.length, keySet.size, "Feiyu 200 key count changed");
-assert.deepEqual(lookupKey("1", keymap), { xMm: 0, yMm: 106 });
-assert.deepEqual(lookupKey("q", keymap), { xMm: 42.5, yMm: 87 });
-assert.deepEqual(lookupKey("a", keymap), { xMm: 25, yMm: 68 });
-assert.deepEqual(lookupKey("z", keymap), { xMm: 57.5, yMm: 49 });
-assert.deepEqual(lookupKey(" ", keymap), { xMm: 137.5, yMm: 30 });
+assert.deepEqual(lookupKey("1", keymap), { xMm: 18.75, yMm: 106 });
+assert.deepEqual(lookupKey("q", keymap), { xMm: 81.25, yMm: 87 });
+assert.deepEqual(lookupKey("a", keymap), { xMm: 43.75, yMm: 68 });
+assert.deepEqual(lookupKey("z", keymap), { xMm: 96.25, yMm: 49 });
+assert.deepEqual(lookupKey(" ", keymap), { xMm: 156.25, yMm: 30 });
 
 const charPlan = planText("a", keymap, config);
 assert.equal(charPlan.status, "Ok");
@@ -589,10 +590,18 @@ assert.match(submitRemoteGroupBody, /device_busy/, "Remote group admission must 
 assert.match(submitRemoteGroupBody, /device_fault/, "Remote group admission must still reject faulted device");
 assert.match(autoTyperRuntime, /checkRequiredActuators/, "Required actuator analysis may remain available for diagnostics");
 
-assert.doesNotMatch(motionExecutor, /prepareStepBaseline|validateMoveXYBaseline|validateLineFeedBaseline|validatePressMotorBaseline|motor_feedback_baseline_timeout|line_feed_baseline_missing|press_motor_baseline_missing/, "MotionExecutor must not hard-fail before command send because baseline is missing");
-assert.match(motionExecutor, /requestFeedback\(step\);[\s\S]*captureSupervisionState\(step,\s*stepStartedAtMs_\);[\s\S]*beginStep\(step\)/, "MotionExecutor must request feedback and capture supervision before sending motion");
+assert.doesNotMatch(motionExecutor, /requestFeedback\(step\);[\s\S]*captureSupervisionState\(step,\s*stepStartedAtMs_\);[\s\S]*beginStep\(step\)/, "MotionExecutor must not poll feedback ahead of motion command issue in normal step start");
+assert.match(motionExecutor, /Phase::PreflightBaseline[\s\S]*Phase::IssueCommand[\s\S]*Phase::CommandAck[\s\S]*Phase::TargetWait/, "MotionExecutor must model preflight, command ACK, and target wait phases");
+assert.match(motionExecutor, /baselineReady\(step,\s*nowMs\)[\s\S]*phase_\s*=\s*Phase::IssueCommand/, "Fresh baseline must advance directly to command issue");
+assert.match(motionExecutor, /captureSupervisionState\(step,\s*commandIssueMs_\);[\s\S]*beginStep\(step\)[\s\S]*Phase::CommandAck/, "Motion command issue must capture supervision and then wait for command ACK");
+assert.match(motionExecutor, /motionCommandAckTimeoutMs[\s\S]*motion_command_no_ack/, "Missing motion command ACK must fail quickly with motion_command_no_ack");
+assert.match(motionExecutor, /motionNoMovementTimeoutMs/, "ACK without movement must use a bounded no-movement timeout");
+assert.match(motionExecutor, /motion_no_movement/, "ACK without movement must fail as motion_no_movement");
+assert.match(motionExecutor, /motion_target_timeout/, "Moved-but-not-at-target timeout must be classified distinctly");
+assert.match(motionExecutor, /moveRelativeBatch\(commands,\s*sizeof\(commands\) \/ sizeof\(commands\[0\]\),\s*true,\s*true\)/, "Grouped motion commands must enqueue high priority");
+assert.match(motionExecutor, /driver_\.moveRelative\([\s\S]*false,\s*true\)/, "Single-motor motion commands must enqueue high priority");
 assert.match(motionExecutor, /struct MotorSupervisionState/, "MotionExecutor must track per-motor supervision state");
-assert.match(motionExecutor, /lastAckMs >= supervision\.startedAtMs/, "ACK evidence must be scoped to the current block timestamp");
+assert.match(motionExecutor, /lastAckMs >= supervision\.commandIssueMs && state\.lastAckCommand == 0xFD/, "ACK evidence must be scoped to the current 0xFD command issue");
 assert.match(motionExecutor, /lastMotionReachedMs >= supervision\.startedAtMs/, "Reached evidence must be scoped to the current block timestamp");
 assert.match(motionExecutor, /lastConditionNotMetMs >= supervision\.startedAtMs/, "E2 faults must be scoped to the current block timestamp");
 assert.match(motionExecutor, /lastMalformedMs >= supervision\.startedAtMs/, "EE faults must be scoped to the current block timestamp");
@@ -614,6 +623,9 @@ assert.match(sharedProtocol, /export type MotorStateUpdateMessage/, "Shared prot
 assert.match(sharedProtocol, /export type TelemetryOverflowMessage/, "Shared protocol must type telemetry overflow messages");
 assert.match(sharedProtocol, /type: "group_final"/, "Shared protocol must type normalized group_final events");
 assert.match(sharedProtocol, /status: GroupFinalStatus/, "group_final must carry done/failed/cancelled status");
+assert.match(sharedProtocol, /type: "press_diag_m5"/, "Shared protocol must type the focused M5 diagnostic command");
+assert.match(sharedProtocol, /type: "press_diag_m5_result"/, "Shared protocol must type the focused M5 diagnostic result");
+assert.match(sharedProtocol, /command: number[\s\S]*status: number[\s\S]*motionContext/, "Protocol trace items must expose command, status, and motion context");
 assert.match(sharedProtocol, /"pong"/, "Shared terminal response types must include real pong responses");
 assert.doesNotMatch(sharedProtocol, /required_motor_not_ready/, "Shared normal group rejection reasons must not include required_motor_not_ready");
 
@@ -623,6 +635,9 @@ assert.match(appTsx, /lastUpdatedAtMs/, "Desktop must track motor telemetry fres
 assert.match(appTsx, /message\.type === "group_final"/, "Print flow must wait for group_final execution completion");
 assert.match(appTsx, /execution_timeout/, "Print flow must label execution timeouts distinctly");
 assert.match(appTsx, /motion_feedback_timeout/, "Print flow must surface motion feedback timeout codes");
+assert.match(appTsx, /motion_command_no_ack/, "Print flow must surface motion command ACK failures");
+assert.match(appTsx, /motion_no_movement/, "Print flow must surface ACK-without-movement failures");
+assert.match(appTsx, /motion_target_timeout/, "Print flow must surface target timeout failures");
 assert.doesNotMatch(appTsx, /streamClient\.probe\(\);[\s\S]*setPrintTask\(\(task\) => \(\{ \.\.\.task, running: true/, "Print flow must not probe only to populate readiness before printing");
 assert.doesNotMatch(appTsx, /client\.probeMotors|isLineFeedMotorReady|lineFeedAvailable|!lineFeedAvailable/, "Print flow must not block or degrade because telemetry is unknown");
 
@@ -638,6 +653,7 @@ assert.match(deviceLink, /socket\.write\(line,\s*"utf8",/, "DeviceLink writes mu
 assert.match(deviceLink, /\"drain\"/, "DeviceLink writes must handle backpressure drain");
 assert.match(deviceLink, /transport_write_timeout/, "DeviceLink writes must have a timeout");
 assert.match(deviceLink, /terminalTypesFor\(commandType/, "DeviceLink must use command-specific terminal response sets");
+assert.match(deviceLink, /press_diag_m5[\s\S]*press_diag_m5_result/, "DeviceLink must route the M5 diagnostic command to its terminal result");
 assert.match(deviceLink, /commandType === "exec_group"[\s\S]*group_accepted[\s\S]*group_rejected[\s\S]*protocol_error/, "exec_group must resolve only to admission responses");
 assert.match(deviceLink, /cancelRequestedFor/, "DeviceLink must suppress repeated cancel storms for an active group");
 assert.doesNotMatch(deviceLink, /return \{ v: 1, type: "pong"/, "DeviceLink must not fabricate local ping responses");
@@ -906,6 +922,7 @@ assert.match(sharedProtocol, /type: "block_done"/, "V1 group stream protocol mus
 assert.match(sharedProtocol, /type: "move_xy"[\s\S]*dxSteps: number[\s\S]*dySteps: number/, "move_xy must carry relative machine step deltas");
 assert.match(sharedProtocol, /type: "press_down"/, "Motion blocks must expose press_down");
 assert.match(sharedProtocol, /type: "press_up"/, "Motion blocks must expose press_up");
+assert.match(sharedProtocol, /type: "return_zero"/, "Motion blocks must expose final non-feed return-to-zero");
 assert.match(sharedProtocol, /type: "group_done"[\s\S]*groupId: string/, "Group DONE must identify the completed group");
 assert.match(sharedProtocol, /motors\?: Array<\{[\s\S]*readiness: MotorReadiness/, "Group stream telemetry motors must include readiness");
 assert.doesNotMatch(sharedProtocol, /export type PrimitiveCommand|type: "command"|op: "move_to"/, "Shared group stream protocol must not expose primitive command messages");
@@ -916,6 +933,7 @@ const groupStreamPlanner = readFileSync(new URL("../../../apps/desktop/src/domai
 assert.match(groupStreamPlanner, /dxSteps = mmToSteps\(target\.xMm - current\.xMm\)[\s\S]*dySteps = mmToSteps\(target\.yMm - current\.yMm\)/, "Desktop planner must emit relative machine step deltas");
 assert.doesNotMatch(groupStreamPlanner, /toSvgCoords|svgY|bbox\.maxY|RemoteMotionBlock/, "Desktop planner must not use SVG coordinates or legacy block payloads");
 assert.match(groupStreamPlanner, /type: "move_xy"[\s\S]*type: "press_down"[\s\S]*type: "press_up"/, "Text planning must emit move and M5 press blocks");
+assert.match(groupStreamPlanner, /blocks\.push\(\{ block: \{ type: "return_zero"/, "Text planning must append final return_zero block");
 assert.match(groupStreamPlanner, /!disableLineFeed\)[\s\S]*type: "character_release"/, "Line-feed degraded planning must skip character_release blocks");
 assert.match(groupStreamPlanner, /已启用跳过走纸模式，跳过字符释放和换行走纸/, "Line-feed degraded planning must warn when skipping feed actions");
 assert.match(groupStreamPlanner, /!disableLineFeed\)[\s\S]*type: "line_feed"/, "Line-feed degraded planning must skip line_feed blocks");
@@ -1002,6 +1020,7 @@ assert.match(groupCommandServer, /sendPong\(requestId\)/, "Group command server 
 assert.match(groupCommandServer, /strcmp\(type,\s*"probe"\)[\s\S]*app_\.probeMotors\(\)/, "Group command probe must refresh motor feedback");
 assert.match(groupCommandServer, /motor\["readiness"\]\s*=\s*motorReadinessText\(state\.readiness\)/, "Group command telemetry must report motor readiness");
 assert.match(groupCommandProtocol, /dxSteps[\s\S]*dySteps/, "Group command protocol must parse move_xy step deltas");
+assert.match(groupCommandProtocol, /strcmp\(kind,\s*"return_zero"\)[\s\S]*RemoteMotionStepKind::ReturnZero/, "Group command protocol must parse return_zero blocks");
 assert.match(groupCommandProtocol, /parseRemoteGroup/, "Group command protocol must parse exec_group blocks");
 assert.match(groupCommandProtocol, /group_too_large/, "Group command protocol must reject oversized exec_group commands");
 assert.match(groupCommandServer, /handleExecGroup/, "Group command server must handle exec_group");
@@ -1034,6 +1053,15 @@ assert.doesNotMatch(autoTyperRuntime, /probeMotorsBestEffort\(400,\s*false\)[\s\
 assert.doesNotMatch(autoTyperRuntime, /MotionStepPlan single/, "Remote group submission must not allocate a full step plan on the loop stack");
 assert.match(autoTyperRuntime, /executor_\.start\(activeMotionSteps_\.steps,\s*activeMotionSteps_\.count,\s*startPoint\)/, "Remote groups must start through MotionExecutor");
 assert.match(autoTyperRuntime, /remoteStep\.dxSteps[\s\S]*remoteStep\.dySteps/, "Remote move_xy must use desktop-planned step deltas");
+assert.match(autoTyperRuntime, /RemoteMotionStepKind::ReturnZero[\s\S]*MotionStepKind::ReturnZero/, "Firmware must convert remote return_zero blocks");
+assert.match(motionExecutor, /MotionStepKind::ReturnZero[\s\S]*startReturnZero/, "MotionExecutor must execute return_zero steps");
+assert.match(motionExecutor, /makeReturnZeroSupervision[\s\S]*targetPulse = 0[\s\S]*deltaSteps = -state\.inputPulseSteps/, "Return-to-zero supervision must target absolute pulse 0");
+assert.match(motionExecutor, /requestReturnZeroFeedback\(\)[\s\S]*xMotorId[\s\S]*yLeftMotorId[\s\S]*yRightMotorId[\s\S]*pressMotorId/, "Return-to-zero feedback must cover X, Y-left, Y-right, and press motors");
+const returnZeroExecutorBody = motionExecutor.slice(
+  motionExecutor.indexOf("bool startReturnZero"),
+  motionExecutor.indexOf("void appendReturnZeroCommand"),
+);
+assert.doesNotMatch(returnZeroExecutorBody, /lineFeedMotorId/, "Return-to-zero execution must not move line-feed motor");
 
 function pick(object, keys) {
   return Object.fromEntries(keys.map((key) => [key, object[key]]));

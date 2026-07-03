@@ -23,6 +23,7 @@ export const TCP_COMMAND_TYPES = [
   "configure_wifi",
   "finish_wifi_setup",
   "probe",
+  "press_diag_m5",
   "reset_fault",
   "cancel",
   "exec_group",
@@ -39,6 +40,7 @@ export const TCP_TERMINAL_RESPONSE_TYPES = [
   "wifi_config_result",
   "wifi_setup_finished",
   "probe_result",
+  "press_diag_m5_result",
   "reset_fault_result",
   "cancel_result",
   "group_accepted",
@@ -53,6 +55,7 @@ export const MOTION_BLOCK_TYPES = [
   "press_up",
   "character_release",
   "line_feed",
+  "return_zero",
   "wait",
 ] as const;
 
@@ -248,7 +251,15 @@ export interface ProtocolTraceItem {
   dataHex: string;
   parsed: string;
   motorId: number;
+  command: number;
+  status: number;
   packetIndex: number;
+  motionContext?: {
+    groupId: string;
+    seq: number;
+    blockIndex: number;
+    blockKind: string;
+  };
 }
 
 export interface ProtocolTraceResponse {
@@ -310,6 +321,7 @@ export type MotionBlock =
   | ({ type: "press_up" } & RemoteMotionProfile)
   | ({ type: "character_release" } & RemoteMotionProfile)
   | ({ type: "line_feed"; lines: number } & RemoteMotionProfile)
+  | ({ type: "return_zero" } & RemoteMotionProfile)
   | { type: "wait"; durationMs: number };
 
 export type TaskGroupPolicy = {
@@ -405,6 +417,12 @@ export type ProbeMessage = {
   type: "probe";
 };
 
+export type PressDiagM5Message = {
+  v: 1;
+  requestId: string;
+  type: "press_diag_m5";
+};
+
 export type PingMessage = {
   v: 1;
   requestId: string;
@@ -498,6 +516,25 @@ export type ProbeResultMessage = {
   requestId: string;
   ok: boolean;
   motors: MotorState[];
+};
+
+export type PressDiagM5ResultMessage = {
+  v: 1;
+  type: "press_diag_m5_result";
+  requestId: string;
+  ok: boolean;
+  code: string;
+  message: string;
+  initialPulse: number;
+  downTargetPulse: number;
+  downPulse: number;
+  upTargetPulse: number;
+  finalPulse: number;
+  downAckSeen: boolean;
+  downReachedSeen: boolean;
+  upAckSeen: boolean;
+  upReachedSeen: boolean;
+  traceCount: number;
 };
 
 export type ResetFaultResultMessage = {
@@ -635,6 +672,7 @@ export type GroupStreamCommandMessage =
   | CancelMessage
   | ResetFaultMessage
   | ProbeMessage
+  | PressDiagM5Message
   | PingMessage;
 
 export type GroupStreamEventMessage =
@@ -647,6 +685,7 @@ export type GroupStreamEventMessage =
   | WifiConfigResultMessage
   | WifiSetupFinishedMessage
   | ProbeResultMessage
+  | PressDiagM5ResultMessage
   | ResetFaultResultMessage
   | CancelResultMessage
   | GroupAcceptedMessage

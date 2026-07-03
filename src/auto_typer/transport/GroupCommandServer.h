@@ -232,6 +232,12 @@ class GroupCommandServer {
       requestTelemetrySnapshot();
       return;
     }
+    if (strcmp(type, "press_diag_m5") == 0) {
+      const PressDiagResult result = app_.debugPressDiagM5();
+      sendPressDiagM5Result(requestId, result);
+      requestTelemetrySnapshot();
+      return;
+    }
     if (strcmp(type, "reset_fault") == 0) {
       const bool ok = app_.resetFault();
       sendResetFaultResult(requestId, ok);
@@ -389,6 +395,7 @@ class GroupCommandServer {
     caps.add("reset_fault");
     caps.add("wifi_setup");
     caps.add("press_motor");
+    caps.add("press_diag_m5");
     JsonObject limits = doc.createNestedObject("limits");
     limits["maxBlocksPerGroup"] = kRemoteGroupMaxSteps;
     limits["maxMessageBytes"] = kMaxTcpMessageBytes;
@@ -523,6 +530,27 @@ class GroupCommandServer {
     writeMotor(motors, config_.topology.yRightMotorId);
     writeMotor(motors, config_.topology.lineFeedMotorId);
     writeMotor(motors, config_.topology.pressMotorId);
+    enqueueJson(0, doc);
+  }
+
+  void sendPressDiagM5Result(const char* requestId, const PressDiagResult& result) {
+    DynamicJsonDocument doc(1024);
+    doc["v"] = 1;
+    doc["type"] = "press_diag_m5_result";
+    doc["requestId"] = requestId != nullptr ? requestId : "";
+    doc["ok"] = result.ok;
+    doc["code"] = result.code != nullptr ? result.code : "";
+    doc["message"] = result.message != nullptr ? result.message : "";
+    doc["initialPulse"] = result.initialPulse;
+    doc["downTargetPulse"] = result.downTargetPulse;
+    doc["downPulse"] = result.downPulse;
+    doc["upTargetPulse"] = result.upTargetPulse;
+    doc["finalPulse"] = result.finalPulse;
+    doc["downAckSeen"] = result.downAckSeen;
+    doc["downReachedSeen"] = result.downReachedSeen;
+    doc["upAckSeen"] = result.upAckSeen;
+    doc["upReachedSeen"] = result.upReachedSeen;
+    doc["traceCount"] = result.traceCount;
     enqueueJson(0, doc);
   }
 

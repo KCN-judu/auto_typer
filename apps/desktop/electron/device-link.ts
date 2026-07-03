@@ -18,7 +18,7 @@ const groupAdmissionTimeoutMs = 3000;
 const writeTimeoutMs = 2000;
 const heartbeatIntervalMs = 1000;
 const terminalResponseTypes = new Set<string>(TCP_TERMINAL_RESPONSE_TYPES);
-const mutatingCommandTypes = new Set<string>(["exec_group", "cancel", "reset_fault", "probe"]);
+const mutatingCommandTypes = new Set<string>(["exec_group", "cancel", "reset_fault", "probe", "press_diag_m5"]);
 
 type PendingRequest = {
   requestId: string;
@@ -475,6 +475,7 @@ function terminalTypesFor(commandType: GroupStreamCommandMessage["type"]): Set<s
     configure_wifi: "wifi_config_result",
     finish_wifi_setup: "wifi_setup_finished",
     probe: "probe_result",
+    press_diag_m5: "press_diag_m5_result",
     reset_fault: "reset_fault_result",
     cancel: "cancel_result",
     exec_group: "group_accepted",

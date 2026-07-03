@@ -11,6 +11,7 @@
 #include "hal_display.h"
 #include "keymap_feiyu200.h"
 #include "keymap_store.h"
+#include "motion/MachineKinematics.h"
 #include "motion/MotionExecutor.h"
 #include "motion/MotionPlanner.h"
 #include "typing_logic.h"
@@ -44,7 +45,7 @@ class AutoTyperApplication {
         feedback_(feedback),
         events_(events),
         protocolTrace_(protocolTrace),
-        executor_(config, motion, feedback),
+        executor_(config, motion, feedback, protocolTrace),
         log_(log),
         keymapCount_(0),
         jobState_(JobState::None),
@@ -133,7 +134,9 @@ class AutoTyperApplication {
 
     if (jobState_ == JobState::Queued) {
       const MachinePointMm startPoint = remoteCommandActive_ ? remoteCurrentPoint_ : MachinePointMm{NAN, NAN};
-      if (!executor_.start(activeMotionSteps_.steps, activeMotionSteps_.count, startPoint)) {
+      const char* groupId = remoteCommandActive_ ? currentRemoteCommandId_ : "";
+      const uint32_t seq = remoteCommandActive_ ? currentRemoteSeq_ : 0;
+      if (!executor_.start(activeMotionSteps_.steps, activeMotionSteps_.count, startPoint, groupId, seq)) {
         setFault("executor_busy", "Motion executor rejected job");
         jobState_ = JobState::Failed;
         if (remoteCommandActive_) {
@@ -333,7 +336,8 @@ class AutoTyperApplication {
       }
       activeMotionSteps_.steps[i] = motionStep;
       activeMotionSteps_.count = i + 1;
-      if (motionStep.kind == MotionStepKind::MoveXY || motionStep.kind == MotionStepKind::LineFeed) {
+      if (motionStep.kind == MotionStepKind::MoveXY || motionStep.kind == MotionStepKind::LineFeed ||
+          motionStep.kind == MotionStepKind::ReturnZero) {
         plannedPoint = motionStep.targetMm;
       }
     }
@@ -493,6 +497,51 @@ class AutoTyperApplication {
     }
     probeMotorsBestEffort(400, false);
     return true;
+  }
+
+  PressDiagResult debugPressDiagM5() {
+    PressDiagResult result{};
+    result.code = "";
+    result.message = "";
+    if (!canDebug()) {
+      result.code = "device_busy";
+      result.message = "Device is not idle for press diagnostic";
+      return result;
+    }
+    const uint8_t motorId = config_.topology.pressMotorId;
+    protocolTrace_.setMotionContext("press_diag_m5", 0, 0, "press_down");
+    if (!samplePressFeedback(500)) {
+      result.code = "motion_feedback_timeout";
+      result.message = "M5 feedback baseline timed out";
+      protocolTrace_.clearMotionContext();
+      return result;
+    }
+    MotorState state = feedback_.get(motorId);
+    result.initialPulse = state.inputPulseSteps;
+    result.downTargetPulse = state.inputPulseSteps + config_.pressMotor.pressDeltaSteps;
+    if (!runPressDiagMove("press_down", 0, config_.pressMotor.pressDeltaSteps, result.downTargetPulse, result, true)) {
+      protocolTrace_.clearMotionContext();
+      printPressDiagTrace(result);
+      return result;
+    }
+
+    protocolTrace_.setMotionContext("press_diag_m5", 0, 1, "press_up");
+    state = feedback_.get(motorId);
+    result.downPulse = state.inputPulseSteps;
+    result.upTargetPulse = state.inputPulseSteps + config_.pressMotor.releaseDeltaSteps;
+    if (!runPressDiagMove("press_up", 1, config_.pressMotor.releaseDeltaSteps, result.upTargetPulse, result, false)) {
+      protocolTrace_.clearMotionContext();
+      printPressDiagTrace(result);
+      return result;
+    }
+    state = feedback_.get(motorId);
+    result.finalPulse = state.inputPulseSteps;
+    result.ok = true;
+    result.code = "";
+    result.message = "press_diag_m5 completed";
+    protocolTrace_.clearMotionContext();
+    printPressDiagTrace(result);
+    return result;
   }
 
   bool debugMotorEnable(uint8_t motorId, bool enabled, bool sync) {
@@ -677,6 +726,210 @@ class AutoTyperApplication {
   }
 
  private:
+  bool samplePressFeedback(uint16_t timeoutMs) {
+    const uint8_t motorId = config_.topology.pressMotorId;
+    const uint32_t startedAt = millis();
+    uint32_t lastPollMs = 0;
+    while (millis() - startedAt < timeoutMs) {
+      const uint32_t nowMs = millis();
+      if (lastPollMs == 0 || nowMs - lastPollMs >= config_.motionRuntime.motionPollIntervalMs) {
+        lastPollMs = nowMs;
+        motion_.requestInputPulseCount(motorId);
+        motion_.requestVelocity(motorId);
+      }
+      canTx_.tick(4);
+      canRx_.tick(16);
+      const MotorState state = feedback_.get(motorId);
+      if (state.hasInputPulse && state.hasVelocity && state.lastInputPulseMs >= startedAt &&
+          state.lastVelocityMs >= startedAt) {
+        return true;
+      }
+      delay(5);
+    }
+    return false;
+  }
+
+  bool runPressDiagMove(const char* label,
+                        size_t blockIndex,
+                        int32_t signedSteps,
+                        int32_t targetPulse,
+                        PressDiagResult& result,
+                        bool down) {
+    protocolTrace_.setMotionContext("press_diag_m5", 0, blockIndex, label);
+    const uint8_t motorId = config_.topology.pressMotorId;
+    const uint32_t steps = absoluteSteps(signedSteps);
+    const MotorDirection direction = directionForSignedSteps(signedSteps);
+    const size_t queueBefore = motion_.availableForWrite();
+    const uint32_t issueMs = millis();
+    const bool enqueued = motion_.moveRelative(motorId,
+                                               direction,
+                                               config_.pressMotor.rpm,
+                                               config_.pressMotor.acceleration,
+                                               steps,
+                                               false,
+                                               true);
+    logPressDiagIssue(label, signedSteps, direction, queueBefore, enqueued, issueMs);
+    if (!enqueued) {
+      result.code = "motion_command_rejected";
+      result.message = "M5 diagnostic motion command was rejected";
+      return false;
+    }
+    if (!waitForPressAck(issueMs, config_.motionRuntime.motionCommandAckTimeoutMs)) {
+      executor_.stopAll();
+      result.code = "motion_command_no_ack";
+      result.message = down ? "M5 press_down did not ACK" : "M5 press_up did not ACK";
+      if (down) {
+        result.downAckSeen = false;
+      } else {
+        result.upAckSeen = false;
+      }
+      return false;
+    }
+    if (down) {
+      result.downAckSeen = true;
+    } else {
+      result.upAckSeen = true;
+    }
+    if (!waitForPressTarget(issueMs, targetPulse, config_.pressMotor.timeoutMs, down)) {
+      executor_.stopAll();
+      result.code = "motion_target_timeout";
+      result.message = down ? "M5 press_down target timed out" : "M5 press_up target timed out";
+      const MotorState state = feedback_.get(motorId);
+      if (down) {
+        result.downPulse = state.inputPulseSteps;
+      } else {
+        result.finalPulse = state.inputPulseSteps;
+      }
+      return false;
+    }
+    const MotorState state = feedback_.get(motorId);
+    if (down) {
+      result.downPulse = state.inputPulseSteps;
+      result.downReachedSeen = state.lastMotionReachedMs >= issueMs;
+    } else {
+      result.finalPulse = state.inputPulseSteps;
+      result.upReachedSeen = state.lastMotionReachedMs >= issueMs;
+    }
+    return true;
+  }
+
+  bool waitForPressAck(uint32_t issueMs, uint16_t timeoutMs) {
+    const uint8_t motorId = config_.topology.pressMotorId;
+    while (millis() - issueMs <= timeoutMs) {
+      canTx_.tick(4);
+      canRx_.tick(16);
+      const MotorState state = feedback_.get(motorId);
+      if (state.lastAckCommand == 0xFD && state.lastAckMs >= issueMs) {
+        return true;
+      }
+      if ((state.lastConditionNotMetCommand == 0xFD && state.lastConditionNotMetMs >= issueMs) ||
+          (state.lastMalformedCommand == 0xFD && state.lastMalformedMs >= issueMs)) {
+        return false;
+      }
+      delay(5);
+    }
+    return false;
+  }
+
+  bool waitForPressTarget(uint32_t issueMs, int32_t targetPulse, uint32_t timeoutMs, bool down) {
+    const uint8_t motorId = config_.topology.pressMotorId;
+    uint32_t lastPollMs = 0;
+    while (millis() - issueMs <= timeoutMs) {
+      const uint32_t nowMs = millis();
+      if (lastPollMs == 0 || nowMs - lastPollMs >= config_.motionRuntime.motionPollIntervalMs) {
+        lastPollMs = nowMs;
+        motion_.requestInputPulseCount(motorId);
+        motion_.requestVelocity(motorId);
+      }
+      canTx_.tick(4);
+      canRx_.tick(16);
+      const MotorState state = feedback_.get(motorId);
+      if (state.lastMotionReachedMs >= issueMs) {
+        return true;
+      }
+      if (state.hasInputPulse && state.hasVelocity &&
+          nowMs - state.lastInputPulseMs <= kFeedbackFreshMs &&
+          nowMs - state.lastVelocityMs <= kFeedbackFreshMs &&
+          absoluteSteps(state.inputPulseSteps - targetPulse) <= config_.motionRuntime.positionToleranceSteps &&
+          fabs(state.velocityRpm) <= config_.motionRuntime.idleVelocityThresholdRpm) {
+        return true;
+      }
+      delay(5);
+    }
+    (void)down;
+    return false;
+  }
+
+  void logPressDiagIssue(const char* label,
+                         int32_t signedSteps,
+                         MotorDirection direction,
+                         size_t queueBefore,
+                         bool enqueued,
+                         uint32_t issueMs) {
+    log_.print("[press_diag_m5] blockKind=");
+    log_.print(label);
+    log_.print(" motorId=");
+    log_.print(config_.topology.pressMotorId);
+    log_.print(" command=moveRelative signedSteps=");
+    log_.print(signedSteps);
+    log_.print(" direction=");
+    log_.print(direction == MotorDirection::Cw ? "cw" : "ccw");
+    log_.print(" rpm=");
+    log_.print(config_.pressMotor.rpm);
+    log_.print(" acceleration=");
+    log_.print(config_.pressMotor.acceleration);
+    log_.print(" sync=0 canTxAvailableForWriteBefore=");
+    log_.print(queueBefore);
+    log_.print(" enqueueResult=");
+    log_.print(enqueued ? 1 : 0);
+    log_.print(" framesEnqueued=");
+    log_.print(enqueued ? EmmV5Driver::moveRelativeFrameCount() : 0);
+    log_.print(" commandIssueMs=");
+    log_.println(issueMs);
+  }
+
+  void printPressDiagTrace(PressDiagResult& result) {
+    ProtocolTraceItem items[ProtocolTrace::capacity()];
+    const size_t count = protocolTrace_.snapshot(items, ProtocolTrace::capacity());
+    result.traceCount = count;
+    log_.print("[press_diag_m5] ok=");
+    log_.print(result.ok ? 1 : 0);
+    log_.print(" code=");
+    log_.print(result.code != nullptr ? result.code : "");
+    log_.print(" initialPulse=");
+    log_.print(result.initialPulse);
+    log_.print(" downPulse=");
+    log_.print(result.downPulse);
+    log_.print(" finalPulse=");
+    log_.println(result.finalPulse);
+    for (size_t i = 0; i < count; ++i) {
+      log_.print("[press_diag_m5_trace] timeMs=");
+      log_.print(items[i].timeMs);
+      log_.print(" dir=");
+      log_.print(items[i].dir);
+      log_.print(" motorId=");
+      log_.print(items[i].motorId);
+      log_.print(" command=0x");
+      printHexByte(items[i].command);
+      log_.print(" status=0x");
+      printHexByte(items[i].status);
+      log_.print(" packetIndex=");
+      log_.print(items[i].packetIndex);
+      log_.print(" canId=");
+      log_.print(items[i].canId);
+      log_.print(" parsed=");
+      log_.print(items[i].parsed);
+      log_.print(" data=");
+      log_.println(items[i].dataHex);
+    }
+  }
+
+  void printHexByte(uint8_t value) {
+    static const char kHex[] = "0123456789ABCDEF";
+    log_.print(kHex[(value >> 4) & 0x0F]);
+    log_.print(kHex[value & 0x0F]);
+  }
+
   void buildKeymap() {
     keymapCount_ = buildFeiyu200Keymap(keymap_, sizeof(keymap_) / sizeof(keymap_[0]));
   }
@@ -757,7 +1010,8 @@ class AutoTyperApplication {
       return executor_.currentPoint();
     }
     const MotionStep& step = activeMotionSteps_.steps[activeMotionSteps_.count - 1];
-    if (step.kind == MotionStepKind::MoveXY || step.kind == MotionStepKind::LineFeed) {
+    if (step.kind == MotionStepKind::MoveXY || step.kind == MotionStepKind::LineFeed ||
+        step.kind == MotionStepKind::ReturnZero) {
       return step.targetMm;
     }
     return executor_.currentPoint();
@@ -839,6 +1093,11 @@ class AutoTyperApplication {
         step.profile.settleMs = config_.lineFeed.settleMs;
         step.targetMm = {config_.homePoint.xMm, currentPoint.yMm};
         return true;
+      case RemoteMotionStepKind::ReturnZero:
+        step.kind = MotionStepKind::ReturnZero;
+        step.profile.settleMs = max3(config_.xProfile.settleMs, config_.yProfile.settleMs, config_.pressMotor.settleMs);
+        step.targetMm = config_.homePoint;
+        return true;
       case RemoteMotionStepKind::Wait:
         step.kind = MotionStepKind::Wait;
         step.waitMs = remoteStep.durationMs;
@@ -859,6 +1118,11 @@ class AutoTyperApplication {
       out[i] = source[i];
     }
     out[i] = '\0';
+  }
+
+  static uint16_t max3(uint16_t a, uint16_t b, uint16_t c) {
+    const uint16_t ab = a > b ? a : b;
+    return ab > c ? ab : c;
   }
 
   void requestMotorFeedback(bool includeConfig) {
@@ -1078,6 +1342,8 @@ class AutoTyperApplication {
         return "press_down";
       case MotionStepKind::PressUp:
         return "press_up";
+      case MotionStepKind::ReturnZero:
+        return "return_zero";
       case MotionStepKind::Wait:
       default:
         return "wait";

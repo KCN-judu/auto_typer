@@ -10,8 +10,9 @@ export const poetryFeiyu200Keys = "1234567890-qwertyuiopasdfghjkl;'zxcvbnm,.- ".
 export const poetryFeiyu200KeyCount = poetryFeiyu200Keys.length;
 
 const poetryKeyOrder = new Map(poetryFeiyu200Keys.map((key, index) => [key, index]));
-const feiyu200KeyPitchX = 19;
-const feiyu200RowOffsets = [0, 42.5, 25, 57.5, 137.5] as const;
+const feiyu200KeyPitchX = 19.25;
+const feiyu200OriginX = 18.75;
+const feiyu200RowOffsets = [0, 62.5, 25, 77.5, 137.5] as const;
 const feiyu200RowY = [106, 87, 68, 49, 30] as const;
 const feiyu200PhysicalRows = ["1234567890-=", "qwertyuiop[]", "asdfghjkl;'", "zxcvbnm,./"] as const;
 
@@ -103,7 +104,7 @@ export function currentFeiyu200Keymap(base?: Partial<KeymapDocument>): KeymapDoc
       bindings.push({
         key,
         point: {
-          xMm: feiyu200RowOffsets[row] + index * feiyu200KeyPitchX,
+          xMm: feiyu200OriginX + feiyu200RowOffsets[row] + index * feiyu200KeyPitchX,
           yMm: feiyu200RowY[row],
         },
       });
@@ -113,7 +114,7 @@ export function currentFeiyu200Keymap(base?: Partial<KeymapDocument>): KeymapDoc
   bindings.push({
     key: " ",
     point: {
-      xMm: feiyu200RowOffsets[4],
+      xMm: feiyu200OriginX + feiyu200RowOffsets[4],
       yMm: feiyu200RowY[4],
     },
   });

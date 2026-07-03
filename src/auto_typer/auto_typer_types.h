@@ -133,6 +133,8 @@ struct MotionRuntimeConfig {
   float idleVelocityThresholdRpm;
   uint16_t motionPollIntervalMs;
   uint32_t motionTimeoutMs;
+  uint16_t motionCommandAckTimeoutMs;
+  uint16_t motionNoMovementTimeoutMs;
   uint8_t completionSamples;
   uint16_t minimumCoordinatedRpm;
 };
@@ -212,6 +214,7 @@ enum class MotionStepKind : uint8_t {
   CharacterRelease,
   PressDown,
   PressUp,
+  ReturnZero,
   Wait,
 };
 
@@ -244,6 +247,7 @@ enum class RemoteMotionStepKind : uint8_t {
   PressUp,
   CharacterRelease,
   LineFeed,
+  ReturnZero,
   Wait,
 };
 
@@ -276,6 +280,22 @@ struct SubmitRemoteGroupResult {
   bool accepted;
   const char* rejectionCode;
   const char* rejectionMessage;
+};
+
+struct PressDiagResult {
+  bool ok;
+  const char* code;
+  const char* message;
+  int32_t initialPulse;
+  int32_t downTargetPulse;
+  int32_t downPulse;
+  int32_t upTargetPulse;
+  int32_t finalPulse;
+  bool downAckSeen;
+  bool downReachedSeen;
+  bool upAckSeen;
+  bool upReachedSeen;
+  size_t traceCount;
 };
 
 struct MotorState {

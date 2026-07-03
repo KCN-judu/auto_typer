@@ -359,6 +359,19 @@ export function App() {
     }
   }
 
+  async function pressDiagM5() {
+    try {
+      const result = await streamClient.pressDiagM5();
+      const summary = `press_diag_m5 ${result.ok ? "ok" : result.code}: down ${result.initialPulse}->${result.downPulse} ack=${result.downAckSeen ? 1 : 0} reached=${result.downReachedSeen ? 1 : 0}, up ${result.downPulse}->${result.finalPulse} ack=${result.upAckSeen ? 1 : 0} reached=${result.upReachedSeen ? 1 : 0}, trace=${result.traceCount}`;
+      appendLog(summary);
+      if (!result.ok && result.message) {
+        appendLog(result.message);
+      }
+    } catch (error) {
+      appendLog(error instanceof Error ? error.message : "M5 诊断失败");
+    }
+  }
+
   function handleTcpEvent(message: GroupStreamEventMessage) {
     if (message.type === "telemetry") {
       setStatus((message as TelemetryMessage).status);
@@ -420,6 +433,12 @@ export function App() {
           ? `${code}: ${final.message ?? "cancelled"}`
           : code === "motion_feedback_timeout"
           ? "motion_feedback_timeout: Motion feedback timed out"
+          : code === "motion_command_no_ack"
+          ? "motion_command_no_ack: Motor did not ACK motion command"
+          : code === "motion_no_movement"
+          ? "motion_no_movement: Motor ACKed but did not move"
+          : code === "motion_target_timeout"
+          ? "motion_target_timeout: Motion target timed out"
           : `${code}: ${final.message ?? final.status}`;
         setPrintTask((task) => ({
           ...task,
@@ -553,6 +572,7 @@ export function App() {
               <div className="actionRow wrap">
                 <button className="primary" disabled={!canDebug} onClick={() => pressMotorTest("press_down")}>press_down</button>
                 <button className="secondary" disabled={!canDebug} onClick={() => pressMotorTest("press_up")}>press_up</button>
+                <button className="secondary" disabled={!canDebug} onClick={pressDiagM5}>press_diag_m5</button>
                 <button className="secondary" disabled={connection !== "connected" || isBusy} onClick={probeMotors}>探测 M1-M5</button>
               </div>
             </div>

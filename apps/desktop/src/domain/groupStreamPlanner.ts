@@ -53,6 +53,7 @@ const pressDownMotion = { rpm: 3000, accelRaw: 255, timeoutMs: 3000 } as const;
 const pressUpMotion = { rpm: 3000, accelRaw: 255, timeoutMs: 3000 } as const;
 const characterReleaseMotion = { rpm: 1600, accelRaw: 128, timeoutMs: 10000 } as const;
 const lineFeedMotion = { rpm: 1600, accelRaw: 128, timeoutMs: 10000 } as const;
+const returnZeroMotion = { rpm: 1600, accelRaw: 128, timeoutMs: 10000 } as const;
 const maxGroups = 1024;
 const stepsPerMm = 80;
 const moveXYMinimumTimeoutMs = 5000;
@@ -131,6 +132,10 @@ export function planTextToBlocks(
       blocks.push({ block: { type: "character_release", ...characterReleaseMotion }, ...meta });
     }
     current = target;
+  }
+
+  if (blocks.length > 0) {
+    blocks.push({ block: { type: "return_zero", ...returnZeroMotion } });
   }
 
   if (Math.ceil(blocks.length / MAX_BLOCKS_PER_GROUP) > maxGroups) {

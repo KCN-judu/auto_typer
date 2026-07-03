@@ -84,6 +84,7 @@ class HttpControlServer {
     server_.on("/api/keymap", HTTP_GET, [this]() { sendKeymap(); });
     server_.on("/api/keymap", HTTP_PUT, [this]() { handlePutKeymap(); });
     server_.on("/api/debug/motor/move-relative", HTTP_POST, [this]() { handleMotorMove(); });
+    server_.on("/api/debug/motor/press-diag-m5", HTTP_POST, [this]() { handlePressDiagM5(); });
     server_.on("/api/debug/motor/enable", HTTP_POST, [this]() { handleMotorEnable(); });
     server_.on("/api/debug/motor/stop", HTTP_POST, [this]() { handleMotorStop(); });
     server_.on("/api/debug/servo/apply", HTTP_POST, [this]() { handleServoApply(); });
@@ -345,6 +346,25 @@ class HttpControlServer {
     sendStatus();
   }
 
+  void handlePressDiagM5() {
+    const PressDiagResult result = app_.debugPressDiagM5();
+    StaticJsonDocument<768> response;
+    response["ok"] = result.ok;
+    response["code"] = result.code != nullptr ? result.code : "";
+    response["message"] = result.message != nullptr ? result.message : "";
+    response["initialPulse"] = result.initialPulse;
+    response["downTargetPulse"] = result.downTargetPulse;
+    response["downPulse"] = result.downPulse;
+    response["upTargetPulse"] = result.upTargetPulse;
+    response["finalPulse"] = result.finalPulse;
+    response["downAckSeen"] = result.downAckSeen;
+    response["downReachedSeen"] = result.downReachedSeen;
+    response["upAckSeen"] = result.upAckSeen;
+    response["upReachedSeen"] = result.upReachedSeen;
+    response["traceCount"] = result.traceCount;
+    sendJson(result.ok ? 200 : 409, response);
+  }
+
   void handleMotorStop() {
     StaticJsonDocument<256> request;
     if (!parseBody(request)) {
@@ -478,7 +498,16 @@ class HttpControlServer {
       item["dataHex"] = items[i].dataHex;
       item["parsed"] = items[i].parsed;
       item["motorId"] = items[i].motorId;
+      item["command"] = items[i].command;
+      item["status"] = items[i].status;
       item["packetIndex"] = items[i].packetIndex;
+      if (items[i].hasMotionContext) {
+        JsonObject context = item.createNestedObject("motionContext");
+        context["groupId"] = items[i].groupId;
+        context["seq"] = items[i].seq;
+        context["blockIndex"] = items[i].blockIndex;
+        context["blockKind"] = items[i].blockKind;
+      }
     }
     writeProtocolDiagnostics(response.createNestedObject("diagnostics"), app_.protocolDiagnostics());
     sendJson(200, response);

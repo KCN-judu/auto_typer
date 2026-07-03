@@ -37,11 +37,16 @@ class EmmV5Driver {
                     uint16_t rpm,
                     uint8_t acceleration,
                     uint32_t steps,
-                    bool sync) {
-    return sendCommand(EmmV5CommandCodec::moveRelative({motorId, direction, rpm, acceleration, steps, sync}));
+                    bool sync,
+                    bool highPriority = false) {
+    return sendCommand(EmmV5CommandCodec::moveRelative({motorId, direction, rpm, acceleration, steps, sync}),
+                       highPriority);
   }
 
-  bool moveRelativeBatch(const MoveRelativeCommand* commands, size_t count, bool triggerBroadcast) {
+  bool moveRelativeBatch(const MoveRelativeCommand* commands,
+                         size_t count,
+                         bool triggerBroadcast,
+                         bool highPriority = false) {
     if ((commands == nullptr && count > 0) || count > kMaxMoveBatchCommands) {
       return false;
     }
@@ -67,7 +72,19 @@ class EmmV5Driver {
         return false;
       }
     }
-    return tx_.enqueueBatch(frames, frameCount);
+    return tx_.enqueueBatch(frames, frameCount, highPriority);
+  }
+
+  size_t availableForWrite() {
+    return tx_.availableForWrite();
+  }
+
+  static constexpr size_t moveRelativeFrameCount() {
+    return 2;
+  }
+
+  static constexpr size_t triggerBroadcastFrameCount() {
+    return 1;
   }
 
   bool triggerSynchronousMotion(uint8_t motorId) {
