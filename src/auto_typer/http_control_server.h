@@ -1,5 +1,7 @@
 #pragma once
 
+#if defined(AUTO_TYPER_ENABLE_LEGACY_HTTP)
+
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
@@ -893,3 +895,5 @@ class HttpControlServer {
 };
 
 }  // namespace auto_typer
+
+#endif  // defined(AUTO_TYPER_ENABLE_LEGACY_HTTP)

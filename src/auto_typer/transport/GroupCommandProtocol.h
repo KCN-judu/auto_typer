@@ -2,30 +2,30 @@
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
-#include <math.h>
-
 #include "../auto_typer_types.h"
 
 namespace auto_typer {
 
-inline void parseRemoteProfile(JsonVariantConst value, RemoteMotionProfile& profile) {
+inline bool parseRequiredProfile(JsonObjectConst block, RemoteMotionProfile& profile, const char*& code, const char*& message) {
   profile = RemoteMotionProfile{};
-  if (!value.is<JsonObjectConst>()) {
-    return;
+  if (!block["rpm"].is<uint16_t>() || !block["accelRaw"].is<uint8_t>() || !block["timeoutMs"].is<uint32_t>()) {
+    code = "invalid_block";
+    message = "rpm, accelRaw, and timeoutMs are required";
+    return false;
   }
-  JsonObjectConst object = value.as<JsonObjectConst>();
-  if (object["rpm"].is<uint16_t>()) {
-    profile.hasRpm = true;
-    profile.rpm = object["rpm"].as<uint16_t>();
+  profile.hasRpm = true;
+  profile.rpm = block["rpm"].as<uint16_t>();
+  profile.hasAccelRaw = true;
+  profile.accelRaw = block["accelRaw"].as<uint8_t>();
+  profile.hasTimeoutMs = true;
+  profile.timeoutMs = block["timeoutMs"].as<uint32_t>();
+  if (profile.rpm == 0 || profile.accelRaw == 0 || profile.timeoutMs == 0 ||
+      profile.timeoutMs > kMaxBlockTimeoutMs) {
+    code = "invalid_block";
+    message = "invalid rpm, accelRaw, or timeoutMs";
+    return false;
   }
-  if (object["accelRaw"].is<uint8_t>()) {
-    profile.hasAccelRaw = true;
-    profile.accelRaw = object["accelRaw"].as<uint8_t>();
-  }
-  if (object["timeoutMs"].is<uint32_t>()) {
-    profile.hasTimeoutMs = true;
-    profile.timeoutMs = object["timeoutMs"].as<uint32_t>();
-  }
+  return true;
 }
 
 inline bool parseRemoteStep(JsonVariantConst value,
@@ -33,45 +33,50 @@ inline bool parseRemoteStep(JsonVariantConst value,
                              const char*& code,
                              const char*& message) {
   if (!value.is<JsonObjectConst>()) {
-    code = "invalid_step";
-    message = "step object is required";
+    code = "invalid_block";
+    message = "block object is required";
     return false;
   }
-  JsonObjectConst step = value.as<JsonObjectConst>();
-  const char* kind = step["kind"] | "";
+  JsonObjectConst block = value.as<JsonObjectConst>();
+  const char* kind = block["type"] | "";
   out = RemoteMotionStep{};
   if (strcmp(kind, "move_xy") == 0) {
     out.kind = RemoteMotionStepKind::MoveXY;
-    out.dxMm = step["dxMm"] | NAN;
-    out.dyMm = step["dyMm"] | NAN;
-    if (!isfinite(out.dxMm) || !isfinite(out.dyMm)) {
-      code = "invalid_step";
-      message = "move_xy dxMm and dyMm must be finite";
+    if (!block["dxSteps"].is<int32_t>() || !block["dySteps"].is<int32_t>()) {
+      code = "invalid_block";
+      message = "move_xy dxSteps and dySteps are required";
       return false;
     }
-    parseRemoteProfile(step["profile"], out.profile);
-    return true;
+    out.dxSteps = block["dxSteps"].as<int32_t>();
+    out.dySteps = block["dySteps"].as<int32_t>();
+    return parseRequiredProfile(block, out.profile, code, message);
   }
-  if (strcmp(kind, "servo_press") == 0) {
-    out.kind = RemoteMotionStepKind::ServoPress;
-    return true;
+  if (strcmp(kind, "press_down") == 0) {
+    out.kind = RemoteMotionStepKind::PressDown;
+    return parseRequiredProfile(block, out.profile, code, message);
   }
-  if (strcmp(kind, "servo_release") == 0) {
-    out.kind = RemoteMotionStepKind::ServoRelease;
-    return true;
+  if (strcmp(kind, "press_up") == 0) {
+    out.kind = RemoteMotionStepKind::PressUp;
+    return parseRequiredProfile(block, out.profile, code, message);
   }
   if (strcmp(kind, "character_release") == 0) {
     out.kind = RemoteMotionStepKind::CharacterRelease;
-    return true;
+    return parseRequiredProfile(block, out.profile, code, message);
   }
   if (strcmp(kind, "line_feed") == 0) {
     out.kind = RemoteMotionStepKind::LineFeed;
-    return true;
+    if (!block["lines"].is<uint8_t>() || block["lines"].as<uint8_t>() == 0) {
+      code = "invalid_block";
+      message = "line_feed lines is required";
+      return false;
+    }
+    out.lines = block["lines"].as<uint8_t>();
+    return parseRequiredProfile(block, out.profile, code, message);
   }
   if (strcmp(kind, "wait") == 0) {
-    const uint32_t durationMs = step["durationMs"] | 0;
-    if (durationMs > 65535) {
-      code = "invalid_step";
+    const uint32_t durationMs = block["durationMs"] | 0;
+    if (durationMs > kMaxBlockTimeoutMs) {
+      code = "invalid_block";
       message = "wait durationMs is too large";
       return false;
     }
@@ -79,8 +84,8 @@ inline bool parseRemoteStep(JsonVariantConst value,
     out.durationMs = static_cast<uint16_t>(durationMs);
     return true;
   }
-  code = "invalid_step";
-  message = "Unsupported remote step kind";
+  code = "invalid_block";
+  message = "Unsupported remote block type";
   return false;
 }
 
@@ -93,23 +98,23 @@ inline bool parseRemoteGroup(JsonVariantConst value,
   outCount = 0;
   if (!value.is<JsonArrayConst>()) {
     code = "invalid_group";
-    message = "steps array is required";
+    message = "blocks array is required";
     return false;
   }
-  JsonArrayConst steps = value.as<JsonArrayConst>();
-  const size_t count = steps.size();
+  JsonArrayConst blocks = value.as<JsonArrayConst>();
+  const size_t count = blocks.size();
   if (count == 0) {
     code = "invalid_group";
-    message = "steps array must not be empty";
+    message = "blocks array must not be empty";
     return false;
   }
   if (count > capacity) {
     code = "group_too_large";
-    message = "exec_group contains too many steps";
+    message = "exec_group contains too many blocks";
     return false;
   }
-  for (JsonVariantConst step : steps) {
-    if (!parseRemoteStep(step, outSteps[outCount], code, message)) {
+  for (JsonVariantConst block : blocks) {
+    if (!parseRemoteStep(block, outSteps[outCount], code, message)) {
       return false;
     }
     ++outCount;
@@ -121,10 +126,10 @@ inline const char* remoteStepKindText(RemoteMotionStepKind kind) {
   switch (kind) {
     case RemoteMotionStepKind::MoveXY:
       return "move_xy";
-    case RemoteMotionStepKind::ServoPress:
-      return "servo_press";
-    case RemoteMotionStepKind::ServoRelease:
-      return "servo_release";
+    case RemoteMotionStepKind::PressDown:
+      return "press_down";
+    case RemoteMotionStepKind::PressUp:
+      return "press_up";
     case RemoteMotionStepKind::CharacterRelease:
       return "character_release";
     case RemoteMotionStepKind::LineFeed:

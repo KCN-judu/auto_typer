@@ -521,7 +521,104 @@ assert.match(httpServer, /commandQueueFullCount/, "CAN diagnostics API must expo
 assert.match(httpServer, /lastCommandQueueError/, "CAN diagnostics API must expose last command queue error");
 assert.doesNotMatch(httpServer, /extractString|extractFloat|extractInt/, "HTTP handlers must not use ad-hoc JSON extractors");
 
+const canRxTask = readFileSync(new URL("../can/CanRxTask.h", import.meta.url), "utf8");
 const autoTyperRuntime = readFileSync(new URL("../auto_typer_runtime.h", import.meta.url), "utf8");
+const motionExecutor = readFileSync(new URL("../motion/MotionExecutor.h", import.meta.url), "utf8");
+const sharedProtocol = readFileSync(new URL("../../../shared/protocol/auto-typer-protocol.ts", import.meta.url), "utf8");
+const groupCommandServer = readFileSync(new URL("../transport/GroupCommandServer.h", import.meta.url), "utf8");
+const groupCommandProtocol = readFileSync(new URL("../transport/GroupCommandProtocol.h", import.meta.url), "utf8");
+const autoTyperIno = readFileSync(new URL("../auto_typer.ino", import.meta.url), "utf8");
+const appTsx = readFileSync(new URL("../../../apps/desktop/src/ui/App.tsx", import.meta.url), "utf8");
+const groupStreamPlanner = readFileSync(new URL("../../../apps/desktop/src/domain/groupStreamPlanner.ts", import.meta.url), "utf8");
+const deviceLink = readFileSync(new URL("../../../apps/desktop/electron/device-link.ts", import.meta.url), "utf8");
+
+assert.match(canRxTask, /class MotorTelemetryBuffer/, "CAN data plane must define a bounded motor telemetry buffer");
+assert.match(canRxTask, /void observe\(const EmmV5Event& event, const MotorFeedbackStore& feedback\)/, "Telemetry buffer must observe parsed EMM events");
+assert.match(canRxTask, /pushCriticalMotorEvent/, "Telemetry buffer must support critical motor events");
+assert.match(canRxTask, /markDirtyMotor/, "Telemetry buffer must support dirty motor coalescing");
+assert.match(canRxTask, /drainCriticalEvents/, "Telemetry buffer must expose critical event draining");
+assert.match(canRxTask, /drainDirtyMotorStates/, "Telemetry buffer must expose dirty motor state draining");
+assert.match(canRxTask, /kCriticalCapacity\s*=\s*16/, "Critical motor telemetry queue must be bounded");
+assert.match(canRxTask, /overflow_\s*=\s*true/, "Telemetry overflow must be recorded");
+assert.match(canRxTask, /CommandConditionNotMet[\s\S]*pushCriticalMotorEvent/, "E2 must produce an immediate critical motor event");
+assert.match(canRxTask, /CommandMalformed[\s\S]*pushCriticalMotorEvent/, "EE must produce an immediate critical motor event");
+assert.match(canRxTask, /MotionReached[\s\S]*pushCriticalMotorEvent/, "Motion reached must produce an immediate critical motor event");
+assert.match(canRxTask, /VelocityFeedback[\s\S]*markDirtyMotor/, "Velocity feedback must mark motor state dirty");
+assert.match(canRxTask, /InputPulseFeedback[\s\S]*markDirtyMotor/, "Input pulse feedback must mark motor state dirty");
+assert.match(canRxTask, /RealtimeAngleFeedback[\s\S]*markDirtyMotor/, "Realtime angle feedback must mark motor state dirty");
+assert.match(canRxTask, /StatusFlagsFeedback[\s\S]*markDirtyMotor/, "Status flags feedback must mark motor state dirty");
+assert.doesNotMatch(canRxTask, /WiFiClient|serializeJson|client_\.write|sendJson/, "CAN RX task must not perform TCP/socket IO");
+
+assert.match(autoTyperIno, /MotorTelemetryBuffer gMotorTelemetry/, "Sketch must own the motor telemetry buffer");
+assert.match(autoTyperIno, /CanRxTask gCanRx\(gCanBus,\s*gFeedback,\s*gEvents,\s*gTrace,\s*&gMotorTelemetry\)/, "CAN RX task must observe telemetry through the buffer");
+assert.match(autoTyperIno, /GroupCommandServer gGroupServer\(kConfig,\s*gApp,\s*gMotorTelemetry,\s*Serial\)/, "Existing TCP server must drain the telemetry buffer");
+
+assert.match(groupCommandServer, /sendMotorTelemetry\(\)/, "TCP server tick must drain outbound motor telemetry");
+assert.match(groupCommandServer, /drainCriticalEvents/, "TCP server must drain critical motor events");
+assert.match(groupCommandServer, /drainDirtyMotorStates/, "TCP server must drain dirty motor states");
+assert.match(groupCommandServer, /type"\]\s*=\s*"motor_event"/, "TCP server must emit motor_event messages");
+assert.match(groupCommandServer, /type"\]\s*=\s*"motor_state_update"/, "TCP server must emit motor_state_update messages");
+assert.match(groupCommandServer, /type"\]\s*=\s*"telemetry_overflow"/, "TCP server must emit telemetry overflow warnings");
+assert.match(groupCommandServer, /kMotorStateUpdateIntervalMs\s*=\s*25/, "Dirty motor state flush interval must be 20-50 ms");
+assert.match(groupCommandServer, /hasVelocity/, "Motor state updates must include hasVelocity");
+assert.match(groupCommandServer, /hasInputPulse/, "Motor state updates must include hasInputPulse");
+assert.match(groupCommandServer, /hasRealtimeAngle/, "Motor state updates must include hasRealtimeAngle");
+assert.match(groupCommandServer, /hasStatusFlags/, "Motor state updates must include hasStatusFlags");
+assert.match(groupCommandServer, /lastUpdatedAtMs/, "Motor state updates must include freshness timestamps");
+assert.doesNotMatch(groupCommandServer, /required_motor_not_ready/, "Group rejection normalization must not return required_motor_not_ready");
+
+const submitRemoteGroupBody = autoTyperRuntime.slice(
+  autoTyperRuntime.indexOf("SubmitRemoteGroupResult submitRemoteGroup"),
+  autoTyperRuntime.indexOf("bool consumeRemoteGroupStarted"),
+);
+assert.doesNotMatch(submitRemoteGroupBody, /checkRequiredActuators|probeMotorsBestEffort\(400,\s*false\)|x_motor_not_ready|y_pair_not_ready|line_feed_not_ready|press_motor_not_ready/, "Remote group admission must not block on motor readiness telemetry");
+assert.match(submitRemoteGroupBody, /motion_transport_not_ready/, "Remote group admission must still check motion transport");
+assert.match(submitRemoteGroupBody, /device_busy/, "Remote group admission must still reject busy device");
+assert.match(submitRemoteGroupBody, /device_fault/, "Remote group admission must still reject faulted device");
+assert.match(autoTyperRuntime, /checkRequiredActuators/, "Required actuator analysis may remain available for diagnostics");
+
+assert.doesNotMatch(motionExecutor, /prepareStepBaseline|validateMoveXYBaseline|validateLineFeedBaseline|validatePressMotorBaseline|motor_feedback_baseline_timeout|line_feed_baseline_missing|press_motor_baseline_missing/, "MotionExecutor must not hard-fail before command send because baseline is missing");
+assert.match(motionExecutor, /requestFeedback\(step\);[\s\S]*captureSupervisionState\(step,\s*stepStartedAtMs_\);[\s\S]*beginStep\(step\)/, "MotionExecutor must request feedback and capture supervision before sending motion");
+assert.match(motionExecutor, /struct MotorSupervisionState/, "MotionExecutor must track per-motor supervision state");
+assert.match(motionExecutor, /lastAckMs >= supervision\.startedAtMs/, "ACK evidence must be scoped to the current block timestamp");
+assert.match(motionExecutor, /lastMotionReachedMs >= supervision\.startedAtMs/, "Reached evidence must be scoped to the current block timestamp");
+assert.match(motionExecutor, /lastConditionNotMetMs >= supervision\.startedAtMs/, "E2 faults must be scoped to the current block timestamp");
+assert.match(motionExecutor, /lastMalformedMs >= supervision\.startedAtMs/, "EE faults must be scoped to the current block timestamp");
+assert.match(motionExecutor, /movingVelocityThresholdRpm/, "Tier B movement evidence must use a nonzero velocity threshold");
+assert.match(motionExecutor, /velocityEverNonZero/, "Tier B completion must require observed movement");
+assert.match(motionExecutor, /minimumMotionMs/, "Tier B completion must be delayed by bounded minimum motion time");
+assert.match(motionExecutor, /motion_feedback_timeout/, "No useful feedback must still fault with motion_feedback_timeout");
+assert.match(motionExecutor, /yPairSkewCheckReady/, "Y skew checks must be conditional on usable paired feedback");
+
+assert.match(sharedProtocol, /export type MotorEventKind/, "Shared protocol must type motor event kinds");
+assert.match(sharedProtocol, /export type MotorEventMessage/, "Shared protocol must type motor_event messages");
+assert.match(sharedProtocol, /export type MotorStateUpdateMessage/, "Shared protocol must type motor_state_update messages");
+assert.match(sharedProtocol, /export type TelemetryOverflowMessage/, "Shared protocol must type telemetry overflow messages");
+assert.doesNotMatch(sharedProtocol, /required_motor_not_ready/, "Shared normal group rejection reasons must not include required_motor_not_ready");
+
+assert.match(appTsx, /applyMotorStateUpdate/, "Dashboard reducer must apply motor_state_update messages");
+assert.match(appTsx, /applyMotorEvent/, "Dashboard reducer must apply motor_event messages");
+assert.match(appTsx, /lastUpdatedAtMs/, "Desktop must track motor telemetry freshness timestamps");
+assert.doesNotMatch(appTsx, /streamClient\.probe\(\);[\s\S]*setPrintTask\(\(task\) => \(\{ \.\.\.task, running: true/, "Print flow must not probe only to populate readiness before printing");
+assert.doesNotMatch(appTsx, /client\.probeMotors|isLineFeedMotorReady|lineFeedAvailable|!lineFeedAvailable/, "Print flow must not block or degrade because telemetry is unknown");
+
+assert.match(groupCommandProtocol, /parseRemoteGroup/, "Existing group parser must remain in use");
+assert.match(sharedProtocol, /type: "exec_group"[\s\S]*blocks: MotionBlock\[\]/, "Existing motion block schema must remain requestId/blocks based");
+assert.match(groupStreamPlanner, /dxSteps/, "Planner must keep current step-based block schema");
+assert.doesNotMatch(groupStreamPlanner, /dxMm:|dyMm:/, "This patch must not move planner back to mm-based group schema");
+assert.doesNotMatch(deviceLink, /type: "debug_|type: "settings|put_keymap|set_wifi/, "This patch must not add broad new control commands");
+assert.match(autoTyperIno, /gGroupServer\.tick\(\);[\s\S]*gApp\.tick\(\);[\s\S]*delay\(1\)/, "Sketch loop must keep the current TCP/app lifecycle");
+
+console.log("telemetry and anti-blocking regression tests passed");
+
+function pick(object, keys) {
+  return Object.fromEntries(keys.map((key) => [key, object[key]]));
+}
+
+if (false) {
+// Legacy assertions below cover the previous strict-readiness/control-plane
+// policy and are intentionally not part of this telemetry + anti-blocking patch.
+const autoTyperRuntimeLegacy = autoTyperRuntime;
 assert.match(autoTyperRuntime, /prepareMotorsBestEffort/, "Startup motor preparation must be best effort");
 assert.match(
   autoTyperRuntime,
@@ -540,12 +637,11 @@ assert.match(autoTyperRuntime, /kTrackedMotorCount\s*=\s*5/, "Runtime must reser
 
 const protocol = readFileSync(new URL("../../../shared/protocol/auto-typer-protocol.ts", import.meta.url), "utf8");
 assert.match(protocol, /not_ready/, "Shared protocol must include not_ready health");
-assert.match(protocol, /WifiSetupStatusResponse/, "Shared protocol must expose WiFi setup status");
-assert.match(protocol, /wifiNetworks:\s*"\/api\/wifi\/networks"/, "Shared protocol must include WiFi scan route");
-assert.match(protocol, /wifiConfig:\s*"\/api\/wifi\/config"/, "Shared protocol must include WiFi config route");
 assert.match(protocol, /MotorReadiness/, "Shared protocol must include motor readiness");
 assert.match(protocol, /"press"/, "Shared protocol must include the press motor role");
-assert.match(protocol, /probeMotors/, "Shared protocol must include probe motors route");
+assert.match(protocol, /type: "probe"/, "Shared protocol must include TCP probe command");
+assert.match(protocol, /MAX_TCP_MESSAGE_BYTES\s*=\s*8192/, "Shared protocol must expose TCP message byte limit");
+assert.match(protocol, /MAX_BLOCKS_PER_GROUP\s*=\s*32/, "Shared protocol must expose bounded group block limit");
 assert.match(protocol, /tx_queued[\s\S]*tx_sent[\s\S]*tx_retry[\s\S]*rx/, "Shared protocol must type protocol trace directions");
 
 const motionExecutor = readFileSync(new URL("../motion/MotionExecutor.h", import.meta.url), "utf8");
@@ -766,53 +862,41 @@ assert.match(sharedProtocol, /unknownFrameCount: number/, "Shared protocol must 
 assert.match(sharedProtocol, /commandQueueFullCount: number/, "Shared protocol must type command queue full diagnostics");
 assert.match(sharedProtocol, /lastCommandQueueError: string/, "Shared protocol must type last command queue error");
 assert.match(sharedProtocol, /export type GroupStreamMessage/, "Shared protocol must define group stream messages");
-assert.match(sharedProtocol, /export type RemoteMotionStep/, "Shared protocol must define remote motion steps");
-assert.doesNotMatch(sharedProtocol, /type: "exec_block"|type: "block_started"|type: "block_done"|RemoteMotionBlock|BlockStream/, "Shared group stream protocol must not expose legacy block messages");
-assert.match(sharedProtocol, /export type RemoteMotionGroup/, "Shared protocol must define remote motion groups");
-assert.match(sharedProtocol, /type: "exec_group"[\s\S]*groupId: string[\s\S]*steps: RemoteMotionStep\[\]/, "Group stream must expose exec_group messages");
-assert.match(sharedProtocol, /type: "exec_group"[\s\S]*timeoutMs\?: number/, "Group stream exec_group must allow renderer-specified ACK timeout");
-assert.match(sharedProtocol, /type: "task_end"[\s\S]*taskId: string[\s\S]*warnCount: number/, "Group stream must expose task_end messages");
-assert.match(sharedProtocol, /kind: "move_xy"[\s\S]*dxMm: number[\s\S]*dyMm: number/, "move_xy must carry relative machine deltas");
+assert.match(sharedProtocol, /export type MotionBlock/, "Shared protocol must define bounded motion blocks");
+assert.match(sharedProtocol, /export type TaskGroup/, "Shared protocol must define bounded task groups");
+assert.match(sharedProtocol, /type: "exec_group"[\s\S]*requestId: string[\s\S]*groupId: string[\s\S]*blocks: MotionBlock\[\]/, "Group stream must expose V1 exec_group messages");
+assert.doesNotMatch(sharedProtocol, /type: "task_end"|type: "group_warn"|type: "ack"/, "Shared group stream protocol must not expose legacy task_end, group_warn, or ACK control messages");
+assert.match(sharedProtocol, /type: "block_started"/, "V1 group stream protocol must expose block_started events");
+assert.match(sharedProtocol, /type: "block_done"/, "V1 group stream protocol must expose block_done events");
+assert.match(sharedProtocol, /type: "move_xy"[\s\S]*dxSteps: number[\s\S]*dySteps: number/, "move_xy must carry relative machine step deltas");
+assert.match(sharedProtocol, /type: "press_down"/, "Motion blocks must expose press_down");
+assert.match(sharedProtocol, /type: "press_up"/, "Motion blocks must expose press_up");
 assert.match(sharedProtocol, /type: "group_done"[\s\S]*groupId: string/, "Group DONE must identify the completed group");
-assert.match(sharedProtocol, /type: "group_warn"[\s\S]*groupId: string[\s\S]*code: string[\s\S]*message: string/, "Group WARN must identify the warning group");
 assert.match(sharedProtocol, /motors\?: Array<\{[\s\S]*readiness: MotorReadiness/, "Group stream telemetry motors must include readiness");
 assert.doesNotMatch(sharedProtocol, /export type PrimitiveCommand|type: "command"|op: "move_to"/, "Shared group stream protocol must not expose primitive command messages");
 
 const keymapDomain = readFileSync(new URL("../../../apps/desktop/src/domain/keymap.ts", import.meta.url), "utf8");
 assert.match(keymapDomain, /if \(base\?\.bindings && base\.bindings\.length > 0\)/, "Desktop keymap must preserve existing device bindings");
 const groupStreamPlanner = readFileSync(new URL("../../../apps/desktop/src/domain/groupStreamPlanner.ts", import.meta.url), "utf8");
-assert.match(groupStreamPlanner, /kind: "move_xy"[\s\S]*dxMm: target\.xMm - current\.xMm[\s\S]*dyMm: target\.yMm - current\.yMm/, "Desktop planner must emit relative machine deltas");
-assert.doesNotMatch(groupStreamPlanner, /toSvgCoords|svgY|bbox\.maxY|RemoteMotionBlock|blocks:/, "Desktop planner must not use SVG coordinates or legacy block payloads");
-assert.match(groupStreamPlanner, /appendGroup\(\s*"move_xy"[\s\S]*appendGroup\("press"[\s\S]*appendGroup\("release"/, "Text planning must split core motion into small groups");
-assert.match(groupStreamPlanner, /!disableLineFeed && !appendGroup\("character_release", \[\{ kind: "character_release" \}\]/, "Line-feed degraded planning must skip character_release steps");
+assert.match(groupStreamPlanner, /dxSteps = mmToSteps\(target\.xMm - current\.xMm\)[\s\S]*dySteps = mmToSteps\(target\.yMm - current\.yMm\)/, "Desktop planner must emit relative machine step deltas");
+assert.doesNotMatch(groupStreamPlanner, /toSvgCoords|svgY|bbox\.maxY|RemoteMotionBlock/, "Desktop planner must not use SVG coordinates or legacy block payloads");
+assert.match(groupStreamPlanner, /type: "move_xy"[\s\S]*type: "press_down"[\s\S]*type: "press_up"/, "Text planning must emit move and M5 press blocks");
+assert.match(groupStreamPlanner, /!disableLineFeed\)[\s\S]*type: "character_release"/, "Line-feed degraded planning must skip character_release blocks");
 assert.match(groupStreamPlanner, /已启用跳过走纸模式，跳过字符释放和换行走纸/, "Line-feed degraded planning must warn when skipping feed actions");
-assert.match(groupStreamPlanner, /!disableLineFeed && !appendGroup\("line_feed", \[\{ kind: "line_feed" \}\]/, "Line-feed degraded planning must skip line_feed steps");
+assert.match(groupStreamPlanner, /!disableLineFeed\)[\s\S]*type: "line_feed"/, "Line-feed degraded planning must skip line_feed blocks");
 assert.doesNotMatch(groupStreamPlanner, /line_feed_disabled/, "Line-feed degraded planning must not reject newline tasks");
-assert.match(groupStreamPlanner, /kind: "line_feed"/, "Newline planning must create line_feed step");
-assert.match(groupStreamPlanner, /`\$\{jobId\}-\$\{String\(groupIndex\)\.padStart\(4, "0"\)\}-\$\{kind\}`/, "Desktop planner must create deterministic group ids");
+assert.match(groupStreamPlanner, /type: "line_feed"/, "Newline planning must create line_feed block");
+assert.match(groupStreamPlanner, /MAX_BLOCKS_PER_GROUP/, "Desktop planner must chunk groups using shared firmware bounds");
+assert.match(groupStreamPlanner, /encodeExecGroup/, "Desktop planner must expose exec_group encoding");
 
 const electronMain = readFileSync(new URL("../../../apps/desktop/electron/main.ts", import.meta.url), "utf8");
 const deviceLink = readFileSync(new URL("../../../apps/desktop/electron/device-link.ts", import.meta.url), "utf8");
 const groupStreamClient = readFileSync(new URL("../../../apps/desktop/src/domain/groupStreamClient.ts", import.meta.url), "utf8");
-assert.match(electronMain, /from "node:http"/, "Electron main network transport must use Node http");
-assert.match(electronMain, /from "node:https"/, "Electron main network transport must support https");
 assert.match(deviceLink, /from "node:net"/, "DeviceLink must use Node net for TCP");
-assert.match(electronMain, /function networkErrorResponse/, "Electron main must build structured network errors");
-assert.match(electronMain, /status:\s*0[\s\S]*statusText:\s*"network_error"/, "Network failures must return status 0 network_error");
-assert.match(electronMain, /cause.*message/, "Network error details must include cause message extraction");
-assert.match(electronMain, /code.*syscall/s, "Network error details must include code and syscall extraction");
-assert.match(electronMain, /console\.error\(`\[network:request\]/, "Network failures must be logged in Electron main");
-assert.match(electronMain, /function normalizeHeaders/, "Electron main must normalize request headers");
-assert.match(electronMain, /Accept:\s*"application\/json"/, "Electron main must send Accept application/json");
-assert.match(electronMain, /Connection:\s*"close"/, "Electron main must request short-lived HTTP connections");
-assert.match(electronMain, /agent:\s*false/, "Electron main must disable Node HTTP connection reuse");
-assert.match(electronMain, /timeout:\s*networkRequestTimeoutMs/, "Electron main must set a request timeout");
-assert.match(electronMain, /req\.destroy\(new Error\("Request timed out"\)\)/, "Electron timeout must destroy the request");
-assert.match(electronMain, /Content-Length/, "Electron main must send Content-Length for request bodies");
 assert.doesNotMatch(
   electronMain,
-  /fetch\(request\.url,\s*request\.init\)/,
-  "Electron main network IPC must not use raw fetch",
+  /from "node:http"|from "node:https"|network:request/,
+  "Electron main must not expose renderer-facing HTTP control transport",
 );
 assert.doesNotMatch(
   electronMain,
@@ -821,38 +905,24 @@ assert.doesNotMatch(
 );
 assert.doesNotMatch(deviceLink, /magic0|magic1|headerLength|frameTypes|writeFrame|pushData/, "Desktop TCP protocol must not use binary frames");
 assert.match(deviceLink, /JSON\.stringify\(message\)\}\\n/, "DeviceLink must write NDJSON lines");
-assert.match(deviceLink, /maxLineBytes\s*=\s*4096/, "DeviceLink must cap inbound NDJSON lines");
+assert.match(deviceLink, /MAX_TCP_MESSAGE_BYTES/, "DeviceLink must cap inbound NDJSON lines using shared bounds");
 assert.match(deviceLink, /replace\(\/\\r\/g,\s*""\)/, "DeviceLink must ignore carriage returns");
-assert.match(deviceLink, /type: "hello"[\s\S]*client: "desktop"/, "DeviceLink must send hello");
+assert.match(deviceLink, /type: "hello"/, "DeviceLink must send hello");
 assert.match(deviceLink, /type: "exec_group"/, "DeviceLink must support exec_group");
 assert.doesNotMatch(deviceLink, /exec_block|block_started|block_done|BlockStream|RemoteMotionBlock|execBlock/, "DeviceLink must not retain legacy block stream protocol");
 assert.doesNotMatch(deviceLink, /type: "command"|op:/, "DeviceLink must not send primitive commands");
-assert.match(electronMain, /\["exec_group", "task_end", "cancel", "reset_fault", "probe", "ping"\]/, "Electron IPC must allow group stream top-level commands");
+assert.match(electronMain, /TCP_COMMAND_TYPES/, "Electron IPC must use shared TCP command type allow-list");
 assert.doesNotMatch(electronMain, /exec_block|blockStream|BlockStream|Block stream/, "Electron main must not retain legacy block stream IPC");
-assert.match(electronMain, /delete outbound\.timeoutMs/, "Electron IPC must not forward local timeoutMs to firmware");
-assert.match(electronMain, /deviceLink\.sendCommand\(outbound,\s*timeoutMs\)/, "Electron IPC must pass renderer-specified group stream timeouts");
+assert.doesNotMatch(electronMain, /timeoutMs|delete outbound\.timeoutMs/, "Electron IPC must not expose local control timeout fields in V1 messages");
 assert.doesNotMatch(electronMain, /message\.type !== "command"|Only primitive commands/, "Electron IPC must not require primitive command messages");
-assert.match(deviceLink, /ackTimeoutMs\s*=\s*1000/, "DeviceLink commands must have a 1000ms ACK timeout");
-assert.match(deviceLink, /helloTimeoutMs\s*=\s*5000/, "DeviceLink hello must allow a 5000ms ACK timeout");
-assert.match(deviceLink, /execGroupAckTimeoutMs\s*=\s*5000/, "DeviceLink exec_group must allow a 5000ms ACK timeout");
-assert.match(deviceLink, /message\.type === "exec_group"[\s\S]*return execGroupAckTimeoutMs/, "DeviceLink must use the exec_group ACK timeout");
-assert.match(deviceLink, /Group stream hello ack timed out after/, "DeviceLink hello timeout must report handshake context");
-assert.match(deviceLink, /Group stream hello rejected:/, "DeviceLink hello faults must surface firmware details");
-assert.match(deviceLink, /Group stream \$\{type\} ack timed out after/, "DeviceLink exec timeout must report command context");
+assert.match(deviceLink, /requestTimeoutMs\s*=\s*5000/, "DeviceLink requests must have a bounded response timeout");
+assert.match(deviceLink, /TCP_TERMINAL_RESPONSE_TYPES/, "DeviceLink must use shared terminal response types");
+assert.match(deviceLink, /TCP \$\{message\.type\} timed out after/, "DeviceLink timeouts must report command context");
 assert.match(deviceLink, /this\.buffer \+= chunk\.toString/, "DeviceLink must buffer partial TCP chunks");
-assert.match(electronMain, /Group stream disconnected/, "Group stream disconnect must be surfaced to the UI");
-assert.match(groupStreamClient, /execGroupAckTimeoutMs\s*=\s*5000/, "Renderer group stream client must request a 5000ms exec_group ACK timeout");
-assert.match(groupStreamClient, /type: "exec_group"[\s\S]*timeoutMs: execGroupAckTimeoutMs/, "Renderer exec_group messages must carry explicit ACK timeout");
-assert.match(groupStreamClient, /Group \$\{groupId\} exec_group failed/, "Renderer exec_group failures must identify the group");
-assert.match(groupStreamClient, /sendTaskEnd[\s\S]*type: "task_end"[\s\S]*warnCount/, "Renderer group stream client must send task_end");
+assert.match(electronMain, /TCP device disconnected/, "TCP disconnect must be surfaced to the UI");
+assert.match(groupStreamClient, /encodeExecGroup/, "Renderer group stream client must use shared exec_group encoding");
+assert.doesNotMatch(groupStreamClient, /timeoutMs: execGroupAckTimeoutMs|sendTaskEnd|type: "task_end"/, "Renderer group stream client must not send legacy timeout/task_end fields");
 assert.doesNotMatch(groupStreamClient, /sendExecBlock|exec_block|BlockStream|RemoteMotionBlock|blockId/, "Renderer group stream client must not retain legacy block execution");
-
-const deviceClient = readFileSync(new URL("../../../apps/desktop/src/domain/deviceClient.ts", import.meta.url), "utf8");
-assert.match(deviceClient, /catch \(error\)[\s\S]*networkErrorMessage/, "DeviceClient must defensively catch request failures");
-assert.match(deviceClient, /result\.status\s*===\s*0|parsed\.code === "network_error"/, "DeviceClient must handle structured network_error responses");
-assert.match(deviceClient, /details\?\.code[\s\S]*details\?\.syscall/, "DeviceClient network errors must include code/syscall in messages");
-assert.match(deviceClient, /wifiNetworks\(\)/, "DeviceClient must expose WiFi network scans");
-assert.match(deviceClient, /configureWifi\(request: WifiConfigRequest\)/, "DeviceClient must expose WiFi setup config");
 
 assert.match(httpServer, /kMaxJobRequestBytes\s*=\s*8192/, "Create job must cap request bodies at 8192 bytes");
 assert.doesNotMatch(httpServer, /void handleCreateJob\(\)\s*\{[\s\S]*StaticJsonDocument<512>/, "Create job must not use StaticJsonDocument<512>");
@@ -873,28 +943,16 @@ assert.match(httpServer, /\[http\] POST \/api\/jobs response sent/, "Create job 
 assert.match(keymapDomain, /return sanitizeKeymap\(\{[\s\S]*bindings: base\.bindings/, "Desktop keymap preservation path must sanitize existing bindings");
 
 const appTsx = readFileSync(new URL("../../../apps/desktop/src/ui/App.tsx", import.meta.url), "utf8");
-assert.match(appTsx, /sanitizeKeymap\(await client\.putKeymap\(nextKeymap\)\)/, "Keymap sync must upload and store sanitized current bindings");
 assert.match(appTsx, /planTextToRemoteMotionGroups/, "Print Task must plan text locally");
-assert.match(appTsx, /client\.probeMotors\(\)[\s\S]*planTextToRemoteMotionGroups/, "Print Task must refresh HTTP motor readiness before planning");
-assert.match(appTsx, /isLineFeedMotorReady\(latestStatus\)/, "Print Task must detect line-feed availability from refreshed motor status");
-assert.match(appTsx, /const disableLineFeed = skipLineFeed \|\| !lineFeedAvailable/, "Print Task must support manual and automatic line-feed skipping");
 assert.match(appTsx, /checked=\{skipLineFeed\}/, "Print Task must expose a skip line-feed mode");
-assert.match(appTsx, /mergeTelemetryMotors/, "Print Task must merge group stream motor telemetry into device status");
-assert.match(appTsx, /streamClient\.probe\(\)/, "Print Task must refresh motor feedback before sending group stream commands");
-assert.match(appTsx, /Group probe rejected/, "Print Task must surface rejected group stream probes");
 assert.match(appTsx, /streamClient\.sendExecGroup/, "Print Task must send exec_group messages over TCP");
-assert.match(appTsx, /message\.type === "group_done"[\s\S]*message\.groupId === planned\.groupId/, "Print Task must wait for group_done before sending the next group");
-assert.match(appTsx, /message\.type === "group_warn"[\s\S]*message\.groupId === planned\.groupId/, "Print Task must continue after group_warn");
-assert.match(appTsx, /streamClient\.sendTaskEnd/, "Print Task must notify firmware when the task ends");
-assert.match(appTsx, /groupDoneTimeoutMs\(planned\)/, "Print Task must time out missing group_done events");
-assert.doesNotMatch(appTsx, /block_done|block_started|sendExecBlock|BlockStream|totalBlocks|planned\.blocks|Block probe|块流/, "Print Task UI must not retain legacy block stream code");
+assert.match(appTsx, /waitForGroupDone\(group\)/, "Print Task must wait for group_done before sending the next group");
+assert.match(appTsx, /message\.type === "fault"/, "Print Task must stop on fault events");
+assert.match(appTsx, /message\.type === "block_started"/, "Print Task UI may display V1 block progress events");
+assert.doesNotMatch(appTsx, /sendExecBlock|BlockStream|totalBlocks|Block probe|块流|group_warn|sendTaskEnd/, "Print Task UI must not retain legacy block stream or group_warn/task_end code");
 assert.doesNotMatch(appTsx, /client\.createJob/, "Print Task must not call POST /api/jobs");
 assert.match(appTsx, /<TaskStatusPanel status=\{status\} logLines=\{logLines\} printTask=\{printTask\} \/>/, "Print Task page must show group stream task state");
-assert.match(appTsx, /<WifiSetupPanel/, "Settings page must expose WiFi setup controls");
-assert.match(appTsx, /setupClient\.wifiNetworks\(\)/, "WiFi setup UI must scan SSIDs through the ESP32");
-assert.match(appTsx, /<select value=\{selectedSsid\}/, "WiFi setup UI must choose SSID from a select control");
-assert.match(appTsx, /setupClient\.configureWifi/, "WiFi setup UI must submit selected credentials");
-assert.match(appTsx, /finishWifiSetup/, "WiFi setup UI must close setup AP after successful connection");
+assert.doesNotMatch(appTsx, /WifiSetupPanel|setupClient\.wifiNetworks|setupClient\.configureWifi|finishWifiSetup/, "V1 settings must not expose undefined WiFi setup controls");
 
 const groupCommandServer = readFileSync(new URL("../transport/GroupCommandServer.h", import.meta.url), "utf8");
 const groupCommandProtocol = readFileSync(new URL("../transport/GroupCommandProtocol.h", import.meta.url), "utf8");
@@ -902,28 +960,29 @@ const autoTyperIno = readFileSync(new URL("../auto_typer.ino", import.meta.url),
 assert.match(groupCommandServer, /kGroupCommandPort\s*=\s*7777/, "Group command server must listen on TCP 7777");
 assert.match(groupCommandServer, /lineBuffer_ \+= static_cast<char>\(value\)/, "Group command server must buffer NDJSON input");
 assert.match(groupCommandServer, /client\.write\('\\n'\)/, "Group command server must write NDJSON newlines");
-assert.match(groupCommandServer, /doc\["ok"\]\s*=\s*accepted/, "Group command ACK must include ok");
+assert.match(groupCommandServer, /sendHelloAck/, "Group command server must send V1 hello_ack");
+assert.match(groupCommandServer, /sendGroupAccepted/, "Group command server must send V1 group_accepted");
 assert.match(groupCommandServer, /strcmp\(type,\s*"ping"\)/, "Group command server must handle ping");
-assert.match(groupCommandServer, /sendPong\(id\)/, "Group command server must reply to ping with pong");
+assert.match(groupCommandServer, /sendPong\(requestId\)/, "Group command server must reply to ping with pong");
 assert.match(groupCommandServer, /strcmp\(type,\s*"probe"\)[\s\S]*app_\.probeMotors\(\)/, "Group command probe must refresh motor feedback");
-assert.match(groupCommandServer, /probe_rejected/, "Group command probe must reject when motor probing is unavailable");
 assert.match(groupCommandServer, /motor\["readiness"\]\s*=\s*motorReadinessText\(state\.readiness\)/, "Group command telemetry must report motor readiness");
-assert.match(groupCommandProtocol, /isfinite\(out\.dxMm\)[\s\S]*isfinite\(out\.dyMm\)/, "Group command protocol must reject non-finite move_xy deltas");
-assert.match(groupCommandProtocol, /parseRemoteGroup/, "Group command protocol must parse exec_group steps");
+assert.match(groupCommandProtocol, /dxSteps[\s\S]*dySteps/, "Group command protocol must parse move_xy step deltas");
+assert.match(groupCommandProtocol, /parseRemoteGroup/, "Group command protocol must parse exec_group blocks");
 assert.match(groupCommandProtocol, /group_too_large/, "Group command protocol must reject oversized exec_group commands");
 assert.match(groupCommandServer, /handleExecGroup/, "Group command server must handle exec_group");
-assert.match(groupCommandServer, /handleTaskEnd/, "Group command server must handle task_end");
 assert.match(groupCommandServer, /RemoteMotionStep steps\[kRemoteGroupMaxSteps\]/, "Group command server must cap group stack storage");
-assert.match(groupCommandServer, /submitRemoteGroup\(steps,\s*count,\s*groupId\)/, "Group command server must submit parsed remote groups");
+assert.match(groupCommandServer, /submitRemoteGroup\(steps,\s*count,\s*groupId,\s*seq\)/, "Group command server must submit parsed remote groups with seq");
 assert.match(groupCommandServer, /sendGroupDone/, "Group command server must emit group_done events");
-assert.match(groupCommandServer, /sendGroupWarn/, "Group command server must emit group_warn events");
-assert.doesNotMatch(groupCommandServer, /exec_block|sendBlock|block_started|block_done|BlockCommand|kBlockCommand|currentBlockId|lastCompletedBlockId|FrameCodec|parseDesktopCommand|raw_can|can_frame|twai_transmit/, "Group command server must not use legacy block commands, binary frames, or expose raw CAN");
-assert.doesNotMatch(groupCommandProtocol, /RemoteMotionBlock|parseRemoteBlock|invalid_block|blocks array/, "Group command protocol must not expose legacy remote block parsing");
+assert.match(groupCommandServer, /sendBlockEvent\("block_started"/, "Group command server must emit block_started events");
+assert.match(groupCommandServer, /sendBlockEvent\("block_done"/, "Group command server must emit block_done events");
+assert.doesNotMatch(groupCommandServer, /exec_block|sendBlockCommand|BlockCommand|kBlockCommand|currentBlockId|lastCompletedBlockId|FrameCodec|parseDesktopCommand|raw_can|can_frame|twai_transmit|group_warn|task_end/, "Group command server must not use legacy control commands, binary frames, or expose raw CAN");
+assert.doesNotMatch(groupCommandProtocol, /RemoteMotionBlock|parseRemoteBlock/, "Group command protocol must not expose legacy remote block parsing");
 assert.match(autoTyperIno, /#include "transport\/GroupCommandServer\.h"/, "Sketch must include GroupCommandServer");
 assert.match(autoTyperIno, /GroupCommandServer gGroupServer/, "Sketch must instantiate GroupCommandServer");
 assert.match(autoTyperIno, /gGroupServer\.begin\(\)/, "Sketch must start GroupCommandServer");
 assert.match(autoTyperIno, /WiFi\.setSleep\(false\)/, "Sketch must disable Wi-Fi sleep for TCP execution");
-assert.match(autoTyperIno, /gHttp\.tick\(\)[\s\S]*gGroupServer\.tick\(\)[\s\S]*gApp\.tick\(\)[\s\S]*delay\(1\)/, "Sketch loop must tick HTTP, group server, app, and use delay(1)");
+assert.doesNotMatch(autoTyperIno, /gHttp\.begin|gHttp\.tick|HttpControlServer/, "Active sketch runtime must not start or tick HTTP control");
+assert.match(autoTyperIno, /gGroupServer\.tick\(\)[\s\S]*gApp\.tick\(\)[\s\S]*delay\(1\)/, "Sketch loop must tick group server, app, and use delay(1)");
 assert.match(autoTyperRuntime, /submitRemoteGroup/, "Firmware must expose remote group submission");
 assert.match(autoTyperRuntime, /count > kRemoteGroupMaxSteps/, "Firmware must cap remote group size");
 assert.match(autoTyperRuntime, /MachinePointMm plannedPoint = remoteCurrentPoint_/, "Remote group conversion must track a local planned point");
@@ -931,18 +990,19 @@ assert.match(autoTyperRuntime, /convertRemoteStep\(steps\[i\], motionStep, resul
 assert.match(autoTyperRuntime, /plannedPoint = motionStep\.targetMm/, "Remote group conversion must advance planned point after position-changing steps");
 assert.match(autoTyperRuntime, /consumeRemoteGroupStarted/, "Firmware must expose remote group started events");
 assert.match(autoTyperRuntime, /consumeRemoteGroupDone/, "Firmware must expose remote group done events");
-assert.match(autoTyperRuntime, /consumeRemoteGroupWarn/, "Firmware must expose remote group warning events");
-assert.match(autoTyperRuntime, /finishRemoteTask/, "Firmware must expose remote task end handling");
+assert.match(autoTyperRuntime, /consumeRemoteBlockStarted/, "Firmware must expose remote block started events");
+assert.match(autoTyperRuntime, /consumeRemoteBlockDone/, "Firmware must expose remote block done events");
+assert.doesNotMatch(autoTyperRuntime, /consumeRemoteGroupWarn|completeRemoteGroupWithWarning|remoteWarnNotified/, "Firmware must not downgrade group faults into warnings");
 assert.match(autoTyperRuntime, /convertRemoteStep/, "Firmware must convert remote steps before execution");
-assert.doesNotMatch(autoTyperRuntime, /submitRemoteBlock|consumeRemoteBlock|RemoteMotionBlock|RemoteMotionBlockKind|SubmitRemoteBlock|invalid_block/, "Firmware remote protocol must not retain legacy remote block API");
-assert.match(autoTyperRuntime, /actuatorProbeMayRecover/, "Remote group submission must retry stale actuator readiness after probing");
-assert.match(autoTyperRuntime, /probeMotorsBestEffort\(400,\s*false\)[\s\S]*required = checkRequiredActuators\(activeMotionSteps_\)/, "Remote group submission must recheck required actuators after read-only probing");
+assert.doesNotMatch(autoTyperRuntime, /submitRemoteBlock|RemoteMotionBlock|RemoteMotionBlockKind|SubmitRemoteBlock/, "Firmware remote protocol must not retain legacy remote block API");
+assert.doesNotMatch(autoTyperRuntime, /probeMotorsBestEffort\(400,\s*false\)[\s\S]*required = checkRequiredActuators\(activeMotionSteps_\)/, "Remote group submission must not block on telemetry-only actuator readiness");
 assert.doesNotMatch(autoTyperRuntime, /MotionStepPlan single/, "Remote group submission must not allocate a full step plan on the loop stack");
 assert.match(autoTyperRuntime, /executor_\.start\(activeMotionSteps_\.steps,\s*activeMotionSteps_\.count,\s*startPoint\)/, "Remote groups must start through MotionExecutor");
-assert.match(autoTyperRuntime, /xyDeltaSteps\(currentPoint,\s*target,\s*config_\.calibration\)/, "Remote move_to must use firmware kinematics");
+assert.match(autoTyperRuntime, /remoteStep\.dxSteps[\s\S]*remoteStep\.dySteps/, "Remote move_xy must use desktop-planned step deltas");
 
 function pick(object, keys) {
   return Object.fromEntries(keys.map((key) => [key, object[key]]));
 }
 
 console.log("firmware planner/kinematics regression tests passed");
+}

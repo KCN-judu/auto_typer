@@ -9,12 +9,6 @@ enum class MotorDirection : uint8_t {
   Ccw = 1,
 };
 
-enum class PressAction : uint8_t {
-  Release,
-  Press,
-  Neutral,
-};
-
 enum class TypingStepKind : uint8_t {
   Release,
   MoveTo,
@@ -137,12 +131,8 @@ struct MotionRuntimeConfig {
 struct PressMotorProfile {
   uint16_t rpm;
   uint8_t acceleration;
-  uint32_t pressSteps;
-  MotorDirection pressDirection;
-  uint32_t releaseSteps;
-  MotorDirection releaseDirection;
-  uint16_t pressMs;
-  uint16_t releaseMs;
+  int32_t pressDeltaSteps;
+  int32_t releaseDeltaSteps;
   uint16_t settleMs;
   uint32_t timeoutMs;
 };
@@ -211,8 +201,8 @@ enum class MotionStepKind : uint8_t {
   MoveXY,
   LineFeed,
   CharacterRelease,
-  ServoPress,
-  ServoRelease,
+  PressDown,
+  PressUp,
   Wait,
 };
 
@@ -221,6 +211,7 @@ struct MotorTargetSteps {
   int32_t yLeft;
   int32_t yRight;
   int32_t lineFeed;
+  int32_t press;
 };
 
 struct MotionProfile {
@@ -240,8 +231,8 @@ struct MotionStep {
 
 enum class RemoteMotionStepKind : uint8_t {
   MoveXY,
-  ServoPress,
-  ServoRelease,
+  PressDown,
+  PressUp,
   CharacterRelease,
   LineFeed,
   Wait,
@@ -258,13 +249,19 @@ struct RemoteMotionProfile {
 
 struct RemoteMotionStep {
   RemoteMotionStepKind kind;
-  float dxMm;
-  float dyMm;
+  int32_t dxSteps;
+  int32_t dySteps;
+  uint8_t lines;
   uint16_t durationMs;
   RemoteMotionProfile profile;
 };
 
-static constexpr size_t kRemoteGroupMaxSteps = 1;
+static constexpr size_t kRemoteGroupMaxSteps = 32;
+static constexpr size_t kMaxTcpMessageBytes = 8192;
+static constexpr uint16_t kMinTelemetryIntervalMs = 50;
+static constexpr uint16_t kMaxTelemetryIntervalMs = 2000;
+static constexpr uint32_t kMaxGroupRuntimeMs = 30000;
+static constexpr uint32_t kMaxBlockTimeoutMs = 10000;
 
 struct SubmitRemoteGroupResult {
   bool accepted;

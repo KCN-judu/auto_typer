@@ -24,7 +24,7 @@ struct ProtocolTraceItem {
 
 class ProtocolTrace {
  public:
-  ProtocolTrace() : mutex_(xSemaphoreCreateMutex()), next_(0), count_(0) {
+  ProtocolTrace() : mutex_(nullptr), next_(0), count_(0) {
     for (uint8_t i = 0; i < kCapacity; ++i) {
       items_[i] = {};
     }
@@ -121,13 +121,20 @@ class ProtocolTrace {
   }
 
   bool lock() const {
-    return mutex_ == nullptr || xSemaphoreTake(mutex_, pdMS_TO_TICKS(5)) == pdTRUE;
+    return ensureMutex() && xSemaphoreTake(mutex_, pdMS_TO_TICKS(5)) == pdTRUE;
   }
 
   void unlock() const {
     if (mutex_ != nullptr) {
       xSemaphoreGive(mutex_);
     }
+  }
+
+  bool ensureMutex() const {
+    if (mutex_ == nullptr) {
+      mutex_ = xSemaphoreCreateMutex();
+    }
+    return mutex_ != nullptr;
   }
 
   mutable SemaphoreHandle_t mutex_;

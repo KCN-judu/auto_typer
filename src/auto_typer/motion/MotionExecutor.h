@@ -29,11 +29,9 @@ class MotionExecutor {
         faultMessage_(""),
         currentPoint_(config.homePoint),
         activeTextIndex_(0),
-        activeFeedback_{},
+        activeSupervision_{},
         completionSampleCount_(0),
         lastFeedbackPollMs_(0),
-        waitingForBaseline_(false),
-        baselineRequestedAtMs_(0),
         currentStepStartedEvent_(false),
         lastCompletedStep_(0),
         lastCompletedDurationMs_(0) {}
@@ -57,8 +55,7 @@ class MotionExecutor {
     settleStartedAtMs_ = 0;
     completionSampleCount_ = 0;
     lastFeedbackPollMs_ = 0;
-    waitingForBaseline_ = false;
-    baselineRequestedAtMs_ = 0;
+    activeSupervision_ = {};
     currentStepStartedEvent_ = false;
     lastCompletedStep_ = 0;
     lastCompletedDurationMs_ = 0;
@@ -76,21 +73,18 @@ class MotionExecutor {
     }
     const MotionStep& step = steps_[currentStep_];
     if (stepStartedAtMs_ == 0) {
-      if (!prepareStepBaseline(step)) {
-        return;
-      }
+      stepStartedAtMs_ = millis();
+      lastFeedbackPollMs_ = 0;
+      requestFeedback(step);
+      captureSupervisionState(step, stepStartedAtMs_);
       if (!beginStep(step)) {
         if (state_ != State::Faulted) {
           fail("motion_command_rejected", "Motion command rejected");
         }
         return;
       }
-      stepStartedAtMs_ = millis();
       settleStartedAtMs_ = 0;
       completionSampleCount_ = 0;
-      lastFeedbackPollMs_ = 0;
-      waitingForBaseline_ = false;
-      baselineRequestedAtMs_ = 0;
       currentStepStartedEvent_ = true;
     }
     if (isStepComplete(step)) {
@@ -197,17 +191,28 @@ class MotionExecutor {
   }
 
  private:
-  struct ActiveFeedbackTargets {
-    int32_t initialX;
-    int32_t initialYLeft;
-    int32_t initialYRight;
-    int32_t initialLineFeed;
-    int32_t initialPress;
-    int32_t targetX;
-    int32_t targetYLeft;
-    int32_t targetYRight;
-    int32_t targetLineFeed;
-    int32_t targetPress;
+  struct MotorSupervisionState {
+    bool active;
+    uint8_t motorId;
+    int32_t deltaSteps;
+    bool baselineKnown;
+    int32_t initialPulse;
+    int32_t targetPulse;
+    bool ackSeenForCurrentBlock;
+    bool reachedSeenForCurrentBlock;
+    bool velocitySeen;
+    bool velocityEverNonZero;
+    bool pulseReferenceKnown;
+    uint32_t startedAtMs;
+    uint32_t firstFeedbackMs;
+  };
+
+  struct ActiveSupervision {
+    MotorSupervisionState x;
+    MotorSupervisionState yLeft;
+    MotorSupervisionState yRight;
+    MotorSupervisionState lineFeed;
+    MotorSupervisionState press;
   };
 
   enum class State : uint8_t {
@@ -221,10 +226,9 @@ class MotionExecutor {
 
   bool beginStep(const MotionStep& step) {
     switch (step.kind) {
-      case MotionStepKind::ServoPress:
-        return startPressMotor(step, PressAction::Press);
-      case MotionStepKind::ServoRelease:
-        return startPressMotor(step, PressAction::Release);
+      case MotionStepKind::PressDown:
+      case MotionStepKind::PressUp:
+        return startPressMotor(step);
       case MotionStepKind::Wait:
         return true;
       case MotionStepKind::CharacterRelease:
@@ -237,33 +241,6 @@ class MotionExecutor {
     return false;
   }
 
-  bool prepareStepBaseline(const MotionStep& step) {
-    if (!requiresFeedbackBaseline(step)) {
-      waitingForBaseline_ = false;
-      baselineRequestedAtMs_ = 0;
-      return true;
-    }
-
-    requestFeedback(step);
-    if (baselineReady(step)) {
-      waitingForBaseline_ = false;
-      baselineRequestedAtMs_ = 0;
-      return true;
-    }
-
-    const uint32_t nowMs = millis();
-    if (!waitingForBaseline_) {
-      waitingForBaseline_ = true;
-      baselineRequestedAtMs_ = nowMs;
-      return false;
-    }
-    if (nowMs - baselineRequestedAtMs_ > kBaselineAcquireTimeoutMs) {
-      stopAll();
-      fail("motor_feedback_baseline_timeout", "Motor feedback baseline timeout");
-    }
-    return false;
-  }
-
   bool startMoveXY(const MotionStep& step) {
     const uint32_t xSteps = absoluteSteps(step.deltaSteps.x);
     const uint32_t ySteps = absoluteSteps(step.deltaSteps.yLeft);
@@ -272,10 +249,6 @@ class MotionExecutor {
     if (!hasX && !hasY) {
       return true;
     }
-    if (!validateMoveXYBaseline(step)) {
-      return false;
-    }
-    captureFeedbackTargets(step);
     const uint32_t primarySteps = xSteps > ySteps ? xSteps : ySteps;
     const uint16_t xRpm = scaledCoordinatedRpm(xSteps,
                                                primarySteps,
@@ -320,10 +293,6 @@ class MotionExecutor {
     if (steps == 0) {
       return true;
     }
-    if (!validateLineFeedBaseline()) {
-      return false;
-    }
-    captureFeedbackTargets(step);
     return driver_.moveRelative(config_.topology.lineFeedMotorId,
                                 directionForSignedSteps(step.deltaSteps.lineFeed),
                                 step.profile.maxRpm,
@@ -332,16 +301,12 @@ class MotionExecutor {
                                 false);
   }
 
-  bool startPressMotor(const MotionStep& step, PressAction action) {
-    const int32_t signedSteps = pressMotorSignedSteps(action);
+  bool startPressMotor(const MotionStep& step) {
+    const int32_t signedSteps = step.deltaSteps.press;
     const uint32_t steps = absoluteSteps(signedSteps);
     if (steps == 0) {
       return true;
     }
-    if (!validatePressMotorBaseline()) {
-      return false;
-    }
-    captureFeedbackTargets(step);
     return driver_.moveRelative(config_.topology.pressMotorId,
                                 directionForSignedSteps(signedSteps),
                                 step.profile.maxRpm,
@@ -354,7 +319,9 @@ class MotionExecutor {
     const uint32_t elapsed = millis() - stepStartedAtMs_;
     if (elapsed > step.profile.timeoutMs) {
       stopAll();
-      fail("motion_timeout", "Motion timed out before reaching target");
+      fail(activeSupervisionHasUsefulFeedback() ? "motion_timeout" : "motion_feedback_timeout",
+           activeSupervisionHasUsefulFeedback() ? "Motion timed out before reaching target"
+                                                : "Motion feedback timed out");
       return false;
     }
     if (step.kind == MotionStepKind::Wait) {
@@ -362,11 +329,6 @@ class MotionExecutor {
     }
 
     requestFeedback(step);
-    if (feedbackTimedOut(step)) {
-      stopAll();
-      fail("motion_feedback_timeout", "Required motor feedback became stale");
-      return false;
-    }
     if (feedbackSatisfied(step)) {
       ++completionSampleCount_;
       if (completionSampleCount_ >= config_.motionRuntime.completionSamples) {
@@ -404,7 +366,7 @@ class MotionExecutor {
       driver_.requestInputPulseCount(config_.topology.lineFeedMotorId);
       driver_.requestVelocity(config_.topology.lineFeedMotorId);
     }
-    if (step.kind == MotionStepKind::ServoPress || step.kind == MotionStepKind::ServoRelease) {
+    if (step.kind == MotionStepKind::PressDown || step.kind == MotionStepKind::PressUp) {
       driver_.requestInputPulseCount(config_.topology.pressMotorId);
       driver_.requestVelocity(config_.topology.pressMotorId);
     }
@@ -412,43 +374,42 @@ class MotionExecutor {
 
   bool feedbackSatisfied(const MotionStep& step) {
     const uint32_t nowMs = millis();
+    const uint32_t elapsed = nowMs - stepStartedAtMs_;
+    updateActiveSupervision(nowMs);
     if (step.kind == MotionStepKind::MoveXY) {
-      if (step.deltaSteps.x != 0 && commandResponseFault(config_.topology.xMotorId)) {
+      if (step.deltaSteps.x != 0 && commandResponseFault(activeSupervision_.x)) {
         return false;
       }
-      if (step.deltaSteps.x != 0 &&
-          !motorAtTarget(config_.topology.xMotorId, activeFeedback_.targetX, nowMs)) {
+      if (step.deltaSteps.x != 0 && !motorSupervisionSatisfied(activeSupervision_.x, nowMs, elapsed, step)) {
         return false;
       }
       if (step.deltaSteps.yLeft != 0) {
-        const MotorState left = feedback_.get(config_.topology.yLeftMotorId);
-        const MotorState right = feedback_.get(config_.topology.yRightMotorId);
-        if (commandResponseFault(left) || commandResponseFault(right)) {
+        if (commandResponseFault(activeSupervision_.yLeft) || commandResponseFault(activeSupervision_.yRight)) {
           return false;
         }
-        if (feedbackFresh(left, nowMs) && feedbackFresh(right, nowMs) && yPairSkewExceeded(left, right)) {
+        if (yPairSkewCheckReady(nowMs) && yPairSkewExceeded(nowMs)) {
           stopAll();
           fail("y_pair_skew", "Y pair skew exceeded tolerance");
           return false;
         }
-        if (!motorAtTarget(left, activeFeedback_.targetYLeft, nowMs) ||
-            !motorAtTarget(right, activeFeedback_.targetYRight, nowMs)) {
+        if (!motorSupervisionSatisfied(activeSupervision_.yLeft, nowMs, elapsed, step) ||
+            !motorSupervisionSatisfied(activeSupervision_.yRight, nowMs, elapsed, step)) {
           return false;
         }
       }
       return true;
     }
     if (step.kind == MotionStepKind::LineFeed || step.kind == MotionStepKind::CharacterRelease) {
-      if (commandResponseFault(config_.topology.lineFeedMotorId)) {
+      if (commandResponseFault(activeSupervision_.lineFeed)) {
         return false;
       }
-      return motorAtTarget(config_.topology.lineFeedMotorId, activeFeedback_.targetLineFeed, nowMs);
+      return motorSupervisionSatisfied(activeSupervision_.lineFeed, nowMs, elapsed, step);
     }
-    if (step.kind == MotionStepKind::ServoPress || step.kind == MotionStepKind::ServoRelease) {
-      if (commandResponseFault(config_.topology.pressMotorId)) {
+    if (step.kind == MotionStepKind::PressDown || step.kind == MotionStepKind::PressUp) {
+      if (commandResponseFault(activeSupervision_.press)) {
         return false;
       }
-      return motorAtTarget(config_.topology.pressMotorId, activeFeedback_.targetPress, nowMs);
+      return motorSupervisionSatisfied(activeSupervision_.press, nowMs, elapsed, step);
     }
     return true;
   }
@@ -460,7 +421,7 @@ class MotionExecutor {
     if (step.kind == MotionStepKind::LineFeed) {
       currentPoint_.xMm = config_.homePoint.xMm;
     }
-    if (step.kind == MotionStepKind::ServoPress) {
+    if (step.kind == MotionStepKind::PressDown) {
       ++activeTextIndex_;
     }
   }
@@ -471,32 +432,102 @@ class MotionExecutor {
     state_ = State::Faulted;
   }
 
-  void captureFeedbackTargets(const MotionStep& step) {
-    const MotorState x = feedback_.get(config_.topology.xMotorId);
-    const MotorState yLeft = feedback_.get(config_.topology.yLeftMotorId);
-    const MotorState yRight = feedback_.get(config_.topology.yRightMotorId);
-    const MotorState lineFeed = feedback_.get(config_.topology.lineFeedMotorId);
-    const MotorState press = feedback_.get(config_.topology.pressMotorId);
-    activeFeedback_.initialX = x.inputPulseSteps;
-    activeFeedback_.initialYLeft = yLeft.inputPulseSteps;
-    activeFeedback_.initialYRight = yRight.inputPulseSteps;
-    activeFeedback_.initialLineFeed = lineFeed.inputPulseSteps;
-    activeFeedback_.initialPress = press.inputPulseSteps;
-    activeFeedback_.targetX = x.inputPulseSteps + step.deltaSteps.x;
-    activeFeedback_.targetYLeft = yLeft.inputPulseSteps + step.deltaSteps.yLeft;
-    activeFeedback_.targetYRight = yRight.inputPulseSteps + step.deltaSteps.yRight;
-    activeFeedback_.targetLineFeed = lineFeed.inputPulseSteps + step.deltaSteps.lineFeed;
-    activeFeedback_.targetPress = press.inputPulseSteps + pressMotorSignedSteps(step.kind);
+  void captureSupervisionState(const MotionStep& step, uint32_t startedAtMs) {
+    activeSupervision_ = {};
+    activeSupervision_.x = makeSupervision(config_.topology.xMotorId, step.deltaSteps.x, startedAtMs);
+    activeSupervision_.yLeft = makeSupervision(config_.topology.yLeftMotorId, step.deltaSteps.yLeft, startedAtMs);
+    activeSupervision_.yRight = makeSupervision(config_.topology.yRightMotorId, step.deltaSteps.yRight, startedAtMs);
+    activeSupervision_.lineFeed =
+        makeSupervision(config_.topology.lineFeedMotorId, step.deltaSteps.lineFeed, startedAtMs);
+    activeSupervision_.press = makeSupervision(config_.topology.pressMotorId, step.deltaSteps.press, startedAtMs);
   }
 
-  bool motorAtTarget(uint8_t motorId, int32_t target, uint32_t nowMs) const {
-    return motorAtTarget(feedback_.get(motorId), target, nowMs);
+  MotorSupervisionState makeSupervision(uint8_t motorId, int32_t deltaSteps, uint32_t startedAtMs) const {
+    MotorSupervisionState supervision{};
+    supervision.active = deltaSteps != 0;
+    supervision.motorId = motorId;
+    supervision.deltaSteps = deltaSteps;
+    supervision.startedAtMs = startedAtMs;
+    if (!supervision.active) {
+      return supervision;
+    }
+    const uint32_t nowMs = millis();
+    const MotorState state = feedback_.get(motorId);
+    supervision.baselineKnown = motorBaselineReady(state, nowMs);
+    if (supervision.baselineKnown) {
+      supervision.initialPulse = state.inputPulseSteps;
+      supervision.targetPulse = state.inputPulseSteps + deltaSteps;
+      supervision.pulseReferenceKnown = true;
+    }
+    return supervision;
+  }
+
+  void updateActiveSupervision(uint32_t nowMs) {
+    updateMotorSupervision(activeSupervision_.x, nowMs);
+    updateMotorSupervision(activeSupervision_.yLeft, nowMs);
+    updateMotorSupervision(activeSupervision_.yRight, nowMs);
+    updateMotorSupervision(activeSupervision_.lineFeed, nowMs);
+    updateMotorSupervision(activeSupervision_.press, nowMs);
+  }
+
+  void updateMotorSupervision(MotorSupervisionState& supervision, uint32_t nowMs) {
+    if (!supervision.active) {
+      return;
+    }
+    const MotorState state = feedback_.get(supervision.motorId);
+    if (state.lastAckMs >= supervision.startedAtMs && state.lastAckCommand != 0) {
+      supervision.ackSeenForCurrentBlock = true;
+      noteFirstFeedback(supervision, state.lastAckMs);
+    }
+    if (state.lastMotionReachedMs >= supervision.startedAtMs) {
+      supervision.reachedSeenForCurrentBlock = true;
+      noteFirstFeedback(supervision, state.lastMotionReachedMs);
+    }
+    if (freshInputPulse(state, nowMs) && state.lastInputPulseMs >= supervision.startedAtMs) {
+      if (!supervision.pulseReferenceKnown) {
+        supervision.initialPulse = state.inputPulseSteps;
+        supervision.pulseReferenceKnown = true;
+      }
+      noteFirstFeedback(supervision, state.lastInputPulseMs);
+    }
+    if (freshVelocity(state, nowMs) && state.lastVelocityMs >= supervision.startedAtMs) {
+      supervision.velocitySeen = true;
+      if (fabs(state.velocityRpm) > movingVelocityThresholdRpm()) {
+        supervision.velocityEverNonZero = true;
+      }
+      noteFirstFeedback(supervision, state.lastVelocityMs);
+    }
+  }
+
+  void noteFirstFeedback(MotorSupervisionState& supervision, uint32_t timeMs) {
+    if (supervision.firstFeedbackMs == 0 || timeMs < supervision.firstFeedbackMs) {
+      supervision.firstFeedbackMs = timeMs;
+    }
+  }
+
+  bool motorSupervisionSatisfied(const MotorSupervisionState& supervision,
+                                  uint32_t nowMs,
+                                  uint32_t elapsedMs,
+                                  const MotionStep& step) const {
+    if (!supervision.active) {
+      return true;
+    }
+    const MotorState state = feedback_.get(supervision.motorId);
+    if (supervision.baselineKnown) {
+      return motorAtTarget(state, supervision.targetPulse, nowMs);
+    }
+    if (elapsedMs < minimumMotionMs(step)) {
+      return false;
+    }
+    if (supervision.reachedSeenForCurrentBlock) {
+      return true;
+    }
+    return supervision.ackSeenForCurrentBlock && supervision.velocityEverNonZero && freshVelocity(state, nowMs) &&
+           fabs(state.velocityRpm) <= config_.motionRuntime.idleVelocityThresholdRpm;
   }
 
   bool motorAtTarget(const MotorState& state, int32_t target, uint32_t nowMs) const {
-    if (state.driverFault || !state.hasInputPulse || !state.hasVelocity || state.lastInputPulseMs == 0 ||
-        state.lastVelocityMs == 0 || nowMs - state.lastInputPulseMs > kFeedbackFreshMs ||
-        nowMs - state.lastVelocityMs > kFeedbackFreshMs) {
+    if (state.driverFault || !freshInputPulse(state, nowMs) || !freshVelocity(state, nowMs)) {
       return false;
     }
     const uint32_t error = absoluteSigned(state.inputPulseSteps - target);
@@ -504,66 +535,60 @@ class MotionExecutor {
            fabs(state.velocityRpm) <= config_.motionRuntime.idleVelocityThresholdRpm;
   }
 
-  bool feedbackFresh(const MotorState& state, uint32_t nowMs) const {
-    return state.hasInputPulse && state.lastInputPulseMs != 0 && nowMs - state.lastInputPulseMs <= kFeedbackFreshMs;
+  bool activeSupervisionHasUsefulFeedback() const {
+    return motorHasUsefulFeedback(activeSupervision_.x) || motorHasUsefulFeedback(activeSupervision_.yLeft) ||
+           motorHasUsefulFeedback(activeSupervision_.yRight) || motorHasUsefulFeedback(activeSupervision_.lineFeed) ||
+           motorHasUsefulFeedback(activeSupervision_.press);
   }
 
-  bool feedbackTimedOut(const MotionStep& step) const {
-    const uint32_t nowMs = millis();
-    if (nowMs - stepStartedAtMs_ <= kFeedbackFreshMs) {
+  bool motorHasUsefulFeedback(const MotorSupervisionState& supervision) const {
+    return supervision.active &&
+           (supervision.firstFeedbackMs != 0 || supervision.ackSeenForCurrentBlock ||
+            supervision.reachedSeenForCurrentBlock);
+  }
+
+  bool yPairSkewCheckReady(uint32_t nowMs) const {
+    if (!activeSupervision_.yLeft.active || !activeSupervision_.yRight.active) {
       return false;
     }
-    if (step.kind == MotionStepKind::MoveXY) {
-      if (step.deltaSteps.x != 0 && !motorFeedbackFresh(config_.topology.xMotorId, nowMs)) {
-        return true;
-      }
-      if (step.deltaSteps.yLeft != 0 || step.deltaSteps.yRight != 0) {
-        return !motorFeedbackFresh(config_.topology.yLeftMotorId, nowMs) ||
-               !motorFeedbackFresh(config_.topology.yRightMotorId, nowMs);
-      }
-      return false;
+    if (activeSupervision_.yLeft.baselineKnown && activeSupervision_.yRight.baselineKnown) {
+      return true;
     }
-    if (step.kind == MotionStepKind::LineFeed || step.kind == MotionStepKind::CharacterRelease) {
-      return !motorFeedbackFresh(config_.topology.lineFeedMotorId, nowMs);
-    }
-    if (step.kind == MotionStepKind::ServoPress || step.kind == MotionStepKind::ServoRelease) {
-      return !motorFeedbackFresh(config_.topology.pressMotorId, nowMs);
-    }
-    return false;
+    const MotorState left = feedback_.get(config_.topology.yLeftMotorId);
+    const MotorState right = feedback_.get(config_.topology.yRightMotorId);
+    return activeSupervision_.yLeft.pulseReferenceKnown && activeSupervision_.yRight.pulseReferenceKnown &&
+           freshInputPulse(left, nowMs) && freshInputPulse(right, nowMs) &&
+           left.lastInputPulseMs >= activeSupervision_.yLeft.startedAtMs &&
+           right.lastInputPulseMs >= activeSupervision_.yRight.startedAtMs;
   }
 
-  bool motorFeedbackFresh(uint8_t motorId, uint32_t nowMs) const {
-    return feedback_.hasFreshInputPulse(motorId, nowMs, kFeedbackFreshMs) &&
-           feedback_.hasFreshVelocity(motorId, nowMs, kFeedbackFreshMs);
-  }
-
-  bool yPairSkewExceeded(const MotorState& left, const MotorState& right) const {
-    const int32_t skew = (left.inputPulseSteps - activeFeedback_.initialYLeft) +
-                         (right.inputPulseSteps - activeFeedback_.initialYRight);
+  bool yPairSkewExceeded(uint32_t nowMs) const {
+    (void)nowMs;
+    const MotorState left = feedback_.get(config_.topology.yLeftMotorId);
+    const MotorState right = feedback_.get(config_.topology.yRightMotorId);
+    const int32_t skew = (left.inputPulseSteps - activeSupervision_.yLeft.initialPulse) +
+                         (right.inputPulseSteps - activeSupervision_.yRight.initialPulse);
     return absoluteSigned(skew) > config_.motionRuntime.ySkewToleranceSteps;
   }
 
-  bool commandResponseFault(uint8_t motorId) {
-    return commandResponseFault(feedback_.get(motorId));
-  }
-
-  bool commandResponseFault(const MotorState& state) {
-    if (stepStartedAtMs_ == 0) {
+  bool commandResponseFault(const MotorSupervisionState& supervision) {
+    if (!supervision.active) {
       return false;
     }
-    if (state.driverFault && state.lastStatusMs >= stepStartedAtMs_) {
+    const MotorState state = feedback_.get(supervision.motorId);
+    if (state.driverFault && state.lastStatusMs >= supervision.startedAtMs) {
       stopAll();
       fail(state.lastErrorCode != nullptr && state.lastErrorCode[0] != '\0' ? state.lastErrorCode : "driver_fault",
            state.lastErrorMessage != nullptr && state.lastErrorMessage[0] != '\0' ? state.lastErrorMessage
                                                                                    : "Motor driver reported a fault");
       return true;
     }
-    if (state.lastConditionNotMetCommand != 0 && state.lastConditionNotMetMs >= stepStartedAtMs_) {
+    if (state.lastConditionNotMetCommand != 0 && state.lastConditionNotMetMs >= supervision.startedAtMs) {
       stopAll();
       fail("motion_condition_not_met", "Motor rejected motion conditions");
       return true;
     }
-    if (state.lastMalformedCommand != 0 && state.lastMalformedMs >= stepStartedAtMs_) {
+    if (state.lastMalformedCommand != 0 && state.lastMalformedMs >= supervision.startedAtMs) {
       stopAll();
       fail("motion_command_malformed", "Motor reported malformed command");
       return true;
@@ -575,120 +600,65 @@ class MotionExecutor {
     return value < 0 ? static_cast<uint32_t>(-value) : static_cast<uint32_t>(value);
   }
 
+  static uint32_t clampUint32(uint32_t value, uint32_t minValue, uint32_t maxValue) {
+    if (value < minValue) {
+      return minValue;
+    }
+    if (value > maxValue) {
+      return maxValue;
+    }
+    return value;
+  }
+
+  bool freshInputPulse(const MotorState& state, uint32_t nowMs) const {
+    return state.hasInputPulse && state.lastInputPulseMs != 0 && nowMs - state.lastInputPulseMs <= kFeedbackFreshMs;
+  }
+
+  bool freshVelocity(const MotorState& state, uint32_t nowMs) const {
+    return state.hasVelocity && state.lastVelocityMs != 0 && nowMs - state.lastVelocityMs <= kFeedbackFreshMs;
+  }
+
+  bool motorBaselineReady(const MotorState& state, uint32_t nowMs) const {
+    return state.hasInputPulse && state.lastInputPulseMs != 0 && nowMs - state.lastInputPulseMs <= kBaselineFreshMs &&
+           state.hasVelocity && state.lastVelocityMs != 0 && nowMs - state.lastVelocityMs <= kBaselineFreshMs;
+  }
+
+  float movingVelocityThresholdRpm() const {
+    const float doubled = config_.motionRuntime.idleVelocityThresholdRpm * 2.0f;
+    return doubled < 5.0f ? 5.0f : doubled;
+  }
+
+  uint32_t expectedMoveMs(const MotionStep& step) const {
+    uint32_t maxSteps = absoluteSteps(step.deltaSteps.x);
+    const uint32_t ySteps = absoluteSteps(step.deltaSteps.yLeft);
+    const uint32_t lineFeedSteps = absoluteSteps(step.deltaSteps.lineFeed);
+    const uint32_t pressSteps = absoluteSteps(step.deltaSteps.press);
+    if (ySteps > maxSteps) {
+      maxSteps = ySteps;
+    }
+    if (lineFeedSteps > maxSteps) {
+      maxSteps = lineFeedSteps;
+    }
+    if (pressSteps > maxSteps) {
+      maxSteps = pressSteps;
+    }
+    if (maxSteps == 0 || step.profile.maxRpm == 0 || config_.calibration.stepsPerRev == 0) {
+      return 0;
+    }
+    const uint64_t numerator = static_cast<uint64_t>(maxSteps) * 60000ULL;
+    const uint64_t denominator = static_cast<uint64_t>(step.profile.maxRpm) * config_.calibration.stepsPerRev;
+    return static_cast<uint32_t>((numerator + denominator - 1) / denominator);
+  }
+
+  uint32_t minimumMotionMs(const MotionStep& step) const {
+    const uint32_t timeoutHalf = step.profile.timeoutMs / 2;
+    const uint32_t upper = timeoutHalf < 800 ? timeoutHalf : 800;
+    const uint32_t lower = timeoutHalf < 80 ? timeoutHalf : 80;
+    return clampUint32(expectedMoveMs(step) / 4, lower, upper);
+  }
+
   static constexpr uint32_t kBaselineFreshMs = 1500;
-  static constexpr uint32_t kBaselineAcquireTimeoutMs = 1500;
   static constexpr uint32_t kFeedbackFreshMs = 1000;
-
-  bool requiresFeedbackBaseline(const MotionStep& step) const {
-    if (step.kind == MotionStepKind::MoveXY) {
-      return step.deltaSteps.x != 0 || step.deltaSteps.yLeft != 0 || step.deltaSteps.yRight != 0;
-    }
-    if (step.kind == MotionStepKind::LineFeed || step.kind == MotionStepKind::CharacterRelease) {
-      return step.deltaSteps.lineFeed != 0;
-    }
-    if (step.kind == MotionStepKind::ServoPress || step.kind == MotionStepKind::ServoRelease) {
-      return pressMotorSignedSteps(step.kind) != 0;
-    }
-    return false;
-  }
-
-  bool baselineReady(const MotionStep& step) const {
-    if (step.kind == MotionStepKind::MoveXY) {
-      return moveXYBaselineReady(step);
-    }
-    if (step.kind == MotionStepKind::LineFeed || step.kind == MotionStepKind::CharacterRelease) {
-      return lineFeedBaselineReady();
-    }
-    if (step.kind == MotionStepKind::ServoPress || step.kind == MotionStepKind::ServoRelease) {
-      return pressMotorBaselineReady();
-    }
-    return true;
-  }
-
-  bool motorBaselineReady(uint8_t motorId, uint32_t nowMs) const {
-    return feedback_.hasFreshInputPulse(motorId, nowMs, kBaselineFreshMs) &&
-           feedback_.hasFreshVelocity(motorId, nowMs, kBaselineFreshMs);
-  }
-
-  bool moveXYBaselineReady(const MotionStep& step) const {
-    const uint32_t nowMs = millis();
-    if (step.deltaSteps.x != 0 && !motorBaselineReady(config_.topology.xMotorId, nowMs)) {
-      return false;
-    }
-    if (step.deltaSteps.yLeft != 0 || step.deltaSteps.yRight != 0) {
-      return motorBaselineReady(config_.topology.yLeftMotorId, nowMs) &&
-             motorBaselineReady(config_.topology.yRightMotorId, nowMs);
-    }
-    return true;
-  }
-
-  bool validateMoveXYBaseline(const MotionStep& step) {
-    if (moveXYBaselineReady(step)) {
-      return true;
-    }
-    const uint32_t nowMs = millis();
-    if (step.deltaSteps.x != 0 && !motorBaselineReady(config_.topology.xMotorId, nowMs)) {
-      fail("motor_feedback_baseline_missing", "X motor feedback baseline missing");
-      return false;
-    }
-    if (step.deltaSteps.yLeft != 0 || step.deltaSteps.yRight != 0) {
-      if (!motorBaselineReady(config_.topology.yLeftMotorId, nowMs)) {
-        fail("motor_feedback_baseline_missing", "Y left motor feedback baseline missing");
-        return false;
-      }
-      if (!motorBaselineReady(config_.topology.yRightMotorId, nowMs)) {
-        fail("motor_feedback_baseline_missing", "Y right motor feedback baseline missing");
-        return false;
-      }
-    }
-    return true;
-  }
-
-  bool lineFeedBaselineReady() const {
-    const uint32_t nowMs = millis();
-    return motorBaselineReady(config_.topology.lineFeedMotorId, nowMs);
-  }
-
-  bool validateLineFeedBaseline() {
-    if (!lineFeedBaselineReady()) {
-      fail("line_feed_baseline_missing", "LineFeed motor feedback baseline missing");
-      return false;
-    }
-    return true;
-  }
-
-  bool pressMotorBaselineReady() const {
-    const uint32_t nowMs = millis();
-    return motorBaselineReady(config_.topology.pressMotorId, nowMs);
-  }
-
-  bool validatePressMotorBaseline() {
-    if (!pressMotorBaselineReady()) {
-      fail("press_motor_baseline_missing", "Press motor feedback baseline missing");
-      return false;
-    }
-    return true;
-  }
-
-  int32_t pressMotorSignedSteps(MotionStepKind kind) const {
-    if (kind == MotionStepKind::ServoPress) {
-      return signedStepsForDirection(config_.pressMotor.pressSteps, config_.pressMotor.pressDirection);
-    }
-    if (kind == MotionStepKind::ServoRelease) {
-      return signedStepsForDirection(config_.pressMotor.releaseSteps, config_.pressMotor.releaseDirection);
-    }
-    return 0;
-  }
-
-  int32_t pressMotorSignedSteps(PressAction action) const {
-    if (action == PressAction::Press) {
-      return signedStepsForDirection(config_.pressMotor.pressSteps, config_.pressMotor.pressDirection);
-    }
-    if (action == PressAction::Release) {
-      return signedStepsForDirection(config_.pressMotor.releaseSteps, config_.pressMotor.releaseDirection);
-    }
-    return 0;
-  }
 
   const TypingConfig& config_;
   EmmV5Driver& driver_;
@@ -704,11 +674,9 @@ class MotionExecutor {
   const char* faultMessage_;
   MachinePointMm currentPoint_;
   size_t activeTextIndex_;
-  ActiveFeedbackTargets activeFeedback_;
+  ActiveSupervision activeSupervision_;
   uint8_t completionSampleCount_;
   uint32_t lastFeedbackPollMs_;
-  bool waitingForBaseline_;
-  uint32_t baselineRequestedAtMs_;
   bool currentStepStartedEvent_;
   size_t lastCompletedStep_;
   uint32_t lastCompletedDurationMs_;

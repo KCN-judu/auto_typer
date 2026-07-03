@@ -52,10 +52,20 @@ inline MotionStepPlan& planMotionStepsInto(MotionStepPlan& plan,
     motionStep.waitMs = typingStep.waitMs;
     switch (typingStep.kind) {
       case TypingStepKind::Release:
-        motionStep.kind = MotionStepKind::ServoRelease;
+        motionStep.kind = MotionStepKind::PressUp;
+        motionStep.deltaSteps.press = config.pressMotor.releaseDeltaSteps;
+        motionStep.profile.maxRpm = config.pressMotor.rpm;
+        motionStep.profile.acceleration = config.pressMotor.acceleration;
+        motionStep.profile.settleMs = config.pressMotor.settleMs;
+        motionStep.profile.timeoutMs = config.pressMotor.timeoutMs;
         break;
       case TypingStepKind::Press:
-        motionStep.kind = MotionStepKind::ServoPress;
+        motionStep.kind = MotionStepKind::PressDown;
+        motionStep.deltaSteps.press = config.pressMotor.pressDeltaSteps;
+        motionStep.profile.maxRpm = config.pressMotor.rpm;
+        motionStep.profile.acceleration = config.pressMotor.acceleration;
+        motionStep.profile.settleMs = config.pressMotor.settleMs;
+        motionStep.profile.timeoutMs = config.pressMotor.timeoutMs;
         break;
       case TypingStepKind::CharacterRelease:
         motionStep.kind = MotionStepKind::CharacterRelease;

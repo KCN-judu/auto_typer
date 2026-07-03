@@ -26,6 +26,7 @@ inline MotorTargetSteps xyDeltaSteps(const MachinePointMm& current,
   delta.yLeft = y;
   delta.yRight = -y;
   delta.lineFeed = 0;
+  delta.press = 0;
   return delta;
 }
 

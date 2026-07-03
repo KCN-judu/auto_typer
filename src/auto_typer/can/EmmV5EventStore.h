@@ -20,7 +20,7 @@ struct ProtocolDiagnostics {
 class EmmV5EventStore {
  public:
   EmmV5EventStore()
-      : mutex_(xSemaphoreCreateMutex()),
+      : mutex_(nullptr),
         next_(0),
         count_(0),
         unknownFrameCount_(0),
@@ -87,13 +87,20 @@ class EmmV5EventStore {
   static constexpr size_t kCapacity = 64;
 
   bool lock() const {
-    return mutex_ == nullptr || xSemaphoreTake(mutex_, pdMS_TO_TICKS(5)) == pdTRUE;
+    return ensureMutex() && xSemaphoreTake(mutex_, pdMS_TO_TICKS(5)) == pdTRUE;
   }
 
   void unlock() const {
     if (mutex_ != nullptr) {
       xSemaphoreGive(mutex_);
     }
+  }
+
+  bool ensureMutex() const {
+    if (mutex_ == nullptr) {
+      mutex_ = xSemaphoreCreateMutex();
+    }
+    return mutex_ != nullptr;
   }
 
   mutable SemaphoreHandle_t mutex_;

@@ -63,7 +63,7 @@ inline TypingPlan& planTextInto(TypingPlan& plan,
                                 const TypingConfig& config) {
   resetTypingPlan(plan);
 
-  bool servoReleased = true;
+  bool pressReleased = true;
 
   MachinePointMm current = config.homePoint;
   for (size_t i = 0; text[i] != '\0'; ++i) {
@@ -71,11 +71,11 @@ inline TypingPlan& planTextInto(TypingPlan& plan,
       if (text[i] == '\r' && text[i + 1] == '\n') {
         ++i;
       }
-      if (!servoReleased) {
-        if (!appendStep(plan, {TypingStepKind::Release, current, config.pressMotor.releaseMs})) {
+      if (!pressReleased) {
+        if (!appendStep(plan, {TypingStepKind::Release, current, config.pressMotor.settleMs})) {
           return plan;
         }
-        servoReleased = true;
+        pressReleased = true;
       }
       if (!appendStep(plan, {TypingStepKind::LineFeed, current, 0})) {
         return plan;
@@ -91,11 +91,11 @@ inline TypingPlan& planTextInto(TypingPlan& plan,
       return plan;
     }
 
-    if (!servoReleased) {
-      if (!appendStep(plan, {TypingStepKind::Release, current, config.pressMotor.releaseMs})) {
+    if (!pressReleased) {
+      if (!appendStep(plan, {TypingStepKind::Release, current, config.pressMotor.settleMs})) {
         return plan;
       }
-      servoReleased = true;
+      pressReleased = true;
     }
     if (!appendStep(plan, {TypingStepKind::MoveTo, target, 0})) {
       return plan;
@@ -103,14 +103,14 @@ inline TypingPlan& planTextInto(TypingPlan& plan,
     if (!appendStep(plan, {TypingStepKind::Wait, target, config.pressMotor.settleMs})) {
       return plan;
     }
-    if (!appendStep(plan, {TypingStepKind::Press, target, config.pressMotor.pressMs})) {
+    if (!appendStep(plan, {TypingStepKind::Press, target, config.pressMotor.settleMs})) {
       return plan;
     }
-    servoReleased = false;
-    if (!appendStep(plan, {TypingStepKind::Release, target, config.pressMotor.releaseMs})) {
+    pressReleased = false;
+    if (!appendStep(plan, {TypingStepKind::Release, target, config.pressMotor.settleMs})) {
       return plan;
     }
-    servoReleased = true;
+    pressReleased = true;
     if (!appendStep(plan, {TypingStepKind::CharacterRelease, target, 0})) {
       return plan;
     }

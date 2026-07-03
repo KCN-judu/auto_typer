@@ -16,7 +16,7 @@ class CanTxQueue {
       : bus_(bus),
         trace_(trace),
         queue_(nullptr),
-        mutex_(xSemaphoreCreateMutex()),
+        mutex_(nullptr),
         pendingFrame_{},
         pendingValid_(false) {}
 
@@ -125,7 +125,7 @@ class CanTxQueue {
   }
 
   bool lock() const {
-    return mutex_ == nullptr || xSemaphoreTake(mutex_, pdMS_TO_TICKS(5)) == pdTRUE;
+    return ensureMutex() && xSemaphoreTake(mutex_, pdMS_TO_TICKS(5)) == pdTRUE;
   }
 
   void unlock() const {
@@ -134,10 +134,17 @@ class CanTxQueue {
     }
   }
 
+  bool ensureMutex() const {
+    if (mutex_ == nullptr) {
+      mutex_ = xSemaphoreCreateMutex();
+    }
+    return mutex_ != nullptr;
+  }
+
   CanBus& bus_;
   ProtocolTrace* trace_;
   QueueHandle_t queue_;
-  SemaphoreHandle_t mutex_;
+  mutable SemaphoreHandle_t mutex_;
   QueuedFrame pendingFrame_;
   bool pendingValid_;
 };
