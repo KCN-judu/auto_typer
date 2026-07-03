@@ -505,7 +505,15 @@ assert.match(httpServer, /machine\/probe-motors/, "Motor probe route must be reg
 assert.match(serialWifiSetup, /ATWIFI>/, "WiFi setup must accept USB serial control messages");
 assert.match(serialWifiSetup, /ATWIFI</, "WiFi setup must return USB serial control messages");
 assert.match(serialWifiSetup, /type"\]\s*=\s*"wifi_network"/, "Serial WiFi scan must stream one network per frame");
+assert.match(serialWifiSetup, /type"\]\s*=\s*"wifi_scan_started"/, "Serial WiFi scan must announce accepted async scans");
 assert.match(serialWifiSetup, /sendWifiNetworksComplete/, "Serial WiFi scan must send a small completion frame");
+assert.match(serialWifiSetup, /WiFi\.scanNetworks\(true,\s*false\)/, "Serial WiFi scan must use the ESP32 async scanner");
+assert.doesNotMatch(serialWifiSetup, /WiFi\.scanNetworks\(false,\s*false\)/, "Serial WiFi setup scan must not block on synchronous scanning");
+assert.match(serialWifiSetup, /wifiScanState_\s*==\s*WifiScanState::Running[\s\S]*wifi_scan_busy/, "Concurrent Serial WiFi scans must return a busy terminal response");
+assert.match(serialWifiSetup, /staConnecting_[\s\S]*wifi_busy_connecting/, "Serial WiFi scans must reject while STA connection is in progress");
+assert.match(serialWifiSetup, /WiFi\.scanComplete\(\);[\s\S]*result\s*==\s*kWifiScanRunningResult[\s\S]*return;/, "Serial WiFi scan polling must keep waiting while async scan is running");
+assert.match(serialWifiSetup, /now\s*-\s*wifiScanStartedAtMs_\s*>\s*kWifiScanTimeoutMs[\s\S]*WiFi\.scanDelete\(\);[\s\S]*wifi_scan_timeout/, "Serial WiFi scans must time out with one terminal response");
+assert.match(serialWifiSetup, /kWifiScanTimeoutMs\s*=\s*15000/, "Serial WiFi scan timeout must be 15000ms");
 assert.doesNotMatch(serialWifiSetup, /DynamicJsonDocument doc\(4096\)/, "Serial WiFi scan must not build a large networks JSON frame");
 assert.match(serialWifiSetup, /kSerialTxChunkBytes\s*=\s*96/, "Serial WiFi responses must use small USB CDC TX chunks");
 assert.match(serialWifiSetup, /serial_\.write\(reinterpret_cast<const uint8_t\*>\(data\),\s*chunk\);[\s\S]*delay\(1\);[\s\S]*serial_\.flush\(\);/, "Serial WiFi responses must pace chunked USB CDC TX");

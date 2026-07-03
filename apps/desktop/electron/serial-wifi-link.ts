@@ -18,8 +18,17 @@ type SerialWifiCommand =
   | { v: 1; type: "scan_wifi"; requestId: string }
   | { v: 1; type: "configure_wifi"; requestId: string; ssid: string; password: string };
 
+type WifiScanStartedMessage = {
+  v: 1;
+  type: "wifi_scan_started";
+  requestId: string;
+  ok?: boolean;
+  message?: string;
+};
+
 type SerialWifiResponse =
   | WifiStatusMessage
+  | WifiScanStartedMessage
   | WifiNetworkMessage
   | WifiNetworksMessage
   | WifiConfigResultMessage
@@ -37,10 +46,12 @@ export type SerialWifiLogEvent = {
 
 type PendingRequest = {
   requestId: string;
+  commandType: SerialWifiCommand["type"];
   resolve: (message: SerialWifiResponse) => void;
   reject: (error: Error) => void;
   timer?: NodeJS.Timeout;
   networks?: WifiNetwork[];
+  scanStarted?: boolean;
 };
 
 const rxPrefix = "ATWIFI<";
@@ -190,13 +201,16 @@ export class SerialWifiLink {
           this.emitDiagnostic(`timeout type=${command.type} requestId=${command.requestId} afterMs=${timeoutMs}`);
           reject(new Error(`serial_timeout: ${command.type} timed out after ${timeoutMs}ms`));
         }, timeoutMs);
-      this.pending.set(command.requestId, {
+      const pending: PendingRequest = {
         requestId: command.requestId,
+        commandType: command.type,
         resolve,
         reject,
         timer,
         networks: command.type === "scan_wifi" ? [] : undefined,
-      });
+        scanStarted: false,
+      };
+      this.pending.set(command.requestId, pending);
       this.writeStream?.write(line, "utf8", (error) => {
         if (!error) {
           this.emitDiagnostic(`tx flushed type=${command.type} requestId=${command.requestId}`);
@@ -293,17 +307,57 @@ export class SerialWifiLink {
     if (!pending) {
       return;
     }
-    if (message.type === "wifi_network") {
-      pending.networks?.push(message.network);
+
+    if (pending.commandType === "scan_wifi") {
+      if (message.type === "wifi_scan_started") {
+        pending.scanStarted = true;
+        this.emitDiagnostic(`scan started requestId=${message.requestId} message=${message.message ?? ""}`);
+        return;
+      }
+
+      if (message.type === "wifi_network") {
+        if (message.network) {
+          pending.networks?.push(message.network);
+          this.emitDiagnostic(`scan network requestId=${message.requestId} ssid=${message.network.ssid} rssi=${message.network.rssi}`);
+        }
+        return;
+      }
+
+      if (message.type === "wifi_networks") {
+        if (pending.timer) {
+          clearTimeout(pending.timer);
+        }
+        this.pending.delete(message.requestId);
+
+        const mergedNetworks = mergeWifiNetworks([
+          ...(pending.networks ?? []),
+          ...(message.networks ?? []),
+        ]);
+        pending.resolve({
+          ...message,
+          networks: mergedNetworks,
+          count: mergedNetworks.length,
+        });
+        return;
+      }
+
+      if (message.type === "protocol_error") {
+        if (pending.timer) {
+          clearTimeout(pending.timer);
+        }
+        this.pending.delete(message.requestId);
+        pending.resolve(message);
+        return;
+      }
+
+      this.emitDiagnostic(`ignored scan progress/unexpected type=${message.type} requestId=${message.requestId}`);
       return;
     }
+
     if (pending.timer) {
       clearTimeout(pending.timer);
     }
     this.pending.delete(message.requestId);
-    if (message.type === "wifi_networks" && pending.networks) {
-      message = { ...message, networks: [...pending.networks, ...(message.networks ?? [])] };
-    }
     pending.resolve(message);
   }
 
@@ -486,4 +540,27 @@ function responseError(message: SerialWifiResponse, command: string): Error {
     return new Error(`${message.code}: ${message.message}`);
   }
   return new Error(`unexpected_response: ${command} received ${message.type}`);
+}
+
+function mergeWifiNetworks(networks: WifiNetwork[]): WifiNetwork[] {
+  const byKey = new Map<string, WifiNetwork>();
+
+  for (const network of networks) {
+    if (!network || !network.ssid) {
+      continue;
+    }
+
+    const key = `${network.ssid}::${network.channel}::${network.encryption ?? ""}`;
+    const existing = byKey.get(key);
+    if (!existing || network.rssi > existing.rssi) {
+      byKey.set(key, network);
+    }
+  }
+
+  return [...byKey.values()].sort((a, b) => {
+    if (b.rssi !== a.rssi) {
+      return b.rssi - a.rssi;
+    }
+    return a.ssid.localeCompare(b.ssid);
+  });
 }

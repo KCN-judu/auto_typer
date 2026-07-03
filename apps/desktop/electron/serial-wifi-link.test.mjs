@@ -9,14 +9,32 @@ function createLink() {
 
 function waitForProtocolFrame(link, requestId) {
   return new Promise((resolve, reject) => {
-    link.pending.set(requestId, { requestId, resolve, reject });
+    link.pending.set(requestId, { requestId, commandType: "get_wifi_status", resolve, reject });
   });
 }
 
 function waitForScanFrame(link, requestId) {
   return new Promise((resolve, reject) => {
-    link.pending.set(requestId, { requestId, resolve, reject, networks: [] });
+    link.pending.set(requestId, { requestId, commandType: "scan_wifi", resolve, reject, networks: [], scanStarted: false });
   });
+}
+
+async function startMockedScan(link) {
+  const writes = [];
+  link.writeStream = {
+    destroyed: false,
+    write(line, _encoding, callback) {
+      writes.push(line);
+      callback?.();
+      return true;
+    },
+  };
+  const response = link.scanWifi();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(writes.length, 1);
+  const command = JSON.parse(writes[0].slice("ATWIFI>".length));
+  assert.equal(command.type, "scan_wifi");
+  return { response, requestId: command.requestId };
 }
 
 function protocolFrame(message) {
@@ -81,20 +99,77 @@ async function testSilentCloseResolvesPendingWithoutDisconnectError() {
 
 async function testScanWifiCollectsStreamedNetworkFrames() {
   const { link } = createLink();
-  const response = waitForScanFrame(link, "scan-stream");
+  const { response, requestId } = await startMockedScan(link);
 
-  link.pushData(`${protocolFrame({ v: 1, type: "wifi_network", requestId: "scan-stream", network: { ssid: "CMCC-102", rssi: -71, channel: 1, encryption: "wpa_wpa2" } })}\n`);
-  link.pushData(`${protocolFrame({ v: 1, type: "wifi_network", requestId: "scan-stream", network: { ssid: "Phone Hotspot", rssi: -42, channel: 6, encryption: "wpa2" } })}\n`);
-  link.pushData(`${protocolFrame({ v: 1, type: "wifi_networks", requestId: "scan-stream", ok: true, networks: [] })}\n`);
+  link.pushData(`${protocolFrame({ v: 1, type: "wifi_scan_started", requestId })}\n`);
+  link.pushData(`${protocolFrame({ v: 1, type: "wifi_network", requestId, network: { ssid: "CMCC-102", rssi: -71, channel: 1, encryption: "wpa_wpa2" } })}\n`);
+  link.pushData(`${protocolFrame({ v: 1, type: "wifi_network", requestId, network: { ssid: "Phone Hotspot", rssi: -42, channel: 6, encryption: "wpa2" } })}\n`);
+  link.pushData(`${protocolFrame({ v: 1, type: "wifi_networks", requestId, ok: true, count: 2, networks: [] })}\n`);
 
   const message = await response;
   assert.equal(message.type, "wifi_networks");
-  assert.deepEqual(message.networks.map((network) => network.ssid), ["CMCC-102", "Phone Hotspot"]);
+  assert.deepEqual(message.networks.map((network) => network.ssid), ["Phone Hotspot", "CMCC-102"]);
+  assert.equal(message.count, 2);
+  assert.equal(link.pending.has(requestId), false);
+}
+
+async function testScanStartedIsNonTerminalProgress() {
+  const { link, logs } = createLink();
+  const { response, requestId } = await startMockedScan(link);
+  let resolved = false;
+  response.then(() => {
+    resolved = true;
+  });
+
+  link.pushData(`${protocolFrame({ v: 1, type: "wifi_scan_started", requestId })}\n`);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(resolved, false);
+  assert.equal(link.pending.has(requestId), true);
+  assert.equal(logs.some((event) => event.line.includes(`scan started requestId=${requestId}`)), true);
+
+  link.pushData(`${protocolFrame({ v: 1, type: "wifi_networks", requestId, ok: true, count: 0, networks: [] })}\n`);
+  const message = await response;
+  assert.equal(message.type, "wifi_networks");
+}
+
+async function testLateWifiNetworkAfterTerminalDoesNotMutateResult() {
+  const { link, logs } = createLink();
+  const { response, requestId } = await startMockedScan(link);
+
+  link.pushData(`${protocolFrame({ v: 1, type: "wifi_network", requestId, network: { ssid: "Before Final", rssi: -60, channel: 11, encryption: "wpa2" } })}\n`);
+  link.pushData(`${protocolFrame({ v: 1, type: "wifi_networks", requestId, ok: true, count: 1, networks: [] })}\n`);
+
+  const message = await response;
+  assert.deepEqual(message.networks.map((network) => network.ssid), ["Before Final"]);
+  assert.equal(message.count, 1);
+  assert.equal(link.pending.has(requestId), false);
+
+  link.pushData(`${protocolFrame({ v: 1, type: "wifi_network", requestId, network: { ssid: "After Final", rssi: -50, channel: 1, encryption: "wpa2" } })}\n`);
+
+  assert.deepEqual(message.networks.map((network) => network.ssid), ["Before Final"]);
+  assert.equal(logs.some((event) => event.line.includes(`rx frame type=wifi_network requestId=${requestId} pending=0`)), true);
+}
+
+async function testEmptyScanFinalResolvesSuccessfully() {
+  const { link } = createLink();
+  const { response, requestId } = await startMockedScan(link);
+
+  link.pushData(`${protocolFrame({ v: 1, type: "wifi_scan_started", requestId })}\n`);
+  link.pushData(`${protocolFrame({ v: 1, type: "wifi_networks", requestId, ok: true, count: 0, networks: [] })}\n`);
+
+  const message = await response;
+  assert.equal(message.type, "wifi_networks");
+  assert.equal(message.ok, true);
+  assert.deepEqual(message.networks, []);
 }
 
 await testInvalidProtocolLineDoesNotBlockNextFrame();
 await testInvalidProtocolFrameRejectsMatchingPendingRequest();
 await testSilentCloseResolvesPendingWithoutDisconnectError();
 await testScanWifiCollectsStreamedNetworkFrames();
+await testScanStartedIsNonTerminalProgress();
+await testLateWifiNetworkAfterTerminalDoesNotMutateResult();
+await testEmptyScanFinalResolvesSuccessfully();
 
 console.log("serial-wifi-link frame recovery tests passed");

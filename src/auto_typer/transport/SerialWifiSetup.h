@@ -42,29 +42,49 @@ class SerialWifiSetup {
 
   void tick() {
     updateWifiConnectionState();
+    pollWifiScan();
+
     while (serial_.available() > 0) {
       const int value = serial_.read();
       if (value < 0) {
         break;
       }
+
       if (value == '\r') {
         continue;
       }
+
       if (value == '\n') {
         handleLine(lineBuffer_);
         lineBuffer_ = "";
         continue;
       }
+
       if (lineBuffer_.length() >= kMaxSerialLineBytes) {
         lineBuffer_ = "";
         sendProtocolError("", "line_too_large", "Serial WiFi line is too large");
         continue;
       }
+
       lineBuffer_ += static_cast<char>(value);
     }
+
+    pollWifiScan();
   }
 
  private:
+  enum class WifiScanState {
+    Idle,
+    Running,
+  };
+
+  struct WifiNetworkEntry {
+    String ssid;
+    int32_t rssi = 0;
+    int32_t channel = 0;
+    wifi_auth_mode_t encryption = WIFI_AUTH_OPEN;
+  };
+
   void handleLine(const String& line) {
     if (!line.startsWith(kRxPrefix)) {
       return;
@@ -83,7 +103,7 @@ class SerialWifiSetup {
       return;
     }
     if (strcmp(type, "scan_wifi") == 0) {
-      sendWifiNetworks(requestId);
+      handleScanWifi(requestId);
       return;
     }
     if (strcmp(type, "configure_wifi") == 0) {
@@ -126,27 +146,93 @@ class SerialWifiSetup {
     sendJson(doc);
   }
 
-  void sendWifiNetworks(const char* requestId) {
-    struct NetworkEntry {
-      String ssid;
-      int32_t rssi;
-      int32_t channel;
-      wifi_auth_mode_t encryption;
-    };
-    NetworkEntry entries[kMaxWifiNetworks];
-    size_t count = 0;
-    const int found = WiFi.scanNetworks(false, false);
-    if (found < 0) {
-      sendWifiNetworksComplete(requestId, false, 0, "wifi_scan_failed", "WiFi scan failed");
+  void handleScanWifi(const char* requestId) {
+    const char* safeRequestId = requestId != nullptr ? requestId : "";
+
+    if (wifiScanState_ == WifiScanState::Running) {
+      sendWifiNetworksComplete(safeRequestId,
+                               false,
+                               0,
+                               "wifi_scan_busy",
+                               "WiFi scan is already running");
       return;
     }
+
+    if (staConnecting_) {
+      sendWifiNetworksComplete(safeRequestId,
+                               false,
+                               0,
+                               "wifi_busy_connecting",
+                               "WiFi station connection is in progress");
+      return;
+    }
+
+    WiFi.mode(WIFI_STA);
+    WiFi.scanDelete();
+
+    const int started = WiFi.scanNetworks(true, false);
+    if (started == kWifiScanFailedResult) {
+      WiFi.scanDelete();
+      sendWifiNetworksComplete(safeRequestId,
+                               false,
+                               0,
+                               "wifi_scan_start_failed",
+                               "WiFi scan could not start");
+      return;
+    }
+
+    wifiScanState_ = WifiScanState::Running;
+    wifiScanRequestId_ = safeRequestId;
+    wifiScanStartedAtMs_ = millis();
+
+    sendWifiScanStarted(wifiScanRequestId_.c_str());
+
+    if (started >= 0) {
+      finishWifiScan(started);
+    }
+  }
+
+  void pollWifiScan() {
+    if (wifiScanState_ != WifiScanState::Running) {
+      return;
+    }
+
+    const uint32_t now = millis();
+    if (now - wifiScanStartedAtMs_ > kWifiScanTimeoutMs) {
+      WiFi.scanDelete();
+      sendWifiNetworksComplete(wifiScanRequestId_.c_str(), false, 0, "wifi_scan_timeout", "WiFi scan timed out");
+      clearWifiScanState();
+      return;
+    }
+
+    const int result = WiFi.scanComplete();
+    if (result == kWifiScanRunningResult) {
+      return;
+    }
+
+    if (result < 0) {
+      WiFi.scanDelete();
+      sendWifiNetworksComplete(wifiScanRequestId_.c_str(), false, 0, "wifi_scan_failed", "WiFi scan failed");
+      clearWifiScanState();
+      return;
+    }
+
+    finishWifiScan(result);
+  }
+
+  void finishWifiScan(int found) {
+    WifiNetworkEntry entries[kMaxWifiNetworks];
+    size_t count = 0;
+
     for (int i = 0; i < found && count < kMaxWifiNetworks; ++i) {
       const String ssid = WiFi.SSID(i);
       if (ssid.length() == 0) {
         continue;
       }
+
       const int32_t rssi = WiFi.RSSI(i);
       int existing = -1;
+
       for (size_t j = 0; j < count; ++j) {
         if (entries[j].ssid == ssid) {
           existing = static_cast<int>(j);
@@ -161,14 +247,37 @@ class SerialWifiSetup {
         }
         continue;
       }
-      entries[count] = {ssid, rssi, WiFi.channel(i), WiFi.encryptionType(i)};
+
+      entries[count].ssid = ssid;
+      entries[count].rssi = rssi;
+      entries[count].channel = WiFi.channel(i);
+      entries[count].encryption = WiFi.encryptionType(i);
       ++count;
     }
-    WiFi.scanDelete();
+
     for (size_t i = 0; i < count; ++i) {
-      sendWifiNetwork(requestId, entries[i]);
+      sendWifiNetwork(wifiScanRequestId_.c_str(), entries[i]);
     }
-    sendWifiNetworksComplete(requestId, true, count, "", "");
+
+    sendWifiNetworksComplete(wifiScanRequestId_.c_str(), true, count, "", "");
+    WiFi.scanDelete();
+    clearWifiScanState();
+  }
+
+  void clearWifiScanState() {
+    wifiScanState_ = WifiScanState::Idle;
+    wifiScanRequestId_ = "";
+    wifiScanStartedAtMs_ = 0;
+  }
+
+  void sendWifiScanStarted(const char* requestId) {
+    StaticJsonDocument<256> doc;
+    doc["v"] = 1;
+    doc["type"] = "wifi_scan_started";
+    doc["requestId"] = requestId != nullptr ? requestId : "";
+    doc["ok"] = true;
+    doc["message"] = "WiFi scan started";
+    sendJson(doc);
   }
 
   template <typename TEntry>
@@ -194,8 +303,8 @@ class SerialWifiSetup {
     doc["count"] = count;
     doc.createNestedArray("networks");
     if (!ok) {
-      doc["code"] = code != nullptr ? code : "wifi_scan_failed";
-      doc["message"] = message != nullptr ? message : "WiFi scan failed";
+      doc["code"] = code != nullptr && code[0] != '\0' ? code : "wifi_scan_failed";
+      doc["message"] = message != nullptr && message[0] != '\0' ? message : "WiFi scan failed";
     }
     sendJson(doc);
   }
@@ -367,6 +476,9 @@ class SerialWifiSetup {
   bool savedCredentials_;
   uint32_t lastWifiAttemptMs_;
   String lastWifiError_;
+  WifiScanState wifiScanState_ = WifiScanState::Idle;
+  String wifiScanRequestId_;
+  uint32_t wifiScanStartedAtMs_ = 0;
 
   static constexpr const char* kRxPrefix = "ATWIFI>";
   static constexpr const char* kTxPrefix = "ATWIFI<";
@@ -376,6 +488,9 @@ class SerialWifiSetup {
   static constexpr size_t kMaxWifiSsidLength = 32;
   static constexpr size_t kMaxWifiPasswordLength = 63;
   static constexpr uint32_t kWifiConnectTimeoutMs = 20000;
+  static constexpr uint32_t kWifiScanTimeoutMs = 15000;
+  static constexpr int kWifiScanRunningResult = -1;
+  static constexpr int kWifiScanFailedResult = -2;
 };
 
 }  // namespace auto_typer

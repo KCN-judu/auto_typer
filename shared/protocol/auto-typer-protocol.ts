@@ -507,11 +507,20 @@ export type WifiNetworkMessage = {
   network: WifiNetwork;
 };
 
+export type WifiScanStartedMessage = {
+  v: 1;
+  type: "wifi_scan_started";
+  requestId: string;
+  ok?: boolean;
+  message?: string;
+};
+
 export type WifiNetworksMessage = {
   v: 1;
   type: "wifi_networks";
   requestId: string;
   ok: boolean;
+  count: number;
   networks: WifiNetwork[];
   code?: string;
   message?: string;
@@ -726,6 +735,7 @@ export type GroupStreamEventMessage =
   | TelemetrySubscribedMessage
   | KeymapMessage
   | WifiStatusMessage
+  | WifiScanStartedMessage
   | WifiNetworkMessage
   | WifiNetworksMessage
   | WifiConfigResultMessage
