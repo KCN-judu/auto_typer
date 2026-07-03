@@ -32,7 +32,7 @@ inline TypingConfig defaultTypingConfig() {
   config.calibration = {2.0f, 20, 3200};
 
   config.motionRuntime = defaultMotionRuntimeConfig();
-  config.pressMotor = {500, 10, -2700, 2700, 80, 8000};
+  config.pressMotor = {3000, 255, -2700, 2700, 80, 8000};
   config.xProfile = {config.motionRuntime.defaultMoveRpm, config.motionRuntime.defaultAccelerationRaw, 120};
   config.yProfile = {config.motionRuntime.defaultMoveRpm, config.motionRuntime.defaultAccelerationRaw, 120};
   config.xReturn = {true, 200, 3, 200, 180};

@@ -147,6 +147,8 @@ button:disabled {
   background: var(--warn);
 }
 
+.statusDot.desync,
+.statusDot.transport_fault,
 .statusDot.fault {
   background: var(--fault);
 }
@@ -286,10 +288,12 @@ textarea:focus {
   font-weight: 720;
 }
 
+.metric.transport_fault .metricIcon,
 .metric.fault .metricIcon {
   color: var(--fault);
 }
 
+.metric.desync .metricIcon,
 .metric.connecting .metricIcon {
   color: var(--warn);
 }

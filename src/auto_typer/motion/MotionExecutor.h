@@ -318,6 +318,7 @@ class MotionExecutor {
   bool isStepComplete(const MotionStep& step) {
     const uint32_t elapsed = millis() - stepStartedAtMs_;
     if (elapsed > step.profile.timeoutMs) {
+      logMotionTimeoutDiagnostics(step, elapsed);
       stopAll();
       fail(activeSupervisionHasUsefulFeedback() ? "motion_timeout" : "motion_feedback_timeout",
            activeSupervisionHasUsefulFeedback() ? "Motion timed out before reaching target"
@@ -430,6 +431,93 @@ class MotionExecutor {
     faultCode_ = code;
     faultMessage_ = message;
     state_ = State::Faulted;
+  }
+
+  void logMotionTimeoutDiagnostics(const MotionStep& step, uint32_t elapsedMs) {
+    const uint32_t nowMs = millis();
+    updateActiveSupervision(nowMs);
+    Serial.print("[motion_timeout] blockIndex=");
+    Serial.print(currentStep_);
+    Serial.print(" blockKind=");
+    Serial.print(motionStepKindName(step.kind));
+    Serial.print(" elapsedMs=");
+    Serial.print(elapsedMs);
+    Serial.print(" timeoutMs=");
+    Serial.print(step.profile.timeoutMs);
+    Serial.print(" dxSteps=");
+    Serial.print(step.deltaSteps.x);
+    Serial.print(" dySteps=");
+    Serial.print(step.deltaSteps.yRight);
+    Serial.print(" pressSteps=");
+    Serial.print(step.deltaSteps.press);
+    Serial.print(" lineFeedSteps=");
+    Serial.print(step.deltaSteps.lineFeed);
+    Serial.print(" completionSampleCount=");
+    Serial.print(completionSampleCount_);
+    Serial.print(" settleStartedAtMs=");
+    Serial.print(settleStartedAtMs_);
+    Serial.println();
+
+    logMotorTimeoutDiagnostics("x", activeSupervision_.x, nowMs);
+    logMotorTimeoutDiagnostics("y_left", activeSupervision_.yLeft, nowMs);
+    logMotorTimeoutDiagnostics("y_right", activeSupervision_.yRight, nowMs);
+    logMotorTimeoutDiagnostics("line_feed", activeSupervision_.lineFeed, nowMs);
+    logMotorTimeoutDiagnostics("press", activeSupervision_.press, nowMs);
+  }
+
+  void logMotorTimeoutDiagnostics(const char* label,
+                                  const MotorSupervisionState& supervision,
+                                  uint32_t nowMs) const {
+    if (!supervision.active) {
+      return;
+    }
+    const MotorState state = feedback_.get(supervision.motorId);
+    const bool pulseFresh = freshInputPulse(state, nowMs);
+    const bool velocityFresh = freshVelocity(state, nowMs);
+    const bool hasPositionError = supervision.pulseReferenceKnown && state.hasInputPulse;
+    Serial.print("[motion_timeout] motor=");
+    Serial.print(label);
+    Serial.print(" id=");
+    Serial.print(supervision.motorId);
+    Serial.print(" deltaSteps=");
+    Serial.print(supervision.deltaSteps);
+    Serial.print(" baselineKnown=");
+    Serial.print(supervision.baselineKnown ? 1 : 0);
+    Serial.print(" initialPulse=");
+    Serial.print(supervision.pulseReferenceKnown ? supervision.initialPulse : 0);
+    Serial.print(" currentPulse=");
+    Serial.print(state.hasInputPulse ? state.inputPulseSteps : 0);
+    Serial.print(" targetPulse=");
+    Serial.print(supervision.pulseReferenceKnown ? supervision.targetPulse : 0);
+    Serial.print(" positionError=");
+    Serial.print(hasPositionError ? state.inputPulseSteps - supervision.targetPulse : 0);
+    Serial.print(" velocityRpm=");
+    Serial.print(state.hasVelocity ? state.velocityRpm : 0.0f);
+    Serial.print(" pulseFresh=");
+    Serial.print(pulseFresh ? 1 : 0);
+    Serial.print(" velocityFresh=");
+    Serial.print(velocityFresh ? 1 : 0);
+    Serial.print(" firstFeedbackMs=");
+    Serial.print(supervision.firstFeedbackMs);
+    Serial.print(" ackSeen=");
+    Serial.print(supervision.ackSeenForCurrentBlock ? 1 : 0);
+    Serial.print(" reachedSeen=");
+    Serial.print(supervision.reachedSeenForCurrentBlock ? 1 : 0);
+    Serial.print(" velocitySeen=");
+    Serial.print(supervision.velocitySeen ? 1 : 0);
+    Serial.print(" velocityEverNonZero=");
+    Serial.print(supervision.velocityEverNonZero ? 1 : 0);
+    Serial.print(" lastInputPulseMs=");
+    Serial.print(state.lastInputPulseMs);
+    Serial.print(" lastVelocityMs=");
+    Serial.print(state.lastVelocityMs);
+    Serial.print(" lastAckMs=");
+    Serial.print(state.lastAckMs);
+    Serial.print(" lastMotionReachedMs=");
+    Serial.print(state.lastMotionReachedMs);
+    Serial.print(" driverFault=");
+    Serial.print(state.driverFault ? 1 : 0);
+    Serial.println();
   }
 
   void captureSupervisionState(const MotionStep& step, uint32_t startedAtMs) {
@@ -608,6 +696,24 @@ class MotionExecutor {
       return maxValue;
     }
     return value;
+  }
+
+  static const char* motionStepKindName(MotionStepKind kind) {
+    switch (kind) {
+      case MotionStepKind::MoveXY:
+        return "move_xy";
+      case MotionStepKind::PressDown:
+        return "press_down";
+      case MotionStepKind::PressUp:
+        return "press_up";
+      case MotionStepKind::CharacterRelease:
+        return "character_release";
+      case MotionStepKind::LineFeed:
+        return "line_feed";
+      case MotionStepKind::Wait:
+        return "wait";
+    }
+    return "unknown";
   }
 
   bool freshInputPulse(const MotorState& state, uint32_t nowMs) const {

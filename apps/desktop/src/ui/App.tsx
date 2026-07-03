@@ -205,6 +205,9 @@ export function App() {
         currentIndex: index + 1,
         currentLabel: groupLabel(group),
       }));
+      appendLog(
+        `Send group ${group.groupId} blocks=${group.blocks.length} estimated=${group.estimatedRuntimeMs}ms policy=${group.policy.maxRuntimeMs}ms`,
+      );
       await streamClient.sendExecGroup(group);
       const outcome = await waitForGroupDone(group);
       if (outcome.status !== "done") {
@@ -217,7 +220,7 @@ export function App() {
     }
   }
 
-  function waitForGroupDone(group: TaskGroup): Promise<GroupExecutionOutcome> {
+  function waitForGroupDone(group: TaskGroup | PlannedRemoteMotionGroup): Promise<GroupExecutionOutcome> {
     return new Promise((resolve, reject) => {
       let unsubscribe = () => {};
       const watchdog = new GroupExecutionWatchdog(group, Date.now());
@@ -244,9 +247,8 @@ export function App() {
           return;
         }
         if (observation.kind === "progress" && observation.progress.event === "block_started") {
-          const label = observation.progress.blockType
-            ? `Block ${observation.progress.blockIndex} ${observation.progress.blockType}`
-            : `Block ${observation.progress.blockIndex}`;
+          const label = blockStartedLabel(group, observation.progress.blockIndex, observation.progress.blockType);
+          appendLog(label);
           setPrintTask((task) => ({ ...task, currentLabel: label }));
         }
       });
@@ -689,6 +691,24 @@ function StateRow({ label, value }: { label: string; value: string }) {
 function groupLabel(group: PlannedRemoteMotionGroup): string {
   const suffix = group.targetKeyLabel ? ` ${group.targetKeyLabel}` : "";
   return `${group.kind}${suffix}`;
+}
+
+function blockStartedLabel(
+  group: TaskGroup | PlannedRemoteMotionGroup,
+  blockIndex: number,
+  blockType?: PlannedRemoteMotionGroup["kind"],
+): string {
+  const planned = "plannedBlocks" in group ? group.plannedBlocks[blockIndex] : undefined;
+  const block = planned?.block;
+  const type = block?.type ?? blockType ?? "unknown";
+  const target = planned?.targetKeyLabel ? ` target=${planned.targetKeyLabel}` : "";
+  if (block?.type === "move_xy") {
+    return `Block ${blockIndex} ${type}${target} dxSteps=${block.dxSteps} dySteps=${block.dySteps} timeoutMs=${block.timeoutMs}`;
+  }
+  if (block && "timeoutMs" in block) {
+    return `Block ${blockIndex} ${type}${target} timeoutMs=${block.timeoutMs}`;
+  }
+  return `Block ${blockIndex} ${type}${target}`;
 }
 
 function connectionText(connection: ConnectionState) {

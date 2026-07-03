@@ -15,10 +15,10 @@ export function estimateBlockRuntimeMs(block: MotionBlock): number {
     case "move_xy": {
       const steps = Math.max(Math.abs(block.dxSteps), Math.abs(block.dySteps));
       if (steps === 0 || block.rpm <= 0) {
-        return moveMinimumMs;
+        return Math.max(moveMinimumMs, block.timeoutMs);
       }
       const cruiseMs = Math.ceil((steps * 60000) / (block.rpm * stepsPerRev));
-      return Math.max(moveMinimumMs, cruiseMs + moveSettleMarginMs);
+      return Math.max(moveMinimumMs, cruiseMs + moveSettleMarginMs, block.timeoutMs);
     }
     case "press_down":
       return Math.max(pressEstimateMs, block.timeoutMs);

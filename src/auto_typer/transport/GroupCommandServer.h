@@ -11,6 +11,7 @@
 namespace auto_typer {
 
 static constexpr uint16_t kGroupCommandPort = 7777;
+static constexpr uint32_t kTcpHandshakeTimeoutMs = 3000;
 
 class GroupCommandServer {
  public:
@@ -27,6 +28,10 @@ class GroupCommandServer {
         telemetryIntervalMs_(350),
         lastTelemetryMs_(0),
         lastMotorStateUpdateMs_(0),
+        clientConnectedAtMs_(0),
+        telemetryForcePending_(false),
+        outboundOrder_(0),
+        clientSessionId_(0),
         setupApActive_(false),
         staConnecting_(false),
         savedCredentials_(false),
@@ -34,6 +39,8 @@ class GroupCommandServer {
         lastWifiError_("") {}
 
   void begin() {
+    clearOutboundQueue();
+    clearDedupeLedger();
     beginWifi();
     server_.begin();
     server_.setNoDelay(true);
@@ -43,14 +50,36 @@ class GroupCommandServer {
 
   void tick() {
     updateWifiConnectionState();
+    closeStaleHandshakeClient();
     acceptClient();
     readClient();
     sendPendingEvents();
     sendMotorTelemetry();
-    sendTelemetry(false);
+    sendTelemetry(consumeTelemetryForcePending());
+    flushOutboundQueue();
   }
 
  private:
+  struct OutboundEvent {
+    bool used;
+    uint8_t priority;
+    uint32_t order;
+    bool quietSuccess;
+    String line;
+  };
+
+  struct DedupeEntry {
+    bool used;
+    uint32_t sessionId;
+    char requestId[49];
+    char groupId[49];
+    uint32_t seq;
+    bool accepted;
+    char reason[40];
+    char message[96];
+    size_t blockCount;
+  };
+
   void acceptClient() {
     WiFiClient incoming = server_.available();
     if (!incoming) {
@@ -58,16 +87,31 @@ class GroupCommandServer {
     }
     incoming.setNoDelay(true);
     if (client_ && client_.connected()) {
-      sendProtocolError(incoming, "", "device_busy", "Another TCP client is connected");
-      incoming.stop();
-      return;
+      if (!handshaken_ && millis() - clientConnectedAtMs_ >= kTcpHandshakeTimeoutMs) {
+        log_.println("[tcp] handshake timeout, closing client");
+        client_.stop();
+        lineBuffer_ = "";
+        handshaken_ = false;
+        clearOutboundQueue();
+      } else {
+        sendProtocolError(incoming, "", "device_busy", "Another TCP client is connected");
+        incoming.stop();
+        return;
+      }
     }
     client_.stop();
     client_ = incoming;
     lineBuffer_ = "";
     handshaken_ = false;
+    clientConnectedAtMs_ = millis();
     lastTelemetryMs_ = 0;
-    log_.println("[tcp] client connected");
+    ++clientSessionId_;
+    clearDedupeLedger();
+    clearOutboundQueue();
+    log_.print("[tcp] client connected remote=");
+    log_.print(client_.remoteIP().toString());
+    log_.print(":");
+    log_.println(client_.remotePort());
   }
 
   void readClient() {
@@ -91,6 +135,7 @@ class GroupCommandServer {
       if (value == '\n') {
         handleLine(lineBuffer_);
         lineBuffer_ = "";
+        flushOutboundQueue();
         if (!client_ || !client_.connected()) {
           return;
         }
@@ -112,22 +157,42 @@ class GroupCommandServer {
     DynamicJsonDocument request(line.length() + 768);
     const DeserializationError error = deserializeJson(request, line);
     if (error) {
+      log_.println("[tcp] rx invalid_json");
       sendProtocolError(client_, "", "invalid_json", "Invalid JSON line");
       return;
     }
     const char* type = request["type"] | "";
     const char* requestId = request["requestId"] | "";
-    if (strcmp(type, "ping") == 0) {
+    const bool isPing = strcmp(type, "ping") == 0;
+    if (!isPing) {
+      log_.print("[tcp] rx line len=");
+      log_.println(line.length());
+      log_.print("[tcp] rx type=");
+      log_.print(type);
+      log_.print(" requestId=");
+      log_.print(requestId);
+      log_.print(" v=");
+      log_.print(request["v"] | 0);
+      log_.print(" handshaken=");
+      log_.println(handshaken_ ? 1 : 0);
+    }
+    if (isPing) {
       sendPong(requestId);
       return;
     }
     if (!handshaken_) {
       if (strcmp(type, "hello") != 0 || (request["v"] | 0) != 1) {
+        log_.print("[tcp] rx before hello rejected type=");
+        log_.println(type);
         sendProtocolError(client_, requestId, "handshake_required", "hello is required before commands");
         return;
       }
       handshaken_ = true;
+      log_.print("[tcp] tx type=hello_ack requestId=");
+      log_.println(requestId);
       sendHelloAck(requestId);
+      log_.print("[tcp] tx type=status requestId=");
+      log_.println(requestId);
       sendStatus(requestId);
       return;
     }
@@ -139,7 +204,7 @@ class GroupCommandServer {
       const uint32_t requested = request["intervalMs"] | telemetryIntervalMs_;
       telemetryIntervalMs_ = clampTelemetryInterval(requested);
       sendTelemetrySubscribed(requestId);
-      sendTelemetry(true);
+      requestTelemetrySnapshot();
       return;
     }
     if (strcmp(type, "get_keymap") == 0) {
@@ -165,19 +230,23 @@ class GroupCommandServer {
     if (strcmp(type, "probe") == 0) {
       const bool ok = app_.probeMotors();
       sendProbeResult(requestId, ok);
-      sendTelemetry(true);
+      requestTelemetrySnapshot();
       return;
     }
     if (strcmp(type, "reset_fault") == 0) {
       const bool ok = app_.resetFault();
       sendResetFaultResult(requestId, ok);
-      sendTelemetry(true);
+      requestTelemetrySnapshot();
       return;
     }
     if (strcmp(type, "cancel") == 0) {
-      const bool ok = app_.cancelCurrentJob();
+      const char* groupId = request["groupId"] | "";
+      const uint32_t seq = request["seq"] | app_.currentRemoteSeq();
+      const bool targetMatches = groupId[0] == '\0' ||
+                                 (strcmp(groupId, app_.currentRemoteCommandId()) == 0 && seq == app_.currentRemoteSeq());
+      const bool ok = targetMatches && app_.cancelCurrentJob();
       sendCancelResult(requestId, ok);
-      sendTelemetry(true);
+      requestTelemetrySnapshot();
       return;
     }
     if (strcmp(type, "exec_group") == 0) {
@@ -191,13 +260,20 @@ class GroupCommandServer {
     const char* requestId = request["requestId"] | "";
     const char* groupId = request["groupId"] | "";
     const uint32_t seq = request["seq"] | 0;
+    DedupeEntry* duplicate = findDedupeEntry(requestId, groupId, seq);
+    if (duplicate != nullptr) {
+      replayDedupeEntry(*duplicate, requestId);
+      return;
+    }
     if (groupId[0] == '\0') {
       sendGroupRejected(requestId, groupId, seq, "invalid_group", "groupId is required");
+      recordDedupeEntry(requestId, groupId, seq, false, "invalid_group", "groupId is required", 0);
       return;
     }
     const uint32_t maxRuntimeMs = request["policy"]["maxRuntimeMs"] | 0;
     if (maxRuntimeMs == 0 || maxRuntimeMs > kMaxGroupRuntimeMs) {
       sendGroupRejected(requestId, groupId, seq, "invalid_group", "policy.maxRuntimeMs is invalid");
+      recordDedupeEntry(requestId, groupId, seq, false, "invalid_group", "policy.maxRuntimeMs is invalid", 0);
       return;
     }
     RemoteMotionStep steps[kRemoteGroupMaxSteps];
@@ -205,15 +281,20 @@ class GroupCommandServer {
     const char* parseCode = "";
     const char* parseMessage = "";
     if (!parseRemoteGroup(request["blocks"], steps, kRemoteGroupMaxSteps, count, parseCode, parseMessage)) {
-      sendGroupRejected(requestId, groupId, seq, normalizeRejectReason(parseCode), parseMessage);
+      const char* reason = normalizeRejectReason(parseCode);
+      sendGroupRejected(requestId, groupId, seq, reason, parseMessage);
+      recordDedupeEntry(requestId, groupId, seq, false, reason, parseMessage, 0);
       return;
     }
     const SubmitRemoteGroupResult result = app_.submitRemoteGroup(steps, count, groupId, seq);
     if (!result.accepted) {
-      sendGroupRejected(requestId, groupId, seq, normalizeRejectReason(result.rejectionCode), result.rejectionMessage);
+      const char* reason = normalizeRejectReason(result.rejectionCode);
+      sendGroupRejected(requestId, groupId, seq, reason, result.rejectionMessage);
+      recordDedupeEntry(requestId, groupId, seq, false, reason, result.rejectionMessage, 0);
       return;
     }
     sendGroupAccepted(requestId, groupId, seq, count);
+    recordDedupeEntry(requestId, groupId, seq, true, "", "", count);
   }
 
   void handleConfigureWifi(JsonDocument& request) {
@@ -282,6 +363,11 @@ class GroupCommandServer {
     }
     const char* code = "";
     const char* message = "";
+    const char* finalStatus = "";
+    uint32_t finalSeq = 0;
+    if (app_.consumeRemoteGroupFinal(groupId, sizeof(groupId), finalSeq, finalStatus, code, message, durationMs)) {
+      sendGroupFinal(groupId, finalSeq, finalStatus, code, message, durationMs);
+    }
     if (app_.consumeRemoteFault(groupId, sizeof(groupId), code, message)) {
       sendFault(groupId, code, message);
     }
@@ -308,7 +394,7 @@ class GroupCommandServer {
     limits["maxBlocksPerGroup"] = kRemoteGroupMaxSteps;
     limits["maxMessageBytes"] = kMaxTcpMessageBytes;
     limits["maxGroupRuntimeMs"] = kMaxGroupRuntimeMs;
-    sendJson(client_, doc);
+    enqueueJson(0, doc);
   }
 
   void sendStatus(const char* requestId) {
@@ -317,7 +403,7 @@ class GroupCommandServer {
     doc["type"] = "status";
     doc["requestId"] = requestId != nullptr ? requestId : "";
     writeStatus(doc.createNestedObject("status"));
-    sendJson(client_, doc);
+    enqueueJson(0, doc);
   }
 
   void sendTelemetrySubscribed(const char* requestId) {
@@ -326,7 +412,7 @@ class GroupCommandServer {
     doc["type"] = "telemetry_subscribed";
     doc["requestId"] = requestId != nullptr ? requestId : "";
     doc["intervalMs"] = telemetryIntervalMs_;
-    sendJson(client_, doc);
+    enqueueJson(0, doc);
   }
 
   void sendTelemetry(bool force) {
@@ -342,7 +428,31 @@ class GroupCommandServer {
     doc["v"] = 1;
     doc["type"] = "telemetry";
     writeStatus(doc.createNestedObject("status"));
-    sendJson(client_, doc);
+    enqueueJson(3, doc);
+  }
+
+  void closeStaleHandshakeClient() {
+    if (!client_ || !client_.connected() || handshaken_) {
+      return;
+    }
+    if (millis() - clientConnectedAtMs_ < kTcpHandshakeTimeoutMs) {
+      return;
+    }
+    log_.println("[tcp] handshake timeout, closing client");
+    client_.stop();
+    lineBuffer_ = "";
+    handshaken_ = false;
+    clearOutboundQueue();
+  }
+
+  void requestTelemetrySnapshot() {
+    telemetryForcePending_ = true;
+  }
+
+  bool consumeTelemetryForcePending() {
+    const bool force = telemetryForcePending_;
+    telemetryForcePending_ = false;
+    return force;
   }
 
   void sendMotorTelemetry() {
@@ -376,7 +486,7 @@ class GroupCommandServer {
     for (size_t i = 0; i < stateCount; ++i) {
       writeMotorStateUpdate(motors, snapshots[i]);
     }
-    sendJson(client_, doc);
+    enqueueJson(2, doc);
   }
 
   void sendKeymap(const char* requestId) {
@@ -399,7 +509,7 @@ class GroupCommandServer {
       key["xMm"] = keymap[i].point.xMm;
       key["yMm"] = keymap[i].point.yMm;
     }
-    sendJson(client_, doc);
+    enqueueJson(0, doc);
   }
 
   void sendProbeResult(const char* requestId, bool ok) {
@@ -414,7 +524,7 @@ class GroupCommandServer {
     writeMotor(motors, config_.topology.yRightMotorId);
     writeMotor(motors, config_.topology.lineFeedMotorId);
     writeMotor(motors, config_.topology.pressMotorId);
-    sendJson(client_, doc);
+    enqueueJson(0, doc);
   }
 
   void sendWifiStatus(const char* requestId) {
@@ -423,7 +533,7 @@ class GroupCommandServer {
     doc["type"] = "wifi_status";
     doc["requestId"] = requestId != nullptr ? requestId : "";
     writeWifiStatus(doc.createNestedObject("wifi"));
-    sendJson(client_, doc);
+    enqueueJson(0, doc);
   }
 
   void sendWifiNetworks(const char* requestId) {
@@ -445,7 +555,7 @@ class GroupCommandServer {
       doc["ok"] = false;
       doc["code"] = "wifi_scan_failed";
       doc["message"] = "WiFi scan failed";
-      sendJson(client_, doc);
+      enqueueJson(0, doc);
       return;
     }
     for (int i = 0; i < found && count < kMaxWifiNetworks; ++i) {
@@ -481,7 +591,7 @@ class GroupCommandServer {
       item["encryption"] = encryptionText(entries[i].encryption);
     }
     doc["ok"] = true;
-    sendJson(client_, doc);
+    enqueueJson(0, doc);
   }
 
   void sendWifiConfigResult(const char* requestId, bool ok, const char* code, const char* message) {
@@ -495,7 +605,7 @@ class GroupCommandServer {
     }
     doc["message"] = message != nullptr ? message : "";
     writeWifiStatus(doc.createNestedObject("wifi"));
-    sendJson(client_, doc);
+    enqueueJson(0, doc);
   }
 
   void sendWifiSetupFinished(const char* requestId, bool ok, const char* code, const char* message) {
@@ -509,7 +619,7 @@ class GroupCommandServer {
     }
     doc["message"] = message != nullptr ? message : "";
     writeWifiStatus(doc.createNestedObject("wifi"));
-    sendJson(client_, doc);
+    enqueueJson(0, doc);
   }
 
   void sendResetFaultResult(const char* requestId, bool ok) {
@@ -519,7 +629,7 @@ class GroupCommandServer {
     doc["requestId"] = requestId != nullptr ? requestId : "";
     doc["ok"] = ok;
     writeStatus(doc.createNestedObject("status"));
-    sendJson(client_, doc);
+    enqueueJson(0, doc);
   }
 
   void sendCancelResult(const char* requestId, bool ok) {
@@ -528,7 +638,7 @@ class GroupCommandServer {
     doc["type"] = "cancel_result";
     doc["requestId"] = requestId != nullptr ? requestId : "";
     doc["ok"] = ok;
-    sendJson(client_, doc);
+    enqueueJson(0, doc);
   }
 
   void sendGroupAccepted(const char* requestId, const char* groupId, uint32_t seq, size_t blockCount) {
@@ -539,7 +649,7 @@ class GroupCommandServer {
     doc["groupId"] = groupId != nullptr ? groupId : "";
     doc["seq"] = seq;
     doc["blockCount"] = blockCount;
-    sendJson(client_, doc);
+    enqueueJson(0, doc);
   }
 
   void sendGroupRejected(const char* requestId,
@@ -557,7 +667,7 @@ class GroupCommandServer {
     doc["seq"] = seq;
     doc["reason"] = reason != nullptr && reason[0] != '\0' ? reason : "invalid_group";
     doc["message"] = message != nullptr && message[0] != '\0' ? message : "Group rejected";
-    sendJson(client_, doc);
+    enqueueJson(0, doc);
   }
 
   void sendGroupStarted(const char* groupId) {
@@ -566,7 +676,7 @@ class GroupCommandServer {
     doc["type"] = "group_started";
     doc["groupId"] = groupId != nullptr ? groupId : "";
     doc["seq"] = app_.currentRemoteSeq();
-    sendJson(client_, doc);
+    enqueueJson(1, doc);
   }
 
   void sendBlockEvent(const char* type, const char* groupId, uint32_t seq, size_t blockIndex, const char* blockType) {
@@ -577,7 +687,7 @@ class GroupCommandServer {
     doc["seq"] = seq;
     doc["blockIndex"] = blockIndex;
     doc["blockType"] = blockType != nullptr ? blockType : "wait";
-    sendJson(client_, doc);
+    enqueueJson(1, doc);
   }
 
   void sendGroupDone(const char* groupId, uint32_t durationMs) {
@@ -592,7 +702,29 @@ class GroupCommandServer {
     const MachinePointMm current = app_.currentPoint();
     point["xMm"] = current.xMm;
     point["yMm"] = current.yMm;
-    sendJson(client_, doc);
+    enqueueJson(1, doc);
+  }
+
+  void sendGroupFinal(const char* groupId,
+                      uint32_t seq,
+                      const char* status,
+                      const char* code,
+                      const char* message,
+                      uint32_t durationMs) {
+    StaticJsonDocument<256> doc;
+    doc["v"] = 1;
+    doc["type"] = "group_final";
+    doc["groupId"] = groupId != nullptr ? groupId : "";
+    doc["seq"] = seq;
+    doc["status"] = status != nullptr && status[0] != '\0' ? status : "failed";
+    if (code != nullptr && code[0] != '\0') {
+      doc["code"] = code;
+    }
+    if (message != nullptr && message[0] != '\0') {
+      doc["message"] = message;
+    }
+    doc["durationMs"] = durationMs;
+    enqueueJson(0, doc);
   }
 
   void sendFault(const char* groupId, const char* code, const char* message) {
@@ -605,7 +737,7 @@ class GroupCommandServer {
     doc["seq"] = app_.currentRemoteSeq();
     doc["code"] = code != nullptr && code[0] != '\0' ? code : "fault";
     doc["message"] = message != nullptr && message[0] != '\0' ? message : "Motion fault";
-    sendJson(client_, doc);
+    enqueueJson(0, doc);
   }
 
   void sendMotorEvent(const MotorTelemetryEvent& event) {
@@ -623,7 +755,7 @@ class GroupCommandServer {
       doc["severity"] = "fault";
     }
     doc["timestampMs"] = event.timestampMs;
-    sendJson(client_, doc);
+    enqueueJson(2, doc);
   }
 
   void sendTelemetryOverflow() {
@@ -633,7 +765,7 @@ class GroupCommandServer {
     doc["code"] = "telemetry_overflow";
     doc["message"] = "Motor telemetry queue overflowed";
     doc["timestampMs"] = millis();
-    sendJson(client_, doc);
+    enqueueJson(2, doc);
   }
 
   void sendProtocolError(WiFiClient& client, const char* requestId, const char* code, const char* message) {
@@ -653,7 +785,10 @@ class GroupCommandServer {
     doc["v"] = 1;
     doc["type"] = "pong";
     doc["requestId"] = requestId != nullptr ? requestId : "";
-    sendJson(client_, doc);
+    if (!enqueueJson(0, doc, true)) {
+      log_.print("[tcp] pong enqueue failed requestId=");
+      log_.println(requestId != nullptr ? requestId : "");
+    }
   }
 
   void writeStatus(JsonObject status) {
@@ -1027,13 +1162,176 @@ class GroupCommandServer {
   }
 
   template <typename TDoc>
-  bool sendJson(WiFiClient& client, TDoc& doc) {
-    if (!client || !client.connected()) {
+  bool enqueueJson(uint8_t priority, TDoc& doc, bool quietSuccess = false) {
+    if (!client_ || !client_.connected()) {
       return false;
     }
-    serializeJson(doc, client);
-    client.write('\n');
+    String line;
+    serializeJson(doc, line);
+    size_t slot = kOutboundQueueCapacity;
+    for (size_t i = 0; i < kOutboundQueueCapacity; ++i) {
+      if (!outboundQueue_[i].used) {
+        slot = i;
+        break;
+      }
+    }
+    if (slot == kOutboundQueueCapacity) {
+      if (priority >= 3) {
+        return false;
+      }
+      for (size_t i = 0; i < kOutboundQueueCapacity; ++i) {
+        if (outboundQueue_[i].used && outboundQueue_[i].priority > priority) {
+          slot = i;
+          break;
+        }
+      }
+      if (slot == kOutboundQueueCapacity) {
+        return false;
+      }
+    }
+    outboundQueue_[slot].used = true;
+    outboundQueue_[slot].priority = priority;
+    outboundQueue_[slot].order = ++outboundOrder_;
+    outboundQueue_[slot].quietSuccess = quietSuccess;
+    outboundQueue_[slot].line = line;
     return true;
+  }
+
+  void flushOutboundQueue() {
+    if (!client_ || !client_.connected()) {
+      clearOutboundQueue();
+      return;
+    }
+    while (true) {
+      int selected = -1;
+      for (size_t i = 0; i < kOutboundQueueCapacity; ++i) {
+        if (!outboundQueue_[i].used) {
+          continue;
+        }
+        if (selected < 0 || outboundQueue_[i].priority < outboundQueue_[selected].priority ||
+            (outboundQueue_[i].priority == outboundQueue_[selected].priority &&
+             outboundQueue_[i].order < outboundQueue_[selected].order)) {
+          selected = static_cast<int>(i);
+        }
+      }
+      if (selected < 0) {
+        return;
+      }
+      sendLine(client_, outboundQueue_[selected].line, !outboundQueue_[selected].quietSuccess);
+      outboundQueue_[selected].used = false;
+      outboundQueue_[selected].quietSuccess = false;
+      outboundQueue_[selected].line = "";
+    }
+  }
+
+  void clearOutboundQueue() {
+    for (size_t i = 0; i < kOutboundQueueCapacity; ++i) {
+      outboundQueue_[i].used = false;
+      outboundQueue_[i].quietSuccess = false;
+      outboundQueue_[i].line = "";
+    }
+  }
+
+  DedupeEntry* findDedupeEntry(const char* requestId, const char* groupId, uint32_t seq) {
+    for (size_t i = 0; i < kDedupeLedgerCapacity; ++i) {
+      DedupeEntry& entry = dedupeLedger_[i];
+      if (!entry.used || entry.sessionId != clientSessionId_ || entry.seq != seq) {
+        continue;
+      }
+      const bool sameRequest = requestId != nullptr && requestId[0] != '\0' && strcmp(entry.requestId, requestId) == 0;
+      const bool sameGroup = groupId != nullptr && groupId[0] != '\0' && strcmp(entry.groupId, groupId) == 0;
+      if (sameRequest || sameGroup) {
+        return &entry;
+      }
+    }
+    return nullptr;
+  }
+
+  void replayDedupeEntry(const DedupeEntry& entry, const char* requestId) {
+    if (entry.accepted) {
+      sendGroupAccepted(requestId, entry.groupId, entry.seq, entry.blockCount);
+      return;
+    }
+    sendGroupRejected(requestId, entry.groupId, entry.seq, entry.reason, entry.message);
+  }
+
+  void recordDedupeEntry(const char* requestId,
+                         const char* groupId,
+                         uint32_t seq,
+                         bool accepted,
+                         const char* reason,
+                         const char* message,
+                         size_t blockCount) {
+    size_t slot = clientSessionId_ % kDedupeLedgerCapacity;
+    for (size_t i = 0; i < kDedupeLedgerCapacity; ++i) {
+      if (!dedupeLedger_[i].used) {
+        slot = i;
+        break;
+      }
+    }
+    DedupeEntry& entry = dedupeLedger_[slot];
+    entry.used = true;
+    entry.sessionId = clientSessionId_;
+    copyCString(entry.requestId, sizeof(entry.requestId), requestId);
+    copyCString(entry.groupId, sizeof(entry.groupId), groupId);
+    entry.seq = seq;
+    entry.accepted = accepted;
+    copyCString(entry.reason, sizeof(entry.reason), reason);
+    copyCString(entry.message, sizeof(entry.message), message);
+    entry.blockCount = blockCount;
+  }
+
+  void clearDedupeLedger() {
+    for (size_t i = 0; i < kDedupeLedgerCapacity; ++i) {
+      dedupeLedger_[i].used = false;
+    }
+  }
+
+  static void copyCString(char* out, size_t outSize, const char* value) {
+    if (outSize == 0) {
+      return;
+    }
+    const char* source = value != nullptr ? value : "";
+    size_t i = 0;
+    for (; i + 1 < outSize && source[i] != '\0'; ++i) {
+      out[i] = source[i];
+    }
+    out[i] = '\0';
+  }
+
+  template <typename TDoc>
+  bool sendJson(WiFiClient& client, TDoc& doc) {
+    if (!client || !client.connected()) {
+      logTxResult(0, 0, false);
+      return false;
+    }
+    String line;
+    serializeJson(doc, line);
+    return sendLine(client, line);
+  }
+
+  bool sendLine(WiFiClient& client, const String& line, bool logSuccess = true) {
+    if (!client || !client.connected()) {
+      logTxResult(line.length() + 1, 0, false);
+      return false;
+    }
+    const size_t txLen = line.length() + 1;
+    size_t written = client.print(line);
+    written += client.write('\n');
+    client.flush();
+    if (logSuccess || written != txLen || !client.connected()) {
+      logTxResult(txLen, written, client.connected());
+    }
+    return written == txLen;
+  }
+
+  void logTxResult(size_t txLen, size_t written, bool connected) {
+    log_.print("[tcp] tx_len=");
+    log_.print(txLen);
+    log_.print(" written=");
+    log_.print(written);
+    log_.print(" connected=");
+    log_.println(connected ? 1 : 0);
   }
 
   void disconnectClient() {
@@ -1044,6 +1342,7 @@ class GroupCommandServer {
     client_.stop();
     lineBuffer_ = "";
     handshaken_ = false;
+    clearOutboundQueue();
   }
 
   const TypingConfig& config_;
@@ -1057,6 +1356,12 @@ class GroupCommandServer {
   uint16_t telemetryIntervalMs_;
   uint32_t lastTelemetryMs_;
   uint32_t lastMotorStateUpdateMs_;
+  uint32_t clientConnectedAtMs_;
+  bool telemetryForcePending_;
+  OutboundEvent outboundQueue_[32];
+  uint32_t outboundOrder_;
+  DedupeEntry dedupeLedger_[8];
+  uint32_t clientSessionId_;
   bool setupApActive_;
   bool staConnecting_;
   bool savedCredentials_;
@@ -1064,6 +1369,8 @@ class GroupCommandServer {
   String setupSsid_;
   String setupPassword_;
   String lastWifiError_;
+  static constexpr size_t kOutboundQueueCapacity = 32;
+  static constexpr size_t kDedupeLedgerCapacity = 8;
   static constexpr uint16_t kMotorStateUpdateIntervalMs = 25;
   static constexpr size_t kMaxWifiNetworks = 24;
   static constexpr size_t kMaxWifiSsidLength = 32;

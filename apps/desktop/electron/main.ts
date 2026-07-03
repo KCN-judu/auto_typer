@@ -92,7 +92,12 @@ async function connectGroupStream(host: string, port: number): Promise<void> {
     if (deviceLink === link) {
       deviceLink = undefined;
     }
-    emitGroupStreamMessage({ v: 1, type: "fault", code: "disconnect", message: error.message || "TCP device disconnected" });
+    emitGroupStreamMessage({
+      v: 1,
+      type: "fault",
+      code: "transport_disconnect",
+      message: error.message || "TCP device disconnected",
+    });
   });
   deviceLink = link;
   try {

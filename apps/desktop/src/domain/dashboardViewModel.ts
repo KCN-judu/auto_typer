@@ -70,8 +70,8 @@ export function buildDashboardSummary(
   return {
     connection: {
       label: "连接",
-      value: connectionState === "connected" ? "ONLINE" : connectionState === "connecting" ? "CONNECTING" : connectionState === "fault" ? "FAULT" : "OFFLINE",
-      tone: connectionState === "connected" ? "ok" : connectionState === "fault" ? "fault" : "unknown",
+      value: connectionSummaryValue(connectionState),
+      tone: connectionState === "connected" ? "ok" : connectionState === "transport_fault" || connectionState === "desync" ? "fault" : "unknown",
     },
     mode: {
       label: "模式",
@@ -104,6 +104,21 @@ export function buildDashboardSummary(
       tone: can ? (can.fatalFault ? "fault" : can.driverReady && can.motionReady ? "ok" : "warning") : "unknown",
     },
   };
+}
+
+function connectionSummaryValue(connectionState: string): string {
+  switch (connectionState) {
+    case "connected":
+      return "ONLINE";
+    case "connecting":
+      return "CONNECTING";
+    case "desync":
+      return "DESYNC";
+    case "transport_fault":
+      return "TRANSPORT";
+    default:
+      return "OFFLINE";
+  }
 }
 
 function modeToTone(mode: DeviceMode): StatusTone {

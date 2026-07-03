@@ -7,6 +7,7 @@ import type {
   TaskGroup,
 } from "../../../../shared/protocol/auto-typer-protocol";
 import {
+  MAX_BLOCK_TIMEOUT_MS,
   MAX_BLOCKS_PER_GROUP,
   MAX_GROUP_RUNTIME_MS,
 } from "../../../../shared/protocol/auto-typer-protocol";
@@ -24,6 +25,7 @@ export type PlannedRemoteMotionGroup = TaskGroup & {
   sourceCharacter?: string;
   targetKeyLabel?: string;
   displayCoordinates?: MachinePointMm;
+  plannedBlocks: PlannedMotionBlock[];
   kind: MotionBlock["type"];
   estimatedRuntimeMs: number;
   absoluteMaxRuntimeMs: number;
@@ -46,11 +48,17 @@ export type GroupStreamPlan =
       warnings: string[];
     };
 
-const defaultMotion = { rpm: 2000, accelRaw: 128, timeoutMs: 3000 } as const;
-const pressMotion = { rpm: 3000, accelRaw: 255, timeoutMs: 3000 } as const;
+const moveXYMotion = { rpm: 1600, accelRaw: 128 } as const;
+const pressDownMotion = { rpm: 3000, accelRaw: 255, timeoutMs: 3000 } as const;
+const pressUpMotion = { rpm: 3000, accelRaw: 255, timeoutMs: 3000 } as const;
+const characterReleaseMotion = { rpm: 1600, accelRaw: 128, timeoutMs: 10000 } as const;
 const lineFeedMotion = { rpm: 1600, accelRaw: 128, timeoutMs: 10000 } as const;
 const maxGroups = 1024;
 const stepsPerMm = 80;
+const moveXYMinimumTimeoutMs = 5000;
+const moveXYBaseTimeoutMs = 3000;
+const moveXYTimeoutMsPerStep = 2;
+const maxEstimatedGroupRuntimeMs = Math.floor(MAX_GROUP_RUNTIME_MS / 2);
 
 export type GroupStreamPlanningOptions = {
   disableLineFeed?: boolean;
@@ -112,12 +120,15 @@ export function planTextToBlocks(
     const dxSteps = mmToSteps(target.xMm - current.xMm);
     const dySteps = mmToSteps(target.yMm - current.yMm);
     if (dxSteps !== 0 || dySteps !== 0) {
-      blocks.push({ block: { type: "move_xy", dxSteps, dySteps, ...defaultMotion }, ...meta });
+      blocks.push({
+        block: { type: "move_xy", dxSteps, dySteps, ...moveXYMotion, timeoutMs: moveXYTimeoutMs(dxSteps, dySteps) },
+        ...meta,
+      });
     }
-    blocks.push({ block: { type: "press_down", ...pressMotion }, ...meta });
-    blocks.push({ block: { type: "press_up", ...pressMotion }, ...meta });
+    blocks.push({ block: { type: "press_down", ...pressDownMotion }, ...meta });
+    blocks.push({ block: { type: "press_up", ...pressUpMotion }, ...meta });
     if (!disableLineFeed) {
-      blocks.push({ block: { type: "character_release", ...defaultMotion }, ...meta });
+      blocks.push({ block: { type: "character_release", ...characterReleaseMotion }, ...meta });
     }
     current = target;
   }
@@ -130,17 +141,23 @@ export function planTextToBlocks(
 
 export function chunkBlocksIntoGroups(blocks: PlannedMotionBlock[], jobId: string): PlannedRemoteMotionGroup[] {
   const groups: PlannedRemoteMotionGroup[] = [];
-  for (let index = 0; index < blocks.length; index += MAX_BLOCKS_PER_GROUP) {
-    const chunk = blocks.slice(index, index + MAX_BLOCKS_PER_GROUP);
+  let chunk: PlannedMotionBlock[] = [];
+  let chunkRuntimeMs = 0;
+
+  const flush = () => {
+    if (chunk.length === 0) {
+      return;
+    }
     const seq = groups.length;
     const first = chunk[0];
-    const estimatedRuntimeMs = estimateGroupRuntimeMs(chunk.map((entry) => entry.block));
-    const absoluteMaxRuntimeMs = Math.max(Math.ceil(estimatedRuntimeMs * 2), 12000);
+    const estimatedRuntimeMs = chunkRuntimeMs;
+    const absoluteMaxRuntimeMs = Math.min(Math.max(Math.ceil(estimatedRuntimeMs * 2), 12000), MAX_GROUP_RUNTIME_MS);
     groups.push({
       groupId: `${jobId}-${String(seq).padStart(4, "0")}`,
       seq,
-      policy: { maxRuntimeMs: Math.min(absoluteMaxRuntimeMs, MAX_GROUP_RUNTIME_MS), onDisconnect: "cancel" },
+      policy: { maxRuntimeMs: absoluteMaxRuntimeMs, onDisconnect: "cancel" },
       blocks: chunk.map((entry) => entry.block),
+      plannedBlocks: chunk,
       kind: first?.block.type ?? "wait",
       sourceCharacter: first?.sourceCharacter,
       targetKeyLabel: first?.targetKeyLabel,
@@ -148,7 +165,22 @@ export function chunkBlocksIntoGroups(blocks: PlannedMotionBlock[], jobId: strin
       estimatedRuntimeMs,
       absoluteMaxRuntimeMs,
     });
+    chunk = [];
+    chunkRuntimeMs = 0;
+  };
+
+  for (const plannedBlock of blocks) {
+    const blockRuntimeMs = estimateGroupRuntimeMs([plannedBlock.block]);
+    const wouldExceedCount = chunk.length >= MAX_BLOCKS_PER_GROUP;
+    const wouldExceedRuntime =
+      chunk.length > 0 && chunkRuntimeMs + blockRuntimeMs > maxEstimatedGroupRuntimeMs;
+    if (wouldExceedCount || wouldExceedRuntime) {
+      flush();
+    }
+    chunk.push(plannedBlock);
+    chunkRuntimeMs += blockRuntimeMs;
   }
+  flush();
   return groups;
 }
 
@@ -173,12 +205,28 @@ export function planTextToRemoteMotionGroups(
 ): GroupStreamPlan {
   const plan = planTextToBlocks(text, keymap, initialPoint, options);
   const groups = chunkBlocksIntoGroups(plan.blocks, jobId);
+  if (!plan.ok) {
+    return { ...plan, groups } as GroupStreamPlan;
+  }
+  if (groups.length > maxGroups) {
+    return planFailed("plan_full", "任务组数量超过上限", undefined, plan.blocks, plan.warnings);
+  }
   return { ...plan, groups } as GroupStreamPlan;
 }
 
 function mmToSteps(deltaMm: number): number {
   const steps = Math.abs(deltaMm) * stepsPerMm;
   return deltaMm >= 0 ? Math.round(steps) : -Math.round(steps);
+}
+
+function moveXYTimeoutMs(dxSteps: number, dySteps: number): number {
+  const distanceSteps = Math.max(Math.abs(dxSteps), Math.abs(dySteps));
+  const timeoutMs = moveXYBaseTimeoutMs + distanceSteps * moveXYTimeoutMsPerStep;
+  return clamp(timeoutMs, moveXYMinimumTimeoutMs, MAX_BLOCK_TIMEOUT_MS);
+}
+
+function clamp(value: number, minValue: number, maxValue: number): number {
+  return Math.min(Math.max(value, minValue), maxValue);
 }
 
 function planFailed(

@@ -38,6 +38,15 @@ enum class JobState : uint8_t {
   Failed,
 };
 
+enum class RemoteGroupState : uint8_t {
+  Idle,
+  Queued,
+  Running,
+  Completed,
+  Failed,
+  Cancelled,
+};
+
 enum class DeviceMode : uint8_t {
   Idle,
   Running,

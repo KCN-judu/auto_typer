@@ -289,8 +289,8 @@ function yOnlyFrames(yLeftSteps) {
   const steps = Math.abs(yLeftSteps);
   return moveRelativeBatch(
     [
-      { motorId: 2, direction, rpm: 1600, acceleration: 128, steps, sync: true },
-      { motorId: 3, direction: mirrored, rpm: 1600, acceleration: 128, steps, sync: true },
+      { motorId: 2, direction, rpm: 2000, acceleration: 128, steps, sync: true },
+      { motorId: 3, direction: mirrored, rpm: 2000, acceleration: 128, steps, sync: true },
     ],
     true,
   );
@@ -301,9 +301,9 @@ function xyFrames({ xSteps, yLeftSteps }) {
   const yMirrored = yDirection === "cw" ? "ccw" : "cw";
   return moveRelativeBatch(
     [
-      { motorId: 1, direction: xSteps >= 0 ? "cw" : "ccw", rpm: 1600, acceleration: 128, steps: Math.abs(xSteps), sync: true },
-      { motorId: 2, direction: yDirection, rpm: 1600, acceleration: 128, steps: Math.abs(yLeftSteps), sync: true },
-      { motorId: 3, direction: yMirrored, rpm: 1600, acceleration: 128, steps: Math.abs(yLeftSteps), sync: true },
+      { motorId: 1, direction: xSteps >= 0 ? "cw" : "ccw", rpm: 2000, acceleration: 128, steps: Math.abs(xSteps), sync: true },
+      { motorId: 2, direction: yDirection, rpm: 2000, acceleration: 128, steps: Math.abs(yLeftSteps), sync: true },
+      { motorId: 3, direction: yMirrored, rpm: 2000, acceleration: 128, steps: Math.abs(yLeftSteps), sync: true },
     ],
     true,
   );
@@ -531,6 +531,7 @@ const autoTyperIno = readFileSync(new URL("../auto_typer.ino", import.meta.url),
 const appTsx = readFileSync(new URL("../../../apps/desktop/src/ui/App.tsx", import.meta.url), "utf8");
 const groupStreamPlanner = readFileSync(new URL("../../../apps/desktop/src/domain/groupStreamPlanner.ts", import.meta.url), "utf8");
 const deviceLink = readFileSync(new URL("../../../apps/desktop/electron/device-link.ts", import.meta.url), "utf8");
+const electronMain = readFileSync(new URL("../../../apps/desktop/electron/main.ts", import.meta.url), "utf8");
 
 assert.match(canRxTask, /class MotorTelemetryBuffer/, "CAN data plane must define a bounded motor telemetry buffer");
 assert.match(canRxTask, /void observe\(const EmmV5Event& event, const MotorFeedbackStore& feedback\)/, "Telemetry buffer must observe parsed EMM events");
@@ -559,6 +560,17 @@ assert.match(groupCommandServer, /drainDirtyMotorStates/, "TCP server must drain
 assert.match(groupCommandServer, /type"\]\s*=\s*"motor_event"/, "TCP server must emit motor_event messages");
 assert.match(groupCommandServer, /type"\]\s*=\s*"motor_state_update"/, "TCP server must emit motor_state_update messages");
 assert.match(groupCommandServer, /type"\]\s*=\s*"telemetry_overflow"/, "TCP server must emit telemetry overflow warnings");
+assert.match(groupCommandServer, /struct OutboundEvent/, "TCP server must define an outbound priority queue");
+assert.match(groupCommandServer, /enqueueJson\(0,\s*doc\)/, "TCP server must enqueue priority-0 protocol responses and finals");
+assert.match(groupCommandServer, /enqueueJson\(1,\s*doc\)/, "TCP server must enqueue priority-1 execution progress events");
+assert.match(groupCommandServer, /enqueueJson\(2,\s*doc\)/, "TCP server must enqueue priority-2 motor feedback events");
+assert.match(groupCommandServer, /enqueueJson\(3,\s*doc\)/, "TCP server must enqueue priority-3 telemetry snapshots");
+assert.match(groupCommandServer, /flushOutboundQueue/, "TCP server must drain queued outbound events by priority");
+assert.match(groupCommandServer, /requestTelemetrySnapshot/, "TCP server command handlers must defer telemetry snapshots out of readClient");
+assert.match(groupCommandServer, /struct DedupeEntry/, "TCP server must keep a per-session exec_group dedupe ledger");
+assert.match(groupCommandServer, /findDedupeEntry\(requestId,\s*groupId,\s*seq\)/, "exec_group admission must check dedupe before enqueueing runtime work");
+assert.match(groupCommandServer, /recordDedupeEntry/, "exec_group admission must record accepted and rejected outcomes");
+assert.match(groupCommandServer, /sendGroupFinal/, "TCP server must emit normalized group_final events");
 assert.match(groupCommandServer, /kMotorStateUpdateIntervalMs\s*=\s*25/, "Dirty motor state flush interval must be 20-50 ms");
 assert.match(groupCommandServer, /hasVelocity/, "Motor state updates must include hasVelocity");
 assert.match(groupCommandServer, /hasInputPulse/, "Motor state updates must include hasInputPulse");
@@ -590,15 +602,27 @@ assert.match(motionExecutor, /minimumMotionMs/, "Tier B completion must be delay
 assert.match(motionExecutor, /motion_feedback_timeout/, "No useful feedback must still fault with motion_feedback_timeout");
 assert.match(motionExecutor, /yPairSkewCheckReady/, "Y skew checks must be conditional on usable paired feedback");
 
+assert.match(autoTyperRuntime, /RemoteGroupState/, "Runtime must represent remote group state explicitly");
+assert.match(autoTyperRuntime, /finalizeRemoteGroup\("failed",\s*faultCode_,\s*faultMessage_/, "Remote execution faults must finalize failed groups");
+assert.match(autoTyperRuntime, /consumeRemoteGroupFinal/, "Runtime must expose a single remote final event latch");
+assert.match(autoTyperRuntime, /remoteFinalPending_/, "Runtime must retain active remote group identity until final is consumed");
+assert.match(autoTyperRuntime, /finalizeRemoteGroup\("cancelled"/, "Runtime cancel path must finalize remote groups as cancelled");
+
 assert.match(sharedProtocol, /export type MotorEventKind/, "Shared protocol must type motor event kinds");
 assert.match(sharedProtocol, /export type MotorEventMessage/, "Shared protocol must type motor_event messages");
 assert.match(sharedProtocol, /export type MotorStateUpdateMessage/, "Shared protocol must type motor_state_update messages");
 assert.match(sharedProtocol, /export type TelemetryOverflowMessage/, "Shared protocol must type telemetry overflow messages");
+assert.match(sharedProtocol, /type: "group_final"/, "Shared protocol must type normalized group_final events");
+assert.match(sharedProtocol, /status: GroupFinalStatus/, "group_final must carry done/failed/cancelled status");
+assert.match(sharedProtocol, /"pong"/, "Shared terminal response types must include real pong responses");
 assert.doesNotMatch(sharedProtocol, /required_motor_not_ready/, "Shared normal group rejection reasons must not include required_motor_not_ready");
 
 assert.match(appTsx, /applyMotorStateUpdate/, "Dashboard reducer must apply motor_state_update messages");
 assert.match(appTsx, /applyMotorEvent/, "Dashboard reducer must apply motor_event messages");
 assert.match(appTsx, /lastUpdatedAtMs/, "Desktop must track motor telemetry freshness timestamps");
+assert.match(appTsx, /message\.type === "group_final"/, "Print flow must wait for group_final execution completion");
+assert.match(appTsx, /execution_timeout/, "Print flow must label execution timeouts distinctly");
+assert.match(appTsx, /motion_feedback_timeout/, "Print flow must surface motion feedback timeout codes");
 assert.doesNotMatch(appTsx, /streamClient\.probe\(\);[\s\S]*setPrintTask\(\(task\) => \(\{ \.\.\.task, running: true/, "Print flow must not probe only to populate readiness before printing");
 assert.doesNotMatch(appTsx, /client\.probeMotors|isLineFeedMotorReady|lineFeedAvailable|!lineFeedAvailable/, "Print flow must not block or degrade because telemetry is unknown");
 
@@ -607,6 +631,17 @@ assert.match(sharedProtocol, /type: "exec_group"[\s\S]*blocks: MotionBlock\[\]/,
 assert.match(groupStreamPlanner, /dxSteps/, "Planner must keep current step-based block schema");
 assert.doesNotMatch(groupStreamPlanner, /dxMm:|dyMm:/, "This patch must not move planner back to mm-based group schema");
 assert.doesNotMatch(deviceLink, /type: "debug_|type: "settings|put_keymap|set_wifi/, "This patch must not add broad new control commands");
+assert.match(deviceLink, /groupAdmissionTimeoutMs\s*=\s*3000/, "DeviceLink exec_group admission timeout must default to 3000ms");
+assert.match(deviceLink, /submit_timeout/, "DeviceLink must label exec_group admission timeouts");
+assert.match(deviceLink, /desync_pending/, "DeviceLink must mark admission timeout as desync pending");
+assert.match(deviceLink, /socket\.write\(line,\s*"utf8",/, "DeviceLink writes must wait for socket write callbacks");
+assert.match(deviceLink, /\"drain\"/, "DeviceLink writes must handle backpressure drain");
+assert.match(deviceLink, /transport_write_timeout/, "DeviceLink writes must have a timeout");
+assert.match(deviceLink, /terminalTypesFor\(commandType/, "DeviceLink must use command-specific terminal response sets");
+assert.match(deviceLink, /commandType === "exec_group"[\s\S]*group_accepted[\s\S]*group_rejected[\s\S]*protocol_error/, "exec_group must resolve only to admission responses");
+assert.match(deviceLink, /cancelRequestedFor/, "DeviceLink must suppress repeated cancel storms for an active group");
+assert.doesNotMatch(deviceLink, /return \{ v: 1, type: "pong"/, "DeviceLink must not fabricate local ping responses");
+assert.match(electronMain, /transport_disconnect/, "TCP disconnect logs must use transport_disconnect");
 assert.match(autoTyperIno, /gGroupServer\.tick\(\);[\s\S]*gApp\.tick\(\);[\s\S]*delay\(1\)/, "Sketch loop must keep the current TCP/app lifecycle");
 
 console.log("telemetry and anti-blocking regression tests passed");

@@ -44,6 +44,7 @@ export const TCP_TERMINAL_RESPONSE_TYPES = [
   "group_accepted",
   "group_rejected",
   "protocol_error",
+  "pong",
 ] as const;
 
 export const MOTION_BLOCK_TYPES = [
@@ -388,6 +389,8 @@ export type CancelMessage = {
   v: 1;
   requestId: string;
   type: "cancel";
+  groupId?: string;
+  seq?: number;
 };
 
 export type ResetFaultMessage = {
@@ -576,6 +579,19 @@ export type GroupDoneMessage = {
   currentPoint?: MachinePointMm;
 };
 
+export type GroupFinalStatus = "done" | "failed" | "cancelled";
+
+export type GroupFinalMessage = {
+  v: 1;
+  type: "group_final";
+  groupId: string;
+  seq: number;
+  status: GroupFinalStatus;
+  code?: string;
+  message?: string;
+  durationMs?: number;
+};
+
 export type GroupFaultMessage = {
   v: 1;
   type: "fault";
@@ -639,6 +655,7 @@ export type GroupStreamEventMessage =
   | BlockStartedMessage
   | BlockDoneMessage
   | GroupDoneMessage
+  | GroupFinalMessage
   | GroupFaultMessage
   | ProtocolErrorMessage
   | TelemetryMessage
