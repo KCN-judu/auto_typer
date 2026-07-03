@@ -23,9 +23,9 @@ inline Feiyu200LayoutConfig defaultFeiyu200LayoutConfig() {
   config.rowY[3] = 49.0f;
   config.rowY[4] = 30.0f;
   config.rowOffsets[0] = 0.0f;
-  config.rowOffsets[1] = 62.5f;
+  config.rowOffsets[1] = 22.5f;
   config.rowOffsets[2] = 25.0f;
-  config.rowOffsets[3] = 77.5f;
+  config.rowOffsets[3] = 37.5f;
   config.rowOffsets[4] = 137.5f;
   return config;
 }

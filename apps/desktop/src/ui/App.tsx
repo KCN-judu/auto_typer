@@ -60,6 +60,7 @@ type PrintTaskState = {
 };
 
 const defaultPort = 7777;
+const returnZeroMotion = { rpm: 1600, accelRaw: 128, timeoutMs: 10000 } as const;
 
 export function App() {
   const [view, setView] = useState<View>("dashboard");
@@ -89,6 +90,7 @@ export function App() {
   const printTaskRef = useRef(printTask);
   const activeGroupIdRef = useRef<string | undefined>();
   const activeGroupSeqRef = useRef<number | undefined>();
+  const returnZeroAfterCancelRef = useRef(false);
 
   useEffect(() => {
     printTaskRef.current = printTask;
@@ -178,17 +180,21 @@ export function App() {
       const message = error instanceof Error ? error.message : "任务组流失败";
       const watchdogCancelled = message.startsWith("execution_timeout:");
       const userCancelled = message.startsWith("group_cancelled:");
-      setPrintTask((task) => ({
-        ...task,
-        running: false,
-        stream: userCancelled ? "connected" : "fault",
-        currentLabel: "",
-        fault: watchdogCancelled ? `desktop execution watchdog cancelled group: ${message}` : message,
-      }));
+      if (!returnZeroAfterCancelRef.current) {
+        setPrintTask((task) => ({
+          ...task,
+          running: false,
+          stream: userCancelled ? "connected" : "fault",
+          currentLabel: "",
+          fault: watchdogCancelled ? `desktop execution watchdog cancelled group: ${message}` : message,
+        }));
+      }
       appendLog(message);
     } finally {
-      activeGroupIdRef.current = undefined;
-      activeGroupSeqRef.current = undefined;
+      if (!returnZeroAfterCancelRef.current) {
+        activeGroupIdRef.current = undefined;
+        activeGroupSeqRef.current = undefined;
+      }
     }
   }
 
@@ -256,13 +262,51 @@ export function App() {
   }
 
   async function cancelJob() {
+    const cancellingGroup = activeGroupIdRef.current && activeGroupSeqRef.current !== undefined
+      ? { groupId: activeGroupIdRef.current, seq: activeGroupSeqRef.current }
+      : undefined;
     try {
+      returnZeroAfterCancelRef.current = true;
       printTaskRef.current = { ...printTaskRef.current, running: false };
       setPrintTask((task) => ({ ...task, running: false }));
       const result = await streamClient.cancel();
       appendLog(result.ok ? "已取消任务组流" : "取消被拒绝");
+      if (result.ok) {
+        if (cancellingGroup) {
+          const outcome = await waitForGroupDone({ ...cancellingGroup, policy: { maxRuntimeMs: 12000, onDisconnect: "cancel" }, blocks: [] });
+          appendLog(`取消完成：${outcome.status}`);
+        }
+        await runReturnZeroAfterCancel();
+      }
     } catch (error) {
       appendLog(error instanceof Error ? error.message : "取消失败");
+    } finally {
+      returnZeroAfterCancelRef.current = false;
+    }
+  }
+
+  async function runReturnZeroAfterCancel() {
+    const group: TaskGroup = {
+      groupId: `return-zero-${Date.now().toString(36)}`,
+      seq: 0,
+      policy: { maxRuntimeMs: 20000, onDisconnect: "cancel" },
+      blocks: [{ type: "return_zero", ...returnZeroMotion }],
+    };
+    activeGroupIdRef.current = group.groupId;
+    activeGroupSeqRef.current = group.seq;
+    setPrintTask((task) => ({ ...task, stream: "running", currentLabel: "return_zero", fault: undefined }));
+    appendLog("取消后自动回零开始");
+    try {
+      await streamClient.sendExecGroup(group);
+      const outcome = await waitForGroupDone(group);
+      if (outcome.status !== "done") {
+        throw new Error(`${outcome.code ?? `group_${outcome.status}`}: ${outcome.message ?? outcome.status}`);
+      }
+      appendLog("取消后自动回零完成");
+      setPrintTask((task) => ({ ...task, stream: "connected", currentLabel: "" }));
+    } finally {
+      activeGroupIdRef.current = undefined;
+      activeGroupSeqRef.current = undefined;
     }
   }
 

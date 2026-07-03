@@ -87,11 +87,7 @@ class AutoTyperApplication {
 
   void setup() {
     buildKeymap();
-    const bool loadedKeymap = keymapStore_.load(keymap_, sizeof(keymap_) / sizeof(keymap_[0]), keymapCount_);
-    if (!loadedKeymap || keymapStore_.layoutVersion() != kFeiyu200KeymapLayoutVersion) {
-      buildKeymap();
-      keymapStore_.save(keymap_, keymapCount_, kFeiyu200KeymapLayoutVersion);
-    }
+    keymapStore_.save(keymap_, keymapCount_);
     printBanner();
 
     Wire.begin(6, 7);

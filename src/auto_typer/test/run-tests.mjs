@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 const keys = "1234567890-qwertyuiopasdfghjkl;'zxcvbnm,.- ".split("");
 const keyPitchX = 19.25;
 const originX = 18.75;
-const rowOffsets = [0, 62.5, 25, 77.5, 137.5];
+const rowOffsets = [0, 22.5, 25, 37.5, 137.5];
 const rowY = [106, 87, 68, 49, 30];
 const physicalRows = ["1234567890-=", "qwertyuiop[]", "asdfghjkl;'", "zxcvbnm,./"];
 const keySet = new Set(keys);
@@ -354,9 +354,9 @@ const keymap = buildKeymap();
 
 assert.equal(keymap.length, keySet.size, "Feiyu 200 key count changed");
 assert.deepEqual(lookupKey("1", keymap), { xMm: 18.75, yMm: 106 });
-assert.deepEqual(lookupKey("q", keymap), { xMm: 81.25, yMm: 87 });
+assert.deepEqual(lookupKey("q", keymap), { xMm: 41.25, yMm: 87 });
 assert.deepEqual(lookupKey("a", keymap), { xMm: 43.75, yMm: 68 });
-assert.deepEqual(lookupKey("z", keymap), { xMm: 96.25, yMm: 49 });
+assert.deepEqual(lookupKey("z", keymap), { xMm: 56.25, yMm: 49 });
 assert.deepEqual(lookupKey(" ", keymap), { xMm: 156.25, yMm: 30 });
 
 const charPlan = planText("a", keymap, config);
@@ -533,6 +533,10 @@ const appTsx = readFileSync(new URL("../../../apps/desktop/src/ui/App.tsx", impo
 const groupStreamPlanner = readFileSync(new URL("../../../apps/desktop/src/domain/groupStreamPlanner.ts", import.meta.url), "utf8");
 const deviceLink = readFileSync(new URL("../../../apps/desktop/electron/device-link.ts", import.meta.url), "utf8");
 const electronMain = readFileSync(new URL("../../../apps/desktop/electron/main.ts", import.meta.url), "utf8");
+const firmwareSetupBody = autoTyperRuntime.slice(
+  autoTyperRuntime.indexOf("void setup()"),
+  autoTyperRuntime.indexOf("printBanner();"),
+);
 
 assert.match(canRxTask, /class MotorTelemetryBuffer/, "CAN data plane must define a bounded motor telemetry buffer");
 assert.match(canRxTask, /void observe\(const EmmV5Event& event, const MotorFeedbackStore& feedback\)/, "Telemetry buffer must observe parsed EMM events");
@@ -551,6 +555,8 @@ assert.match(canRxTask, /RealtimeAngleFeedback[\s\S]*markDirtyMotor/, "Realtime 
 assert.match(canRxTask, /StatusFlagsFeedback[\s\S]*markDirtyMotor/, "Status flags feedback must mark motor state dirty");
 assert.doesNotMatch(canRxTask, /WiFiClient|serializeJson|client_\.write|sendJson/, "CAN RX task must not perform TCP/socket IO");
 
+assert.match(firmwareSetupBody, /buildKeymap\(\);[\s\S]*keymapStore_\.save\(keymap_,\s*keymapCount_\)/, "Firmware setup must overwrite stored keymap with the fixed default table");
+assert.doesNotMatch(firmwareSetupBody, /keymapStore_\.load|layoutVersion\(\)/, "Firmware setup must not keep old stored keymap coordinates based on layout version");
 assert.match(autoTyperIno, /MotorTelemetryBuffer gMotorTelemetry/, "Sketch must own the motor telemetry buffer");
 assert.match(autoTyperIno, /CanRxTask gCanRx\(gCanBus,\s*gFeedback,\s*gEvents,\s*gTrace,\s*&gMotorTelemetry\)/, "CAN RX task must observe telemetry through the buffer");
 assert.match(autoTyperIno, /GroupCommandServer gGroupServer\(kConfig,\s*gApp,\s*gMotorTelemetry,\s*Serial\)/, "Existing TCP server must drain the telemetry buffer");

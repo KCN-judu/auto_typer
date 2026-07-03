@@ -12,7 +12,7 @@ export const poetryFeiyu200KeyCount = poetryFeiyu200Keys.length;
 const poetryKeyOrder = new Map(poetryFeiyu200Keys.map((key, index) => [key, index]));
 const feiyu200KeyPitchX = 19.25;
 const feiyu200OriginX = 18.75;
-const feiyu200RowOffsets = [0, 62.5, 25, 77.5, 137.5] as const;
+const feiyu200RowOffsets = [0, 22.5, 25, 37.5, 137.5] as const;
 const feiyu200RowY = [106, 87, 68, 49, 30] as const;
 const feiyu200PhysicalRows = ["1234567890-=", "qwertyuiop[]", "asdfghjkl;'", "zxcvbnm,./"] as const;
 
