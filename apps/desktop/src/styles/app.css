@@ -484,6 +484,33 @@ label.checkbox.compact {
   margin-top: 14px;
 }
 
+.networkList {
+  margin-top: 12px;
+  display: grid;
+  gap: 6px;
+}
+
+.networkRow {
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  background: #fffdf8;
+  color: var(--ink);
+  text-align: left;
+}
+
+.networkRow span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .bindingTable {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

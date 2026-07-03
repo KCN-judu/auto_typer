@@ -4,9 +4,73 @@ export type DeviceHealth = "unknown" | "ok" | "not_ready" | "warning" | "fault";
 
 export type MotorDirection = "cw" | "ccw";
 
-export type ServoCommand = "press" | "release" | "neutral";
-
 export type MotorRole = "x" | "y_left" | "y_right" | "line_feed" | "press";
+
+export const MAX_BLOCKS_PER_GROUP = 32;
+export const MAX_TCP_MESSAGE_BYTES = 8192;
+export const MIN_TELEMETRY_INTERVAL_MS = 50;
+export const MAX_TELEMETRY_INTERVAL_MS = 2000;
+export const MAX_GROUP_RUNTIME_MS = 30000;
+export const MAX_BLOCK_TIMEOUT_MS = 10000;
+
+export const TCP_COMMAND_TYPES = [
+  "hello",
+  "get_status",
+  "subscribe_telemetry",
+  "get_keymap",
+  "get_wifi_status",
+  "scan_wifi",
+  "configure_wifi",
+  "finish_wifi_setup",
+  "probe",
+  "reset_fault",
+  "cancel",
+  "exec_group",
+  "ping",
+] as const;
+
+export const TCP_TERMINAL_RESPONSE_TYPES = [
+  "hello_ack",
+  "status",
+  "telemetry_subscribed",
+  "keymap",
+  "wifi_status",
+  "wifi_networks",
+  "wifi_config_result",
+  "wifi_setup_finished",
+  "probe_result",
+  "reset_fault_result",
+  "cancel_result",
+  "group_accepted",
+  "group_rejected",
+  "protocol_error",
+] as const;
+
+export const MOTION_BLOCK_TYPES = [
+  "move_xy",
+  "press_down",
+  "press_up",
+  "character_release",
+  "line_feed",
+  "wait",
+] as const;
+
+export type TcpCommandType = (typeof TCP_COMMAND_TYPES)[number];
+export type TcpTerminalResponseType = (typeof TCP_TERMINAL_RESPONSE_TYPES)[number];
+export type MotionBlockType = (typeof MOTION_BLOCK_TYPES)[number];
+
+export type MotorTelemetryRole = "X" | "YLeft" | "YRight" | "LineFeed" | "Press" | "Unknown";
+
+export type MotorEventKind =
+  | "ack"
+  | "condition_not_met"
+  | "malformed"
+  | "motion_reached"
+  | "velocity"
+  | "input_pulse"
+  | "realtime_angle"
+  | "status_flags"
+  | "unknown";
 
 export type MotorReadiness =
   | "unknown"
@@ -42,7 +106,7 @@ export interface DeviceStatus {
   mode: DeviceMode;
   health: DeviceHealth;
   wifiRssi: number;
-  servoReady: boolean;
+  pressReady: boolean;
   motionReady: boolean;
   keymapVersion: number;
   currentJob?: JobStatus;
@@ -77,25 +141,6 @@ export interface CanBusDiagnostics {
   lastCommandQueueError: string;
   lastFaultCode: string;
   lastFaultMessage: string;
-}
-
-export interface CreateJobRequest {
-  text: string;
-  options?: {
-    dryRun?: boolean;
-    startAtHome?: boolean;
-  };
-}
-
-export interface CreateJobResponse {
-  jobId?: string;
-  accepted: boolean;
-  planStatus: "ok" | "key_not_found" | "plan_full" | "device_fault" | "device_busy" | "device_not_ready";
-  rejectionCode?: string;
-  rejectionMessage?: string;
-  fault?: DeviceFault;
-  failedKey?: string;
-  stepCount: number;
 }
 
 export interface JobStatus {
@@ -145,6 +190,53 @@ export interface MotorState {
   lastErrorMessage: string;
 }
 
+export type MotorEventMessage = {
+  v: 1;
+  type: "motor_event";
+  motorId: number;
+  role: MotorTelemetryRole;
+  eventKind: MotorEventKind;
+  data: {
+    command?: string;
+    velocityRpm?: number;
+    inputPulseSteps?: number;
+    angleRaw?: number;
+    angleDeg?: number;
+    statusFlags?: number;
+  };
+  severity?: "info" | "warning" | "fault";
+  timestampMs: number;
+};
+
+export type MotorStateUpdateMessage = {
+  v: 1;
+  type: "motor_state_update";
+  motors: Array<{
+    motorId: number;
+    role: MotorTelemetryRole;
+    readiness: MotorReadiness;
+    hasVelocity: boolean;
+    velocityRpm?: number;
+    hasInputPulse: boolean;
+    inputPulseSteps?: number;
+    hasRealtimeAngle: boolean;
+    angleRaw?: number;
+    angleDeg?: number;
+    hasStatusFlags: boolean;
+    statusFlags?: number;
+    lastUpdatedAtMs: number;
+  }>;
+  timestampMs: number;
+};
+
+export type TelemetryOverflowMessage = {
+  v: 1;
+  type: "telemetry_overflow";
+  code: "telemetry_overflow";
+  message: string;
+  timestampMs: number;
+};
+
 export interface ProtocolTraceItem {
   timeMs: number;
   dir: "tx_queued" | "tx_sent" | "tx_retry" | "rx";
@@ -170,9 +262,20 @@ export interface ProtocolTraceResponse {
   };
 }
 
-export type WifiSetupPhase = "idle" | "connecting" | "connected" | "failed" | "no_credentials";
+export type WifiPhase = "connected" | "connecting" | "no_credentials" | "failed" | "idle";
 
-export interface WifiSetupStatusResponse {
+export type WifiEncryption =
+  | "open"
+  | "wep"
+  | "wpa"
+  | "wpa2"
+  | "wpa_wpa2"
+  | "wpa2_enterprise"
+  | "wpa3"
+  | "wpa2_wpa3"
+  | "unknown";
+
+export interface WifiStatus {
   setupApActive: boolean;
   setupSsid: string;
   setupPassword: string;
@@ -183,7 +286,7 @@ export interface WifiSetupStatusResponse {
   ipAddress: string;
   wifiRssi: number;
   savedCredentials: boolean;
-  phase: WifiSetupPhase;
+  phase: WifiPhase;
   lastError?: string;
 }
 
@@ -191,265 +294,359 @@ export interface WifiNetwork {
   ssid: string;
   rssi: number;
   channel: number;
-  encryption: string;
-  secure: boolean;
-}
-
-export interface WifiNetworksResponse {
-  networks: WifiNetwork[];
-}
-
-export interface WifiConfigRequest {
-  ssid: string;
-  password: string;
+  encryption: WifiEncryption;
 }
 
 export type RemoteMotionProfile = {
-  rpm?: number;
-  accelRaw?: number;
-  timeoutMs?: number;
+  rpm: number;
+  accelRaw: number;
+  timeoutMs: number;
 };
 
-export type RemoteMotionStep =
-  | { kind: "move_xy"; dxMm: number; dyMm: number; profile?: RemoteMotionProfile }
-  | { kind: "servo_press" }
-  | { kind: "servo_release" }
-  | { kind: "character_release" }
-  | { kind: "line_feed" }
-  | { kind: "wait"; durationMs: number };
+export type MotionBlock =
+  | ({ type: "move_xy"; dxSteps: number; dySteps: number } & RemoteMotionProfile)
+  | ({ type: "press_down" } & RemoteMotionProfile)
+  | ({ type: "press_up" } & RemoteMotionProfile)
+  | ({ type: "character_release" } & RemoteMotionProfile)
+  | ({ type: "line_feed"; lines: number } & RemoteMotionProfile)
+  | { type: "wait"; durationMs: number };
 
-export type RemoteMotionGroup = {
-  steps: RemoteMotionStep[];
+export type TaskGroupPolicy = {
+  maxRuntimeMs: number;
+  onDisconnect: "cancel";
+};
+
+export type TaskGroup = {
+  groupId: string;
+  seq: number;
+  policy: TaskGroupPolicy;
+  blocks: MotionBlock[];
 };
 
 export type HelloMessage = {
   v: 1;
-  id: string;
+  requestId: string;
   type: "hello";
-  client: "desktop";
+};
+
+export type GetStatusMessage = {
+  v: 1;
+  requestId: string;
+  type: "get_status";
+};
+
+export type SubscribeTelemetryMessage = {
+  v: 1;
+  requestId: string;
+  type: "subscribe_telemetry";
+  intervalMs: number;
+};
+
+export type GetKeymapMessage = {
+  v: 1;
+  requestId: string;
+  type: "get_keymap";
+};
+
+export type GetWifiStatusMessage = {
+  v: 1;
+  requestId: string;
+  type: "get_wifi_status";
+};
+
+export type ScanWifiMessage = {
+  v: 1;
+  requestId: string;
+  type: "scan_wifi";
+};
+
+export type ConfigureWifiMessage = {
+  v: 1;
+  requestId: string;
+  type: "configure_wifi";
+  ssid: string;
+  password: string;
+};
+
+export type FinishWifiSetupMessage = {
+  v: 1;
+  requestId: string;
+  type: "finish_wifi_setup";
 };
 
 export type ExecGroupMessage = {
   v: 1;
-  id: string;
+  requestId: string;
   type: "exec_group";
   groupId: string;
-  steps: RemoteMotionStep[];
-  timeoutMs?: number;
-};
-
-export type TaskEndMessage = {
-  v: 1;
-  id: string;
-  type: "task_end";
-  taskId: string;
-  totalGroups: number;
-  completedGroups: number;
-  warnCount: number;
-  timeoutMs?: number;
+  seq: number;
+  policy: TaskGroupPolicy;
+  blocks: MotionBlock[];
 };
 
 export type CancelMessage = {
   v: 1;
-  id: string;
+  requestId: string;
   type: "cancel";
 };
 
 export type ResetFaultMessage = {
   v: 1;
-  id: string;
+  requestId: string;
   type: "reset_fault";
 };
 
 export type ProbeMessage = {
   v: 1;
-  id: string;
+  requestId: string;
   type: "probe";
-  timeoutMs?: number;
 };
 
-export type AckMessage = {
+export type PingMessage = {
   v: 1;
-  type: "ack";
-  id: string;
+  requestId: string;
+  type: "ping";
+};
+
+export type HelloAckMessage = {
+  v: 1;
+  type: "hello_ack";
+  requestId: string;
+  device: "auto_typer";
+  protocol: "tcp_ndjson";
+  capabilities: string[];
+  limits: {
+    maxBlocksPerGroup: number;
+    maxMessageBytes: number;
+    maxGroupRuntimeMs: number;
+  };
+};
+
+export type StatusMessage = {
+  v: 1;
+  type: "status";
+  requestId: string;
+  status: DeviceStatus;
+};
+
+export type TelemetrySubscribedMessage = {
+  v: 1;
+  type: "telemetry_subscribed";
+  requestId: string;
+  intervalMs: number;
+};
+
+export type CoordinateSystem = {
+  origin: "bottom_left";
+  xPositive: "right";
+  yPositive: "up";
+  xMotorPositiveDirection: "CW";
+  yMotorPositiveDirection: "CCW";
+};
+
+export type KeymapMessage = {
+  v: 1;
+  type: "keymap";
+  requestId: string;
+  coordinateSystem: CoordinateSystem;
+  keys: Array<{ label: string; xMm: number; yMm: number }>;
+};
+
+export type WifiStatusMessage = {
+  v: 1;
+  type: "wifi_status";
+  requestId: string;
+  wifi: WifiStatus;
+};
+
+export type WifiNetworksMessage = {
+  v: 1;
+  type: "wifi_networks";
+  requestId: string;
   ok: boolean;
-  accepted: boolean;
+  networks: WifiNetwork[];
   code?: string;
   message?: string;
+};
+
+export type WifiConfigResultMessage = {
+  v: 1;
+  type: "wifi_config_result";
+  requestId: string;
+  ok: boolean;
+  message: string;
+  code?: string;
+  wifi: WifiStatus;
+};
+
+export type WifiSetupFinishedMessage = {
+  v: 1;
+  type: "wifi_setup_finished";
+  requestId: string;
+  ok: boolean;
+  message: string;
+  code?: string;
+  wifi: WifiStatus;
+};
+
+export type ProbeResultMessage = {
+  v: 1;
+  type: "probe_result";
+  requestId: string;
+  ok: boolean;
+  motors: MotorState[];
+};
+
+export type ResetFaultResultMessage = {
+  v: 1;
+  type: "reset_fault_result";
+  requestId: string;
+  ok: boolean;
+  status?: DeviceStatus;
+};
+
+export type CancelResultMessage = {
+  v: 1;
+  type: "cancel_result";
+  requestId: string;
+  ok: boolean;
+};
+
+export type GroupRejectReason =
+  | "invalid_json"
+  | "invalid_group"
+  | "invalid_block"
+  | "group_too_large"
+  | "device_busy"
+  | "device_fault"
+  | "motion_transport_not_ready"
+  | "queue_full";
+
+export type GroupAcceptedMessage = {
+  v: 1;
+  type: "group_accepted";
+  requestId: string;
+  groupId: string;
+  seq: number;
+  blockCount: number;
+};
+
+export type GroupRejectedMessage = {
+  v: 1;
+  type: "group_rejected";
+  requestId: string;
+  groupId?: string;
+  seq?: number;
+  reason: GroupRejectReason;
+  message: string;
 };
 
 export type GroupStartedMessage = {
   v: 1;
   type: "group_started";
   groupId: string;
+  seq: number;
+};
+
+export type BlockStartedMessage = {
+  v: 1;
+  type: "block_started";
+  groupId: string;
+  seq: number;
+  blockIndex: number;
+  blockType: MotionBlock["type"];
+};
+
+export type BlockDoneMessage = {
+  v: 1;
+  type: "block_done";
+  groupId: string;
+  seq: number;
+  blockIndex: number;
+  blockType: MotionBlock["type"];
 };
 
 export type GroupDoneMessage = {
   v: 1;
   type: "group_done";
   groupId: string;
+  seq: number;
+  ok: boolean;
   durationMs?: number;
-  currentPoint?: MachinePointMm;
-};
-
-export type GroupWarnMessage = {
-  v: 1;
-  type: "group_warn";
-  groupId: string;
-  code: string;
-  message: string;
   currentPoint?: MachinePointMm;
 };
 
 export type GroupFaultMessage = {
   v: 1;
   type: "fault";
-  id?: string;
+  requestId?: string;
+  groupId?: string;
+  seq?: number;
   code: string;
   message: string;
 };
 
-export type LinkSnapshot = {
-  mode: DeviceMode;
-  currentGroupId?: string;
-  lastCompletedGroupId?: string;
-  currentPoint: MachinePointMm;
-  fault?: {
-    code: string;
-    message: string;
-  };
+export type ProtocolErrorMessage = {
+  v: 1;
+  type: "protocol_error";
+  requestId?: string;
+  code: string;
+  message: string;
 };
 
 export type TelemetryMessage = {
   v: 1;
   type: "telemetry";
-  executor: "idle" | "running" | "faulted";
-  jobState: JobStatus["state"];
-  currentGroupId?: string;
-  lastCompletedGroupId?: string;
-  currentPoint: MachinePointMm;
-  fault?: {
-    code: string;
-    message: string;
-  };
-  can?: Partial<CanBusDiagnostics>;
-  motors?: Array<{
-    id: number;
-    role: MotorRole;
-    readiness: MotorReadiness;
-    rpm: number;
-    inputPulse: number;
-    angle: number;
-    fresh: boolean;
-  }>;
-};
-
-export type SnapshotMessage = {
-  v: 1;
-  type: "snapshot";
-  snapshot: LinkSnapshot;
-};
-
-export type PingMessage = {
-  v: 1;
-  id: string;
-  type: "ping";
+  status: DeviceStatus;
 };
 
 export type PongMessage = {
   v: 1;
   type: "pong";
-  id?: string;
+  requestId?: string;
 };
 
 export type GroupStreamCommandMessage =
   | HelloMessage
+  | GetStatusMessage
+  | SubscribeTelemetryMessage
+  | GetKeymapMessage
+  | GetWifiStatusMessage
+  | ScanWifiMessage
+  | ConfigureWifiMessage
+  | FinishWifiSetupMessage
   | ExecGroupMessage
-  | TaskEndMessage
   | CancelMessage
   | ResetFaultMessage
   | ProbeMessage
   | PingMessage;
 
 export type GroupStreamEventMessage =
-  | AckMessage
+  | HelloAckMessage
+  | StatusMessage
+  | TelemetrySubscribedMessage
+  | KeymapMessage
+  | WifiStatusMessage
+  | WifiNetworksMessage
+  | WifiConfigResultMessage
+  | WifiSetupFinishedMessage
+  | ProbeResultMessage
+  | ResetFaultResultMessage
+  | CancelResultMessage
+  | GroupAcceptedMessage
+  | GroupRejectedMessage
   | GroupStartedMessage
+  | BlockStartedMessage
+  | BlockDoneMessage
   | GroupDoneMessage
-  | GroupWarnMessage
   | GroupFaultMessage
+  | ProtocolErrorMessage
   | TelemetryMessage
-  | SnapshotMessage
+  | MotorEventMessage
+  | MotorStateUpdateMessage
+  | TelemetryOverflowMessage
   | PongMessage;
 
 export type GroupStreamMessage =
   | GroupStreamCommandMessage
   | GroupStreamEventMessage;
-
-export interface ApiErrorBody {
-  code: string;
-  message: string;
-  details?: unknown;
-}
-
-export interface MotorMoveRelativeRequest {
-  /** Motor id, or 23 for the paired Y-axis motor group 2+3. */
-  motorId: number;
-  direction: MotorDirection;
-  rpm: number;
-  acceleration: number;
-  steps: number;
-  sync: boolean;
-}
-
-export interface MotorEnableRequest {
-  /** Motor id, or 23 for the paired Y-axis motor group 2+3. */
-  motorId: number;
-  enabled: boolean;
-  sync?: boolean;
-}
-
-export interface MotorStopRequest {
-  /** Motor id, or 23 for the paired Y-axis motor group 2+3. */
-  motorId: number;
-  sync?: boolean;
-}
-
-export interface ServoApplyRequest {
-  command: ServoCommand;
-  durationMs?: number;
-}
-
-export interface ProbeKeyRequest {
-  key: string;
-  point: MachinePointMm;
-}
-
-export type DeviceEvent =
-  | { type: "status"; status: DeviceStatus }
-  | { type: "job_progress"; job: JobStatus }
-  | { type: "log"; level: "info" | "warning" | "error"; message: string; at: string }
-  | { type: "fault"; fault: DeviceFault }
-  | { type: "keymap_updated"; keymapVersion: number };
-
-export const protocolRoutes = {
-  status: "/api/status",
-  jobs: "/api/jobs",
-  currentJob: "/api/jobs/current",
-  cancelJob: "/api/jobs/current/cancel",
-  machineStop: "/api/machine/stop",
-  resetFault: "/api/machine/reset-fault",
-  probeMotors: "/api/machine/probe-motors",
-  canDiagnostics: "/api/diagnostics/can",
-  protocolTrace: "/api/diagnostics/protocol-trace",
-  wifiStatus: "/api/wifi/status",
-  wifiNetworks: "/api/wifi/networks",
-  wifiConfig: "/api/wifi/config",
-  wifiSetupFinish: "/api/wifi/setup/finish",
-  keymap: "/api/keymap",
-  events: "/api/events",
-  debugMotorMoveRelative: "/api/debug/motor/move-relative",
-  debugMotorEnable: "/api/debug/motor/enable",
-  debugMotorStop: "/api/debug/motor/stop",
-  debugServoApply: "/api/debug/servo/apply",
-  debugProbeKey: "/api/debug/probe-key",
-} as const;

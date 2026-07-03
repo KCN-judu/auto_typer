@@ -8,8 +8,8 @@
     "skipLibCheck": true,
     "esModuleInterop": true,
     "outDir": "dist-electron",
-    "rootDir": "electron",
+    "rootDir": "../..",
     "types": ["node"]
   },
-  "include": ["electron/**/*.ts"]
+  "include": ["electron/**/*.ts", "../../shared/protocol/**/*.ts"]
 }

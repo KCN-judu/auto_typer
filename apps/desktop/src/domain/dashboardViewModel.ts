@@ -190,6 +190,7 @@ function defaultMotorCards(): MotorCardViewModel[] {
     { id: 2, role: "Y-left" },
     { id: 3, role: "Y-right" },
     { id: 4, role: "LineFeed" },
+    { id: 5, role: "Press" },
   ];
   return roles.map((r) => ({
     id: r.id,
