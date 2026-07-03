@@ -385,7 +385,9 @@ export function App() {
       return;
     }
     if (message.type === "block_started") {
-      appendLog(`Block ${message.blockIndex} ${message.blockType}`);
+      if (!matchesActiveGroup(message.groupId, message.seq)) {
+        appendLog(`Block ${message.blockIndex} ${message.blockType}`);
+      }
       if (matchesActiveGroup(message.groupId, message.seq)) {
         setPrintTask((task) => ({ ...task, currentLabel: `Block ${message.blockIndex} ${message.blockType}` }));
       }
@@ -444,7 +446,7 @@ export function App() {
   }
 
   function appendLog(line: string) {
-    setLogLines((lines) => [`${new Date().toLocaleTimeString()} ${line}`, ...lines].slice(0, 12));
+    setLogLines((lines) => [...lines, `${new Date().toLocaleTimeString()} ${line}`].slice(-12));
   }
 
   const jobState = status.currentJob?.state ?? "none";
