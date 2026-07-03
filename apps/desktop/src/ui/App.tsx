@@ -122,6 +122,7 @@ export function App() {
       await window.autoTyper?.writeStore({ lastTcpHost: tcpHost, lastTcpPort: tcpPort, recentJobs: [] });
       appendLog(`TCP 已连接 ${tcpHost}:${tcpPort}`);
     } catch (error) {
+      await streamClient.disconnect().catch(() => undefined);
       const message = error instanceof Error ? error.message : "TCP 连接失败";
       setConnection("fault");
       setPrintTask((task) => ({ ...task, stream: "fault", fault: message }));

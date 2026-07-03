@@ -12,6 +12,7 @@ import { TCP_COMMAND_TYPES } from "../../../shared/protocol/auto-typer-protocol.
 const supportedTcpCommandTypes = new Set<string>(TCP_COMMAND_TYPES.filter((type) => type !== "hello"));
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const packageRoot = path.resolve(__dirname, "../../../..");
 const isDev = process.env.VITE_DEV_SERVER_URL !== undefined || !app.isPackaged;
 
 type StoreShape = {
@@ -70,7 +71,7 @@ async function createWindow() {
   if (isDev) {
     await mainWindow.loadURL("http://127.0.0.1:5173");
   } else {
-    await mainWindow.loadFile(path.join(__dirname, "../dist/index.html"));
+    await mainWindow.loadFile(path.join(packageRoot, "dist/index.html"));
   }
 }
 
@@ -94,7 +95,15 @@ async function connectGroupStream(host: string, port: number): Promise<void> {
     emitGroupStreamMessage({ v: 1, type: "fault", code: "disconnect", message: error.message || "TCP device disconnected" });
   });
   deviceLink = link;
-  await link.connect(host, port);
+  try {
+    await link.connect(host, port);
+  } catch (error) {
+    if (deviceLink === link) {
+      deviceLink = undefined;
+    }
+    link.close();
+    throw error;
+  }
 }
 
 function sendGroupStreamMessage(message: GroupStreamCommandMessage): Promise<GroupStreamEventMessage> {
