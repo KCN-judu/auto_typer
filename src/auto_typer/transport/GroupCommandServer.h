@@ -64,7 +64,6 @@ class GroupCommandServer {
     bool used;
     uint8_t priority;
     uint32_t order;
-    bool quietSuccess;
     String line;
   };
 
@@ -785,7 +784,7 @@ class GroupCommandServer {
     doc["v"] = 1;
     doc["type"] = "pong";
     doc["requestId"] = requestId != nullptr ? requestId : "";
-    if (!enqueueJson(0, doc, true)) {
+    if (!enqueueJson(0, doc)) {
       log_.print("[tcp] pong enqueue failed requestId=");
       log_.println(requestId != nullptr ? requestId : "");
     }
@@ -1162,7 +1161,7 @@ class GroupCommandServer {
   }
 
   template <typename TDoc>
-  bool enqueueJson(uint8_t priority, TDoc& doc, bool quietSuccess = false) {
+  bool enqueueJson(uint8_t priority, TDoc& doc) {
     if (!client_ || !client_.connected()) {
       return false;
     }
@@ -1192,7 +1191,6 @@ class GroupCommandServer {
     outboundQueue_[slot].used = true;
     outboundQueue_[slot].priority = priority;
     outboundQueue_[slot].order = ++outboundOrder_;
-    outboundQueue_[slot].quietSuccess = quietSuccess;
     outboundQueue_[slot].line = line;
     return true;
   }
@@ -1217,9 +1215,8 @@ class GroupCommandServer {
       if (selected < 0) {
         return;
       }
-      sendLine(client_, outboundQueue_[selected].line, !outboundQueue_[selected].quietSuccess);
+      sendLine(client_, outboundQueue_[selected].line);
       outboundQueue_[selected].used = false;
-      outboundQueue_[selected].quietSuccess = false;
       outboundQueue_[selected].line = "";
     }
   }
@@ -1227,7 +1224,6 @@ class GroupCommandServer {
   void clearOutboundQueue() {
     for (size_t i = 0; i < kOutboundQueueCapacity; ++i) {
       outboundQueue_[i].used = false;
-      outboundQueue_[i].quietSuccess = false;
       outboundQueue_[i].line = "";
     }
   }
@@ -1310,7 +1306,7 @@ class GroupCommandServer {
     return sendLine(client, line);
   }
 
-  bool sendLine(WiFiClient& client, const String& line, bool logSuccess = true) {
+  bool sendLine(WiFiClient& client, const String& line) {
     if (!client || !client.connected()) {
       logTxResult(line.length() + 1, 0, false);
       return false;
@@ -1319,7 +1315,7 @@ class GroupCommandServer {
     size_t written = client.print(line);
     written += client.write('\n');
     client.flush();
-    if (logSuccess || written != txLen || !client.connected()) {
+    if (written != txLen || !client.connected()) {
       logTxResult(txLen, written, client.connected());
     }
     return written == txLen;
