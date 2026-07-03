@@ -18,13 +18,15 @@
 
 ## 关键入口
 
-- `src/auto_typer/auto_typer.ino`：Arduino 生命周期入口。`setup()` 初始化串口、应用和 HTTP；`loop()` 依次跑 `gHttp.tick()`、`gApp.tick()`，最后 `delay(10)`。
+- `src/auto_typer/auto_typer.ino`：Arduino 生命周期入口。`setup()` 初始化串口、应用、HTTP 和 TCP group command；`loop()` 依次跑 `gHttp.tick()`、`gGroupServer.tick()`、`gApp.tick()`，最后 `delay(1)`。
 - `src/auto_typer/auto_typer_config.h`：默认硬件配置、运动参数、舵机参数、Wi-Fi、CAN 和机器拓扑。
 - `src/auto_typer/auto_typer_types.h`：核心枚举和结构体，包括 `JobState`、`DeviceMode`、`TypingStepKind`、运动 profile 和任务快照。
 - `src/auto_typer/typing_logic.h`：纯规划逻辑，把文本和 keymap 转成 `TypingPlan`。
 - `src/auto_typer/auto_typer_runtime.h`：固件应用状态机和动作执行逻辑，是状态、运动、回位和调试入口的核心。
 - `src/auto_typer/hal_emm_can_motion.h`：Emm_V5.0 CAN 命令封装。这里只负责组包和 `twai_transmit()`。
 - `src/auto_typer/http_control_server.h`：ESP32 HTTP API，实现状态查询、任务创建、取消、急停、调试电机/舵机、keymap 读写。
+- `src/auto_typer/transport/GroupCommandServer.h`：TCP `7777` NDJSON group command 入口，用于桌面端分组下发远程运动、遥测、取消、探测和故障恢复。
+- `src/auto_typer/can/`：CAN TX 队列、RX 任务、Emm_V5.0 事件解析、运动反馈缓存和协议 trace。
 - `shared/protocol/auto-typer-protocol.ts`：桌面端协议类型和路由常量。
 - `apps/desktop/src/ui/App.tsx`：桌面 UI 主组件。
 - `apps/desktop/src/domain/deviceClient.ts`：桌面端 HTTP 客户端。
@@ -51,8 +53,9 @@
 循环流程在 `auto_typer.ino`：
 
 1. `gHttp.tick()` 处理 HTTP 请求。
-2. `gApp.tick()` 如果有 queued 任务且 motion ready，就同步执行完整任务。
-3. `delay(10)`。
+2. `gGroupServer.tick()` 处理 TCP group command，发送 group 事件和周期遥测。
+3. `gApp.tick()` 如果有 queued 任务且 motion ready，就同步执行完整任务；如果有远程 group，则执行当前 group。
+4. `delay(1)`。
 
 注意：`executePlan()` 是阻塞式执行，里面大量使用 `delay()`。执行任务期间 HTTP 处理会被阻塞，除非当前动作返回到主循环。
 
@@ -97,13 +100,15 @@ None/Completed/Cancelled/Failed
 HTTP 状态暴露：
 
 - `GET /api/status` 返回 `mode`、`health`、`servoReady`、`motionReady`、`keymapVersion` 和可选 `currentJob`。
-- `POST /api/jobs` 创建任务；固件只读取 `text`，协议里的 `options.dryRun`、`options.startAtHome` 当前未实现。
+- `POST /api/jobs` 创建固件端规划任务；固件只读取 `text`，协议里的 `options.dryRun`、`options.startAtHome` 当前未实现。
 - `POST /api/jobs/current/cancel` 取消 queued/running 任务。
 - `POST /api/machine/stop` 急停并进入故障状态。
+- `POST /api/machine/reset-fault` 清除可恢复故障并刷新电机状态。
+- `POST /api/machine/probe-motors` 在设备非 busy 时主动探测电机反馈。
+- `GET /api/diagnostics/can` 返回 CAN driver、队列、告警、错误和故障计数。
+- `GET /api/diagnostics/protocol-trace` 返回最近 CAN TX/RX trace。
 
-已知状态表达问题：
-
-- `jobStateJson(JobState::None)` 当前默认返回 `"queued"`。如果直接请求 `/api/jobs/current` 且没有任务，响应会把无任务表达成 queued，后续如要严谨区分应修正。
+当前 `jobStateJson(JobState::None)` 返回 `"none"`，`GET /api/status` 在无任务时把 `currentJob` 设为 `null`。
 
 ## 打字计划逻辑
 
@@ -205,7 +210,7 @@ CAN 层风险：
 
 - `currentPoint_` 在 `executeMove()` 成功返回后直接设为目标点；成功条件只是发送命令和等待估算时间成功，不代表机械真实到位。
 - X/Y/走纸位置由 `trackSignedMotorMove()` 本地累计。如果电机没有执行、丢步、堵转、同步触发失败或方向配置错误，本地累计会继续变化并污染后续回位。
-- `faulted_` 一旦被设置为 true，目前没有恢复/清故障 API；后续状态会持续显示 `faulted`。
+- `faulted_` 被设置为 true 后，需要通过 HTTP `/api/machine/reset-fault` 或 TCP group command `reset_fault` 尝试恢复；恢复是否成功取决于 CAN/执行器状态。
 - 任务执行是阻塞式 `delay()`，运行中 HTTP 急停/取消无法在长时间 delay 内被及时处理。
 
 同步运动风险：
@@ -222,9 +227,10 @@ CAN 层风险：
 ## 协议和桌面端注意事项
 
 - `shared/protocol/auto-typer-protocol.ts` 是桌面端类型源；ESP32 端手写 JSON 字段名，需要人工保持一致。
-- 协议 README 提到 `/api/events` SSE，但当前固件 `HttpControlServer` 没有注册 `/api/events`。
+- `protocolRoutes.events` 和 `DeviceEvent` 保留了 `/api/events` SSE 形状，但当前固件 `HttpControlServer` 没有注册 `/api/events`。
+- 桌面端主要通过 TCP `7777` 的 NDJSON group command stream 获取分组执行事件和遥测。客户端必须先发 `hello`，再发 `exec_group`、`task_end`、`cancel`、`reset_fault`、`probe` 或 `ping`。
 - 桌面端 debug 页在 `status.mode !== "running"` 时允许调试；固件端也会拒绝 queued/running 下的电机和舵机调试命令。
-- `ProbeKeyRequest` 协议是 `{ key, point: { xMm, yMm } }`，但固件 `handleProbeKey()` 当前直接从 body 顶层读取 `xMm` 或 `x`、`yMm` 或 `y`，不是读取嵌套 `point`。
+- `ProbeKeyRequest` 协议是 `{ key, point: { xMm, yMm } }`；固件 `handleProbeKey()` 优先读取嵌套 `point`，并兼容旧的顶层 `xMm`/`yMm` 或 `x`/`y`。
 
 ## 测试草图
 
