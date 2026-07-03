@@ -12,7 +12,7 @@ export type PlannedRemoteMotionGroup = {
   sourceCharacter?: string;
   targetKeyLabel?: string;
   displayCoordinates?: MachinePointMm;
-  kind: "character" | "line_feed";
+  kind: "move_xy" | "press" | "release" | "character_release" | "line_feed";
 };
 
 export type GroupStreamPlan =
@@ -30,7 +30,7 @@ export type GroupStreamPlan =
       warnings: string[];
     };
 
-const maxGroups = 256;
+const maxGroups = 1024;
 const defaultMoveProfile = { rpm: 1600, accelRaw: 128 } as const;
 
 export type GroupStreamPlanningOptions = {
@@ -112,23 +112,27 @@ export function planTextToRemoteMotionGroups(
       targetKeyLabel: displayKey(binding.key),
       displayCoordinates: target,
     };
-    if (
-      !appendGroup(
-        "character",
-        [
-          {
+    const hasMove = target.xMm !== current.xMm || target.yMm !== current.yMm;
+    if (hasMove &&
+        !appendGroup(
+          "move_xy",
+          [{
             kind: "move_xy",
             dxMm: target.xMm - current.xMm,
             dyMm: target.yMm - current.yMm,
             profile: defaultMoveProfile,
-          },
-          { kind: "servo_press" },
-          { kind: "servo_release" },
-          ...(!disableLineFeed ? ([{ kind: "character_release" }] as RemoteMotionStep[]) : []),
-        ],
-        characterMeta,
-      )
-    ) {
+          }],
+          characterMeta,
+        )) {
+      return planFull(groups, warnings);
+    }
+    if (!appendGroup("press", [{ kind: "servo_press" }], characterMeta)) {
+      return planFull(groups, warnings);
+    }
+    if (!appendGroup("release", [{ kind: "servo_release" }], characterMeta)) {
+      return planFull(groups, warnings);
+    }
+    if (!disableLineFeed && !appendGroup("character_release", [{ kind: "character_release" }], characterMeta)) {
       return planFull(groups, warnings);
     }
     current = target;

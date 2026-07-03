@@ -61,12 +61,16 @@ class AutoTyperApplication {
         currentRemoteCommandId_{},
         startedRemoteGroupId_{},
         lastCompletedRemoteCommandId_{},
+        warnedRemoteGroupId_{},
         remoteCommandActive_(false),
         remoteGroupStartedPending_(false),
         remoteDoneNotified_(false),
+        remoteWarnNotified_(false),
         remoteFaultNotified_(false),
         remoteCommandStartedAtMs_(0),
-        lastRemoteCommandDurationMs_(0) {
+        lastRemoteCommandDurationMs_(0),
+        lastRemoteWarnCode_(""),
+        lastRemoteWarnMessage_("") {
     for (uint8_t i = 0; i < kTrackedMotorCount; ++i) {
       lastMotorProbeMs_[i] = 0;
     }
@@ -149,15 +153,13 @@ class AutoTyperApplication {
       jobState_ = JobState::Cancelled;
       display_.showStatus(DisplayStatus::Idle);
     } else if (executor_.faulted()) {
-      setFault(executor_.faultCode(), executor_.faultMessage());
-      jobState_ = JobState::Failed;
       if (remoteCommandActive_) {
-        remoteFaultNotified_ = true;
+        completeRemoteGroupWithWarning(executor_.faultCode(), executor_.faultMessage());
+      } else {
+        setFault(executor_.faultCode(), executor_.faultMessage());
+        jobState_ = JobState::Failed;
+        showError();
       }
-      remoteCommandActive_ = false;
-      remoteGroupStartedPending_ = false;
-      startedRemoteGroupId_[0] = '\0';
-      showError();
     }
 
     if (remoteCommandActive_) {
@@ -334,6 +336,7 @@ class AutoTyperApplication {
     startedRemoteGroupId_[0] = '\0';
     remoteGroupStartedPending_ = false;
     remoteDoneNotified_ = false;
+    remoteWarnNotified_ = false;
     remoteFaultNotified_ = false;
     remoteCommandStartedAtMs_ = 0;
     lastRemoteCommandDurationMs_ = 0;
@@ -365,6 +368,29 @@ class AutoTyperApplication {
     return true;
   }
 
+  bool consumeRemoteGroupWarn(char* outGroupId, size_t outGroupIdSize, const char*& code, const char*& message) {
+    if (!remoteWarnNotified_) {
+      return false;
+    }
+    remoteWarnNotified_ = false;
+    copyString(outGroupId, outGroupIdSize, warnedRemoteGroupId_);
+    code = lastRemoteWarnCode_;
+    message = lastRemoteWarnMessage_;
+    return true;
+  }
+
+  bool finishRemoteTask() {
+    if (jobState_ == JobState::Queued || jobState_ == JobState::Planning || jobState_ == JobState::Running ||
+        jobState_ == JobState::Cancelling || remoteCommandActive_) {
+      return false;
+    }
+    jobState_ = JobState::Completed;
+    currentRemoteCommandId_[0] = '\0';
+    startedRemoteGroupId_[0] = '\0';
+    display_.showStatus(DisplayStatus::Complete);
+    return true;
+  }
+
   bool emergencyStop() {
     return emergencyStopWithReason("emergency_stop", "Emergency stop requested");
   }
@@ -378,6 +404,7 @@ class AutoTyperApplication {
     jobState_ = JobState::None;
     remoteCommandActive_ = false;
     currentRemoteCommandId_[0] = '\0';
+    remoteWarnNotified_ = false;
     probeMotorsBestEffort(300);
     if (!recovered || canBus_.hasFatalFault()) {
       const CanBusDiagnostics diagnostics = canBus_.diagnostics();
@@ -623,6 +650,8 @@ class AutoTyperApplication {
   bool emergencyStopWithReason(const char* code, const char* message) {
     canTx_.clear();
     executor_.emergencyStop();
+    canTx_.tick(8);
+    disableAllMotorsBestEffort();
     setFault(code, message);
     jobState_ = JobState::Failed;
     showError();
@@ -643,6 +672,43 @@ class AutoTyperApplication {
     faulted_ = true;
     faultCode_ = code;
     faultMessage_ = message;
+  }
+
+  void completeRemoteGroupWithWarning(const char* code, const char* message) {
+    copyString(warnedRemoteGroupId_, sizeof(warnedRemoteGroupId_), currentRemoteCommandId_);
+    lastRemoteWarnCode_ = code != nullptr && code[0] != '\0' ? code : "group_warning";
+    lastRemoteWarnMessage_ = message != nullptr && message[0] != '\0' ? message : "Remote group completed with warning";
+    lastRemoteCommandDurationMs_ =
+        remoteCommandStartedAtMs_ == 0 ? 0 : static_cast<uint32_t>(millis() - remoteCommandStartedAtMs_);
+    remoteCurrentPoint_ = plannedRemoteCompletionPoint();
+    currentRemoteCommandId_[0] = '\0';
+    remoteCommandActive_ = false;
+    remoteGroupStartedPending_ = false;
+    remoteDoneNotified_ = false;
+    remoteWarnNotified_ = true;
+    startedRemoteGroupId_[0] = '\0';
+    jobState_ = JobState::Completed;
+    executor_.resetFault();
+    display_.showStatus(DisplayStatus::Idle);
+  }
+
+  MachinePointMm plannedRemoteCompletionPoint() const {
+    if (activeMotionSteps_.count == 0) {
+      return executor_.currentPoint();
+    }
+    const MotionStep& step = activeMotionSteps_.steps[activeMotionSteps_.count - 1];
+    if (step.kind == MotionStepKind::MoveXY || step.kind == MotionStepKind::LineFeed) {
+      return step.targetMm;
+    }
+    return executor_.currentPoint();
+  }
+
+  void disableAllMotorsBestEffort() {
+    motion_.disableMotor(config_.topology.xMotorId, false, true);
+    motion_.disableMotor(config_.topology.yLeftMotorId, false, true);
+    motion_.disableMotor(config_.topology.yRightMotorId, false, true);
+    motion_.disableMotor(config_.topology.lineFeedMotorId, false, true);
+    motion_.disableMotor(config_.topology.pressMotorId, false, true);
   }
 
   bool convertRemoteStep(const RemoteMotionStep& remoteStep,
@@ -1016,12 +1082,16 @@ class AutoTyperApplication {
   char currentRemoteCommandId_[49];
   char startedRemoteGroupId_[49];
   char lastCompletedRemoteCommandId_[49];
+  char warnedRemoteGroupId_[49];
   bool remoteCommandActive_;
   bool remoteGroupStartedPending_;
   bool remoteDoneNotified_;
+  bool remoteWarnNotified_;
   bool remoteFaultNotified_;
   uint32_t remoteCommandStartedAtMs_;
   uint32_t lastRemoteCommandDurationMs_;
+  const char* lastRemoteWarnCode_;
+  const char* lastRemoteWarnMessage_;
   static constexpr uint8_t kTrackedMotorCount = 5;
   static constexpr uint32_t kFeedbackFreshMs = 1500;
   static constexpr uint32_t kProbeOfflineMs = 250;

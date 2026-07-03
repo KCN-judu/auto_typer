@@ -130,6 +130,10 @@ class GroupCommandServer {
       handleExecGroup(request);
       return;
     }
+    if (strcmp(type, "task_end") == 0) {
+      handleTaskEnd(request);
+      return;
+    }
     if (strcmp(type, "cancel") == 0) {
       const bool accepted = app_.cancelCurrentJob();
       sendAck(id, accepted, accepted ? "" : "cancel_rejected", accepted ? "" : "No queued or running job");
@@ -172,6 +176,20 @@ class GroupCommandServer {
     sendAck(id, result.accepted, result.rejectionCode, result.rejectionMessage);
   }
 
+  void handleTaskEnd(JsonDocument& request) {
+    const char* id = request["id"] | "";
+    const char* taskId = request["taskId"] | "";
+    if (taskId[0] == '\0') {
+      sendAck(id, false, "invalid_task_end", "taskId is required");
+      return;
+    }
+    const bool accepted = app_.finishRemoteTask();
+    sendAck(id, accepted, accepted ? "" : "task_end_rejected", accepted ? "" : "Task end rejected while device is busy");
+    if (accepted) {
+      sendSnapshot();
+    }
+  }
+
   void sendPendingEvents() {
     if (!client_ || !client_.connected()) {
       return;
@@ -183,6 +201,11 @@ class GroupCommandServer {
     uint32_t durationMs = 0;
     if (app_.consumeRemoteGroupDone(groupId, sizeof(groupId), durationMs)) {
       sendGroupDone(groupId, durationMs);
+    }
+    const char* warnCode = "";
+    const char* warnMessage = "";
+    if (app_.consumeRemoteGroupWarn(groupId, sizeof(groupId), warnCode, warnMessage)) {
+      sendGroupWarn(groupId, warnCode, warnMessage);
     }
     const char* code = "";
     const char* message = "";
@@ -235,6 +258,22 @@ class GroupCommandServer {
     point["xMm"] = current.xMm;
     point["yMm"] = current.yMm;
     log_.print("[group] group_done ");
+    log_.println(groupId != nullptr ? groupId : "");
+    sendJson(client_, doc);
+  }
+
+  void sendGroupWarn(const char* groupId, const char* code, const char* message) {
+    StaticJsonDocument<256> doc;
+    doc["v"] = 1;
+    doc["type"] = "group_warn";
+    doc["groupId"] = groupId != nullptr ? groupId : "";
+    doc["code"] = code != nullptr ? code : "group_warning";
+    doc["message"] = message != nullptr ? message : "Remote group completed with warning";
+    JsonObject point = doc.createNestedObject("currentPoint");
+    const MachinePointMm current = app_.currentPoint();
+    point["xMm"] = current.xMm;
+    point["yMm"] = current.yMm;
+    log_.print("[group] group_warn ");
     log_.println(groupId != nullptr ? groupId : "");
     sendJson(client_, doc);
   }

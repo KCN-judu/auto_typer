@@ -787,8 +787,10 @@ assert.doesNotMatch(sharedProtocol, /type: "exec_block"|type: "block_started"|ty
 assert.match(sharedProtocol, /export type RemoteMotionGroup/, "Shared protocol must define remote motion groups");
 assert.match(sharedProtocol, /type: "exec_group"[\s\S]*groupId: string[\s\S]*steps: RemoteMotionStep\[\]/, "Group stream must expose exec_group messages");
 assert.match(sharedProtocol, /type: "exec_group"[\s\S]*timeoutMs\?: number/, "Group stream exec_group must allow renderer-specified ACK timeout");
+assert.match(sharedProtocol, /type: "task_end"[\s\S]*taskId: string[\s\S]*warnCount: number/, "Group stream must expose task_end messages");
 assert.match(sharedProtocol, /kind: "move_xy"[\s\S]*dxMm: number[\s\S]*dyMm: number/, "move_xy must carry relative machine deltas");
 assert.match(sharedProtocol, /type: "group_done"[\s\S]*groupId: string/, "Group DONE must identify the completed group");
+assert.match(sharedProtocol, /type: "group_warn"[\s\S]*groupId: string[\s\S]*code: string[\s\S]*message: string/, "Group WARN must identify the warning group");
 assert.match(sharedProtocol, /motors\?: Array<\{[\s\S]*readiness: MotorReadiness/, "Group stream telemetry motors must include readiness");
 assert.doesNotMatch(sharedProtocol, /export type PrimitiveCommand|type: "command"|op: "move_to"/, "Shared group stream protocol must not expose primitive command messages");
 
@@ -797,8 +799,8 @@ assert.match(keymapDomain, /if \(base\?\.bindings && base\.bindings\.length > 0\
 const groupStreamPlanner = readFileSync(new URL("../../../apps/desktop/src/domain/groupStreamPlanner.ts", import.meta.url), "utf8");
 assert.match(groupStreamPlanner, /kind: "move_xy"[\s\S]*dxMm: target\.xMm - current\.xMm[\s\S]*dyMm: target\.yMm - current\.yMm/, "Desktop planner must emit relative machine deltas");
 assert.doesNotMatch(groupStreamPlanner, /toSvgCoords|svgY|bbox\.maxY|RemoteMotionBlock|blocks:/, "Desktop planner must not use SVG coordinates or legacy block payloads");
-assert.match(groupStreamPlanner, /kind: "move_xy"[\s\S]*kind: "servo_press"[\s\S]*kind: "servo_release"/, "Text planning must create core remote motion steps");
-assert.match(groupStreamPlanner, /!\s*disableLineFeed\s*\?\s*\(\[\{ kind: "character_release" \}\]/, "Line-feed degraded planning must skip character_release steps");
+assert.match(groupStreamPlanner, /appendGroup\(\s*"move_xy"[\s\S]*appendGroup\("press"[\s\S]*appendGroup\("release"/, "Text planning must split core motion into small groups");
+assert.match(groupStreamPlanner, /!disableLineFeed && !appendGroup\("character_release", \[\{ kind: "character_release" \}\]/, "Line-feed degraded planning must skip character_release steps");
 assert.match(groupStreamPlanner, /已启用跳过走纸模式，跳过字符释放和换行走纸/, "Line-feed degraded planning must warn when skipping feed actions");
 assert.match(groupStreamPlanner, /!disableLineFeed && !appendGroup\("line_feed", \[\{ kind: "line_feed" \}\]/, "Line-feed degraded planning must skip line_feed steps");
 assert.doesNotMatch(groupStreamPlanner, /line_feed_disabled/, "Line-feed degraded planning must not reject newline tasks");
@@ -841,7 +843,7 @@ assert.match(deviceLink, /type: "hello"[\s\S]*client: "desktop"/, "DeviceLink mu
 assert.match(deviceLink, /type: "exec_group"/, "DeviceLink must support exec_group");
 assert.doesNotMatch(deviceLink, /exec_block|block_started|block_done|BlockStream|RemoteMotionBlock|execBlock/, "DeviceLink must not retain legacy block stream protocol");
 assert.doesNotMatch(deviceLink, /type: "command"|op:/, "DeviceLink must not send primitive commands");
-assert.match(electronMain, /\["exec_group", "cancel", "reset_fault", "probe", "ping"\]/, "Electron IPC must allow group stream top-level commands");
+assert.match(electronMain, /\["exec_group", "task_end", "cancel", "reset_fault", "probe", "ping"\]/, "Electron IPC must allow group stream top-level commands");
 assert.doesNotMatch(electronMain, /exec_block|blockStream|BlockStream|Block stream/, "Electron main must not retain legacy block stream IPC");
 assert.match(electronMain, /delete outbound\.timeoutMs/, "Electron IPC must not forward local timeoutMs to firmware");
 assert.match(electronMain, /deviceLink\.sendCommand\(outbound,\s*timeoutMs\)/, "Electron IPC must pass renderer-specified group stream timeouts");
@@ -858,6 +860,7 @@ assert.match(electronMain, /Group stream disconnected/, "Group stream disconnect
 assert.match(groupStreamClient, /execGroupAckTimeoutMs\s*=\s*5000/, "Renderer group stream client must request a 5000ms exec_group ACK timeout");
 assert.match(groupStreamClient, /type: "exec_group"[\s\S]*timeoutMs: execGroupAckTimeoutMs/, "Renderer exec_group messages must carry explicit ACK timeout");
 assert.match(groupStreamClient, /Group \$\{groupId\} exec_group failed/, "Renderer exec_group failures must identify the group");
+assert.match(groupStreamClient, /sendTaskEnd[\s\S]*type: "task_end"[\s\S]*warnCount/, "Renderer group stream client must send task_end");
 assert.doesNotMatch(groupStreamClient, /sendExecBlock|exec_block|BlockStream|RemoteMotionBlock|blockId/, "Renderer group stream client must not retain legacy block execution");
 
 const deviceClient = readFileSync(new URL("../../../apps/desktop/src/domain/deviceClient.ts", import.meta.url), "utf8");
@@ -897,6 +900,8 @@ assert.match(appTsx, /streamClient\.probe\(\)/, "Print Task must refresh motor f
 assert.match(appTsx, /Group probe rejected/, "Print Task must surface rejected group stream probes");
 assert.match(appTsx, /streamClient\.sendExecGroup/, "Print Task must send exec_group messages over TCP");
 assert.match(appTsx, /message\.type === "group_done"[\s\S]*message\.groupId === planned\.groupId/, "Print Task must wait for group_done before sending the next group");
+assert.match(appTsx, /message\.type === "group_warn"[\s\S]*message\.groupId === planned\.groupId/, "Print Task must continue after group_warn");
+assert.match(appTsx, /streamClient\.sendTaskEnd/, "Print Task must notify firmware when the task ends");
 assert.match(appTsx, /groupDoneTimeoutMs\(planned\)/, "Print Task must time out missing group_done events");
 assert.doesNotMatch(appTsx, /block_done|block_started|sendExecBlock|BlockStream|totalBlocks|planned\.blocks|Block probe|块流/, "Print Task UI must not retain legacy block stream code");
 assert.doesNotMatch(appTsx, /client\.createJob/, "Print Task must not call POST /api/jobs");
@@ -923,9 +928,11 @@ assert.match(groupCommandProtocol, /isfinite\(out\.dxMm\)[\s\S]*isfinite\(out\.d
 assert.match(groupCommandProtocol, /parseRemoteGroup/, "Group command protocol must parse exec_group steps");
 assert.match(groupCommandProtocol, /group_too_large/, "Group command protocol must reject oversized exec_group commands");
 assert.match(groupCommandServer, /handleExecGroup/, "Group command server must handle exec_group");
+assert.match(groupCommandServer, /handleTaskEnd/, "Group command server must handle task_end");
 assert.match(groupCommandServer, /RemoteMotionStep steps\[kRemoteGroupMaxSteps\]/, "Group command server must cap group stack storage");
 assert.match(groupCommandServer, /submitRemoteGroup\(steps,\s*count,\s*groupId\)/, "Group command server must submit parsed remote groups");
 assert.match(groupCommandServer, /sendGroupDone/, "Group command server must emit group_done events");
+assert.match(groupCommandServer, /sendGroupWarn/, "Group command server must emit group_warn events");
 assert.doesNotMatch(groupCommandServer, /exec_block|sendBlock|block_started|block_done|BlockCommand|kBlockCommand|currentBlockId|lastCompletedBlockId|FrameCodec|parseDesktopCommand|raw_can|can_frame|twai_transmit/, "Group command server must not use legacy block commands, binary frames, or expose raw CAN");
 assert.doesNotMatch(groupCommandProtocol, /RemoteMotionBlock|parseRemoteBlock|invalid_block|blocks array/, "Group command protocol must not expose legacy remote block parsing");
 assert.match(autoTyperIno, /#include "transport\/GroupCommandServer\.h"/, "Sketch must include GroupCommandServer");
@@ -940,6 +947,8 @@ assert.match(autoTyperRuntime, /convertRemoteStep\(steps\[i\], motionStep, resul
 assert.match(autoTyperRuntime, /plannedPoint = motionStep\.targetMm/, "Remote group conversion must advance planned point after position-changing steps");
 assert.match(autoTyperRuntime, /consumeRemoteGroupStarted/, "Firmware must expose remote group started events");
 assert.match(autoTyperRuntime, /consumeRemoteGroupDone/, "Firmware must expose remote group done events");
+assert.match(autoTyperRuntime, /consumeRemoteGroupWarn/, "Firmware must expose remote group warning events");
+assert.match(autoTyperRuntime, /finishRemoteTask/, "Firmware must expose remote task end handling");
 assert.match(autoTyperRuntime, /convertRemoteStep/, "Firmware must convert remote steps before execution");
 assert.doesNotMatch(autoTyperRuntime, /submitRemoteBlock|consumeRemoteBlock|RemoteMotionBlock|RemoteMotionBlockKind|SubmitRemoteBlock|invalid_block/, "Firmware remote protocol must not retain legacy remote block API");
 assert.match(autoTyperRuntime, /actuatorProbeMayRecover/, "Remote group submission must retry stale actuator readiness after probing");

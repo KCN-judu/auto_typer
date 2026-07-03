@@ -14,6 +14,7 @@ export type GroupStreamListener = (message: GroupStreamEventMessage) => void;
 
 const defaultPort = 7777;
 const execGroupAckTimeoutMs = 5000;
+const taskEndAckTimeoutMs = 5000;
 
 export class GroupStreamClient {
   private sequence = 0;
@@ -53,6 +54,19 @@ export class GroupStreamClient {
       const message = error instanceof Error ? error.message : "Group stream exec_group failed";
       throw new Error(`Group ${groupId} exec_group failed: ${message}`);
     }
+  }
+
+  async sendTaskEnd(taskId: string, totalGroups: number, completedGroups: number, warnCount: number): Promise<AckMessage> {
+    return this.sendCommand({
+      v: 1,
+      id: this.nextId("end"),
+      type: "task_end",
+      taskId,
+      totalGroups,
+      completedGroups,
+      warnCount,
+      timeoutMs: taskEndAckTimeoutMs,
+    });
   }
 
   async cancel(): Promise<AckMessage> {

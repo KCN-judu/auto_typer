@@ -61,6 +61,8 @@ type PrintTaskState = {
   running: boolean;
   currentIndex: number;
   totalGroups: number;
+  completedGroups: number;
+  warnCount: number;
   currentLabel: string;
   fault?: string;
 };
@@ -91,6 +93,8 @@ export function App() {
     running: false,
     currentIndex: 0,
     totalGroups: 0,
+    completedGroups: 0,
+    warnCount: 0,
     currentLabel: "",
   });
   const [logLines, setLogLines] = useState<string[]>(["等待连接 ESP32"]);
@@ -259,6 +263,8 @@ export function App() {
       ...task,
       currentIndex: 0,
       totalGroups: plan.groups.length,
+      completedGroups: 0,
+      warnCount: 0,
       currentLabel: "",
       fault: plan.ok ? undefined : plan.message,
     }));
@@ -284,7 +290,7 @@ export function App() {
       printTaskRef.current = runningTask;
       setPrintTask(runningTask);
       appendLog(`开始任务组流：${plan.groups.length} groups`);
-      await runPlannedGroups(plan.groups);
+      await runPlannedGroups(jobId, plan.groups);
       appendLog("任务组流完成");
       const nextStatus = await client.status();
       setStatus(nextStatus);
@@ -317,8 +323,10 @@ export function App() {
     appendLog("任务组流电机探测完成");
   }
 
-  async function runPlannedGroups(groups: PlannedRemoteMotionGroup[]) {
+  async function runPlannedGroups(taskId: string, groups: PlannedRemoteMotionGroup[]) {
     await probeGroupStreamMotors();
+    let completedGroups = 0;
+    let warnCount = 0;
     for (let index = 0; index < groups.length; index += 1) {
       const planned = groups[index];
       if (!printTaskRef.current.running) {
@@ -330,17 +338,37 @@ export function App() {
         currentIndex: index + 1,
         currentLabel: groupLabel(planned),
       }));
-      const ack = await streamClient.sendExecGroup(planned.groupId, planned.steps);
-      if (!ack.ok || !ack.accepted) {
-        throw new Error(`Group rejected: ${ack.code ?? "rejected"} ${ack.message ?? ""}`.trim());
+      let shouldWait = true;
+      try {
+        const ack = await streamClient.sendExecGroup(planned.groupId, planned.steps);
+        if (!ack.ok || !ack.accepted) {
+          warnCount += 1;
+          shouldWait = false;
+          appendLog(`Group warn ${planned.groupId}: ${ack.code ?? "rejected"} ${ack.message ?? ""}`.trim());
+        }
+      } catch (error) {
+        warnCount += 1;
+        shouldWait = false;
+        appendLog(error instanceof Error ? error.message : `Group warn ${planned.groupId}`);
       }
-      await waitForGroupDone(planned);
+      if (shouldWait) {
+        const outcome = await waitForGroupOutcome(planned);
+        if (outcome === "warn") {
+          warnCount += 1;
+        }
+      }
+      completedGroups += 1;
+      setPrintTask((task) => ({ ...task, completedGroups, warnCount }));
       activeGroupIdRef.current = undefined;
+    }
+    const ack = await streamClient.sendTaskEnd(taskId, groups.length, completedGroups, warnCount);
+    if (!ack.ok || !ack.accepted) {
+      appendLog(`任务结束确认被拒绝：${ack.code ?? "rejected"} ${ack.message ?? ""}`.trim());
     }
     setPrintTask((task) => ({ ...task, running: false, stream: "connected", currentLabel: "" }));
   }
 
-  function waitForGroupDone(planned: PlannedRemoteMotionGroup): Promise<void> {
+  function waitForGroupOutcome(planned: PlannedRemoteMotionGroup): Promise<"done" | "warn"> {
     return new Promise((resolve, reject) => {
       let unsubscribe = () => {};
       let timeout: ReturnType<typeof setTimeout>;
@@ -350,12 +378,23 @@ export function App() {
       };
       timeout = setTimeout(() => {
         cleanup();
-        reject(new Error(`Group timed out: ${planned.groupId}`));
+        appendLog(`Group warn ${planned.groupId}: 前端等待超时`);
+        streamClient
+          .cancel()
+          .catch((error) => {
+            appendLog(error instanceof Error ? `超时取消失败：${error.message}` : "超时取消失败");
+          })
+          .finally(() => resolve("warn"));
       }, groupDoneTimeoutMs(planned));
       unsubscribe = streamClient.onMessage((message) => {
         if (message.type === "group_done" && message.groupId === planned.groupId) {
           cleanup();
-          resolve();
+          resolve("done");
+          return;
+        }
+        if (message.type === "group_warn" && message.groupId === planned.groupId) {
+          cleanup();
+          resolve("warn");
           return;
         }
         if (message.type === "fault") {
@@ -369,6 +408,26 @@ export function App() {
   function handleGroupStreamEvent(message: GroupStreamEventMessage) {
     if (message.type === "group_done") {
       appendLog(`Group done ${message.groupId}${message.durationMs !== undefined ? ` ${message.durationMs}ms` : ""}`);
+      if (message.currentPoint) {
+        setStatus((current) => ({
+          ...current,
+          currentJob: current.currentJob
+            ? { ...current.currentJob, currentPoint: message.currentPoint! }
+            : {
+                jobId: undefined,
+                state: "completed",
+                textLength: 0,
+                currentIndex: 0,
+                currentStep: 0,
+                totalSteps: 0,
+                currentPoint: message.currentPoint!,
+              },
+        }));
+      }
+      return;
+    }
+    if (message.type === "group_warn") {
+      appendLog(`Group warn ${message.groupId}: ${message.code} ${message.message}`);
       if (message.currentPoint) {
         setStatus((current) => ({
           ...current,
@@ -983,6 +1042,8 @@ function TaskStatusPanel({ status, logLines, printTask }: { status: DeviceStatus
         <StateRow label="运动" value={status.motionReady ? "READY" : "WAIT"} />
         <StateRow label="任务" value={status.currentJob?.state ?? "none"} />
         <StateRow label="Group" value={`${printTask.currentIndex}/${printTask.totalGroups}`} />
+        <StateRow label="已处理" value={`${printTask.completedGroups}/${printTask.totalGroups}`} />
+        <StateRow label="警告" value={String(printTask.warnCount)} />
         <StateRow label="当前" value={printTask.currentLabel || "-"} />
         <StateRow label="坐标" value={`${status.currentJob?.currentPoint.xMm.toFixed(1) ?? "0.0"}, ${status.currentJob?.currentPoint.yMm.toFixed(1) ?? "0.0"}`} />
         {printTask.fault && <StateRow label="任务组流故障" value={printTask.fault} />}

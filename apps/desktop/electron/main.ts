@@ -228,7 +228,7 @@ function sendGroupStreamMessage(message: GroupStreamCommandMessage): Promise<Ack
   if (!deviceLink) {
     return Promise.reject(new Error("Group stream is not connected"));
   }
-  if (!["exec_group", "cancel", "reset_fault", "probe", "ping"].includes(message.type)) {
+  if (!["exec_group", "task_end", "cancel", "reset_fault", "probe", "ping"].includes(message.type)) {
     return Promise.reject(new Error("Unsupported group stream message type"));
   }
   if (typeof message.id !== "string" || message.id.length === 0) {

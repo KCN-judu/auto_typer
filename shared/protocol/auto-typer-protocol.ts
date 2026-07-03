@@ -238,6 +238,17 @@ export type ExecGroupMessage = {
   timeoutMs?: number;
 };
 
+export type TaskEndMessage = {
+  v: 1;
+  id: string;
+  type: "task_end";
+  taskId: string;
+  totalGroups: number;
+  completedGroups: number;
+  warnCount: number;
+  timeoutMs?: number;
+};
+
 export type CancelMessage = {
   v: 1;
   id: string;
@@ -278,6 +289,15 @@ export type GroupDoneMessage = {
   type: "group_done";
   groupId: string;
   durationMs?: number;
+  currentPoint?: MachinePointMm;
+};
+
+export type GroupWarnMessage = {
+  v: 1;
+  type: "group_warn";
+  groupId: string;
+  code: string;
+  message: string;
   currentPoint?: MachinePointMm;
 };
 
@@ -345,6 +365,7 @@ export type PongMessage = {
 export type GroupStreamCommandMessage =
   | HelloMessage
   | ExecGroupMessage
+  | TaskEndMessage
   | CancelMessage
   | ResetFaultMessage
   | ProbeMessage
@@ -354,6 +375,7 @@ export type GroupStreamEventMessage =
   | AckMessage
   | GroupStartedMessage
   | GroupDoneMessage
+  | GroupWarnMessage
   | GroupFaultMessage
   | TelemetryMessage
   | SnapshotMessage

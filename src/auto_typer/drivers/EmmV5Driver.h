@@ -30,9 +30,9 @@ class EmmV5Driver {
     return sendCommand(command, sizeof(command));
   }
 
-  bool disableMotor(uint8_t motorId, bool sync = false) {
+  bool disableMotor(uint8_t motorId, bool sync = false, bool highPriority = false) {
     const uint8_t command[] = {motorId, 0xF3, 0xAB, 0x00, static_cast<uint8_t>(sync), 0x6B};
-    return sendCommand(command, sizeof(command));
+    return sendCommand(command, sizeof(command), highPriority);
   }
 
   bool moveRelative(uint8_t motorId,

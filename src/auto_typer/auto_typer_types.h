@@ -264,7 +264,7 @@ struct RemoteMotionStep {
   RemoteMotionProfile profile;
 };
 
-static constexpr size_t kRemoteGroupMaxSteps = 8;
+static constexpr size_t kRemoteGroupMaxSteps = 1;
 
 struct SubmitRemoteGroupResult {
   bool accepted;

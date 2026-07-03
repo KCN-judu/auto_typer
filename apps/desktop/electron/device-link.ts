@@ -26,6 +26,7 @@ export type HelloMessage = {
 export type GroupStreamCommandMessage =
   | HelloMessage
   | { v: 1; id: string; type: "exec_group"; groupId: string; steps: RemoteMotionStep[]; timeoutMs?: number }
+  | { v: 1; id: string; type: "task_end"; taskId: string; totalGroups: number; completedGroups: number; warnCount: number; timeoutMs?: number }
   | { v: 1; id: string; type: "cancel"; timeoutMs?: number }
   | { v: 1; id: string; type: "reset_fault"; timeoutMs?: number }
   | { v: 1; id: string; type: "probe"; timeoutMs?: number }
@@ -45,7 +46,7 @@ export type GroupStreamEventMessage =
   | AckMessage
   | {
       v: 1;
-      type: "group_started" | "group_done" | "fault" | "telemetry" | "pong" | "snapshot";
+      type: "group_started" | "group_done" | "group_warn" | "fault" | "telemetry" | "pong" | "snapshot";
       [key: string]: unknown;
     };
 
