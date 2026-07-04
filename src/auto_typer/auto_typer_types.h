@@ -165,8 +165,6 @@ struct OledConfig {
 
 struct TypingConfig {
   uint32_t serialBaudrate;
-  const char* wifiSsid;
-  const char* wifiPassword;
   const char* deviceId;
   const char* firmwareVersion;
   CanBusConfig canBus;

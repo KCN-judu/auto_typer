@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 
 const keys = "1234567890-qwertyuiopasdfghjkl;'zxcvbnm,.- ".split("");
 const keyPitchX = 19.25;
@@ -492,55 +492,82 @@ assert.deepEqual(
 assert.equal(yPairSkewExceeded({ leftStart: 100, rightStart: -100, leftNow: -220, rightNow: 220, tolerance: 10 }), false);
 assert.equal(yPairSkewExceeded({ leftStart: 100, rightStart: -100, leftNow: -220, rightNow: 260, tolerance: 10 }), true);
 
-const httpServer = readFileSync(new URL("../http_control_server.h", import.meta.url), "utf8");
-const serialWifiSetup = readFileSync(new URL("../transport/SerialWifiSetup.h", import.meta.url), "utf8");
 const autoTyperIno = readFileSync(new URL("../auto_typer.ino", import.meta.url), "utf8");
+const autoTyperFirmware = readFileSync(new URL("../AutoTyperFirmware.cpp", import.meta.url), "utf8");
+const autoTyperFirmwareHeader = readFileSync(new URL("../AutoTyperFirmware.h", import.meta.url), "utf8");
+const autoTyperConfigHeader = readFileSync(new URL("../AutoTyperConfig.h", import.meta.url), "utf8");
+const staticWifiConnector = readFileSync(new URL("../network/StaticWifiConnector.h", import.meta.url), "utf8");
+const staticWifiConnectorCpp = readFileSync(new URL("../StaticWifiConnector.cpp", import.meta.url), "utf8");
+const secretsExample = readFileSync(new URL("../config/Secrets.example.h", import.meta.url), "utf8");
+const gitignore = readFileSync(new URL("../../../.gitignore", import.meta.url), "utf8");
 const nullPrint = readFileSync(new URL("../transport/NullPrint.h", import.meta.url), "utf8");
-assert.match(httpServer, /case JobState::None:[\s\S]*return "none";/, "JobState::None must serialize to none");
-assert.match(httpServer, /request\["point"\]/, "ProbeKeyRequest must read nested point");
-assert.match(httpServer, /sendJson\(200, response\);/, "Create job business rejections must return HTTP 200");
-assert.match(httpServer, /rejectionMessage/, "CreateJobResponse must include rejection details");
-assert.match(httpServer, /diagnostics\/protocol-trace/, "Protocol trace diagnostics route must be registered");
-assert.match(httpServer, /machine\/probe-motors/, "Motor probe route must be registered");
-assert.match(serialWifiSetup, /ATWIFI>/, "WiFi setup must accept USB serial control messages");
-assert.match(serialWifiSetup, /ATWIFI</, "WiFi setup must return USB serial control messages");
-assert.match(serialWifiSetup, /type"\]\s*=\s*"wifi_network"/, "Serial WiFi scan must stream one network per frame");
-assert.match(serialWifiSetup, /type"\]\s*=\s*"wifi_scan_started"/, "Serial WiFi scan must announce accepted async scans");
-assert.match(serialWifiSetup, /sendWifiNetworksComplete/, "Serial WiFi scan must send a small completion frame");
-assert.match(serialWifiSetup, /WiFi\.scanNetworks\(true,\s*false\)/, "Serial WiFi scan must use the ESP32 async scanner");
-assert.doesNotMatch(serialWifiSetup, /WiFi\.scanNetworks\(false,\s*false\)/, "Serial WiFi setup scan must not block on synchronous scanning");
-assert.match(serialWifiSetup, /wifiScanState_\s*==\s*WifiScanState::Running[\s\S]*wifi_scan_busy/, "Concurrent Serial WiFi scans must return a busy terminal response");
-assert.match(serialWifiSetup, /staConnecting_[\s\S]*wifi_busy_connecting/, "Serial WiFi scans must reject while STA connection is in progress");
-assert.match(serialWifiSetup, /WiFi\.scanComplete\(\);[\s\S]*result\s*==\s*kWifiScanRunningResult[\s\S]*return;/, "Serial WiFi scan polling must keep waiting while async scan is running");
-assert.match(serialWifiSetup, /now\s*-\s*wifiScanStartedAtMs_\s*>\s*kWifiScanTimeoutMs[\s\S]*WiFi\.scanDelete\(\);[\s\S]*wifi_scan_timeout/, "Serial WiFi scans must time out with one terminal response");
-assert.match(serialWifiSetup, /kWifiScanTimeoutMs\s*=\s*15000/, "Serial WiFi scan timeout must be 15000ms");
-assert.doesNotMatch(serialWifiSetup, /DynamicJsonDocument doc\(4096\)/, "Serial WiFi scan must not build a large networks JSON frame");
-assert.match(serialWifiSetup, /kSerialTxChunkBytes\s*=\s*96/, "Serial WiFi responses must use small USB CDC TX chunks");
-assert.match(serialWifiSetup, /serial_\.write\(reinterpret_cast<const uint8_t\*>\(data\),\s*chunk\);[\s\S]*delay\(1\);[\s\S]*serial_\.flush\(\);/, "Serial WiFi responses must pace chunked USB CDC TX");
-assert.doesNotMatch(serialWifiSetup, /serial_\.print\(line\)/, "Serial WiFi responses must not write large protocol frames in one print");
-assert.match(autoTyperIno, /AUTO_TYPER_SERIAL_DEBUG_LOGS[\s\S]*#define AUTO_TYPER_SERIAL_DEBUG_LOGS 0/, "Serial debug logs must default off");
-assert.match(autoTyperIno, /NullPrint gNullLog;[\s\S]*Print& gLog = gNullLog;/, "Default firmware logs must route to NullPrint");
-assert.match(autoTyperIno, /SerialWifiSetup gSerialWifi\(kConfig, gApp, Serial, gLog\);/, "Serial WiFi protocol must keep using the hardware Serial stream");
-assert.match(nullPrint, /class NullPrint : public Print/, "NullPrint must provide a Print-compatible log sink");
-assert.match(serialWifiSetup, /WiFi\.mode\(WIFI_STA\)/, "WiFi setup must use station mode over serial");
-assert.match(serialWifiSetup, /Preferences prefs;[\s\S]*wifiSsid[\s\S]*wifiPass/, "WiFi credentials must be saved in Preferences");
-assert.match(serialWifiSetup, /WiFi\.scanNetworks/, "WiFi setup must scan networks from the ESP32");
-assert.doesNotMatch(serialWifiSetup, /waitForStation/, "Serial WiFi setup must stay available instead of blocking startup");
-assert.doesNotMatch(
-  serialWifiSetup,
-  /json\["staPassword"\]|json\["wifiPassword"\]|response\["staPassword"\]|response\["wifiPassword"\]/,
-  "WiFi status must not return station WiFi password",
+const packageTool = readFileSync(new URL("../../../tools/auto-typer-arduino.mjs", import.meta.url), "utf8");
+const workspaceTool = readFileSync(new URL("../../../tools/auto-typer-workspace.mjs", import.meta.url), "utf8");
+assert.match(autoTyperIno, /#include "AutoTyperFirmware\.h"/, "User sketch must include the public firmware API");
+assert.match(autoTyperIno, /__has_include\("config\/Secrets\.h"\)/, "Source sketch must include Secrets.h only when available");
+assert.match(autoTyperIno, /#define AUTO_TYPER_WIFI_SSID ""/, "Source sketch must fall back to empty SSID when Secrets.h is absent");
+assert.match(autoTyperIno, /#define AUTO_TYPER_WIFI_PASSWORD ""/, "Source sketch must fall back to empty password when Secrets.h is absent");
+assert.match(autoTyperIno, /auto_typer::autoTyperSetup\(config\)/, "User sketch setup must delegate to the public firmware API");
+assert.match(autoTyperIno, /auto_typer::autoTyperLoop\(\)/, "User sketch loop must delegate to the public firmware API");
+assert.match(autoTyperConfigHeader, /struct WifiSecrets[\s\S]*struct FirmwareConfig/, "Public firmware config must expose WiFi credentials");
+assert.match(
+  autoTyperFirmwareHeader,
+  /#include "AutoTyperConfig\.h"[\s\S]*void autoTyperSetup\(const FirmwareConfig& config\);[\s\S]*void autoTyperLoop\(\);/,
+  "Public firmware API must expose config-driven setup and loop entrypoints",
 );
-assert.match(httpServer, /not_ready/, "HTTP status must expose not_ready health");
-assert.match(httpServer, /motorReadinessJson/, "Motor status must serialize readiness");
-assert.match(httpServer, /motorRoleJson/, "Motor status must serialize motor roles");
-assert.match(httpServer, /pressMotorId/, "HTTP status must include the press motor");
-assert.match(httpServer, /MotorRole::Press[\s\S]*return "press";/, "HTTP motor roles must serialize the press motor");
-assert.match(httpServer, /item\["dataHex"\]/, "Protocol trace API must expose hex data");
-assert.match(httpServer, /writeProtocolDiagnostics/, "Protocol trace API must expose parser diagnostics");
-assert.match(httpServer, /commandQueueFullCount/, "CAN diagnostics API must expose command queue full count");
-assert.match(httpServer, /lastCommandQueueError/, "CAN diagnostics API must expose last command queue error");
-assert.doesNotMatch(httpServer, /extractString|extractFloat|extractInt/, "HTTP handlers must not use ad-hoc JSON extractors");
+assert.doesNotMatch(
+  autoTyperFirmwareHeader,
+  /<Adafruit_|<ArduinoJson\.h>|<WiFi\.h>|<Wire\.h>/,
+  "Public firmware header must not require consumer-installed third-party library headers",
+);
+assert.match(autoTyperFirmware, /AUTO_TYPER_SERIAL_DEBUG_LOGS[\s\S]*#define AUTO_TYPER_SERIAL_DEBUG_LOGS 0/, "Serial debug logs must default off");
+assert.match(autoTyperFirmware, /NullPrint gNullLog;[\s\S]*Print& gLog = gNullLog;/, "Default firmware logs must route to NullPrint");
+assert.match(autoTyperFirmware, /StaticWifiConnector gWifi\(gLog\);/, "Firmware must use the static WiFi connector");
+assert.match(autoTyperFirmware, /gWifi\.begin\(gFirmwareConfig\.wifi\)[\s\S]*gApp\.setup\(\)/, "WiFi connector must start from injected config before app setup");
+assert.match(autoTyperFirmware, /gWifi\.consumeTcpReady\(\)[\s\S]*gGroupServer\.begin\(\)/, "TCP server must start only after WiFi is connected");
+assert.match(nullPrint, /class NullPrint : public Print/, "NullPrint must provide a Print-compatible log sink");
+assert.match(staticWifiConnector, /void begin\(const WifiSecrets& secrets\)/, "Static WiFi connector must accept sketch-provided secrets");
+assert.match(staticWifiConnector, /announceConnectedIpToSerial/, "Static WiFi connector must expose a dedicated serial IP announcement helper");
+assert.match(staticWifiConnectorCpp, /WiFi\.softAP\(kProvisioningApSsid,\s*kProvisioningApPassword,\s*kProvisioningApChannel\)/, "WiFi connector must start a provisioning SoftAP");
+assert.match(staticWifiConnectorCpp, /server_\.on\("\/api\/status"/, "WiFi connector must expose provisioning status over HTTP");
+assert.match(staticWifiConnectorCpp, /server_\.on\("\/api\/provision"/, "WiFi connector must expose provisioning credential submission over HTTP");
+assert.match(staticWifiConnectorCpp, /server_\.on\("\/api\/finish"/, "WiFi connector must expose a provisioning finish route");
+assert.match(staticWifiConnectorCpp, /WiFi\.disconnect\(false,\s*true\);[\s\S]*WiFi\.mode\(WIFI_AP_STA\);[\s\S]*WiFi\.setAutoReconnect\(false\);[\s\S]*WiFi\.begin/, "Provisioning flow must mirror wifi-setup STA connect ordering");
+assert.match(staticWifiConnectorCpp, /WiFi\.begin\(currentSsid_\.c_str\(\), currentPassword_\.c_str\(\)\)/, "Firmware must connect using provisioned WiFi credentials");
+assert.match(staticWifiConnectorCpp, /if \(state_ != State::StaConnected\) \{[\s\S]*NOT_CONNECTED/, "Provisioning finish must refuse early AP shutdown");
+assert.match(staticWifiConnectorCpp, /WiFi\.softAPdisconnect\(true\);[\s\S]*tcpReady_ = true;/, "Provisioning finish must close AP and release TCP startup");
+assert.match(staticWifiConnectorCpp, /Serial\.println\(\);[\s\S]*Serial\.print\("\[wifi\] connected ssid="/, "Firmware must emit a newline before the serial WiFi status banner");
+assert.match(staticWifiConnectorCpp, /Serial\.print\(currentSsid_\);[\s\S]*Serial\.print\(" ip="/, "Firmware serial WiFi banner must include the connected SSID before the IP");
+assert.match(staticWifiConnectorCpp, /WiFi\.setSleep\(false\)/, "Firmware must disable Wi-Fi sleep for TCP execution");
+assert.match(staticWifiConnectorCpp, /kMaxWaitingLogsPerAttempt/, "Static WiFi retries must use bounded waiting logs");
+assert.match(staticWifiConnector, /consumeTcpReady/, "Static WiFi connector must expose TCP readiness gating");
+assert.match(secretsExample, /AUTO_TYPER_WIFI_SSID/, "Secrets example must define AUTO_TYPER_WIFI_SSID");
+assert.match(secretsExample, /AUTO_TYPER_WIFI_PASSWORD/, "Secrets example must define AUTO_TYPER_WIFI_PASSWORD");
+assert.match(gitignore, /src\/auto_typer\/config\/Secrets\.h/, "Secrets.h must be gitignored");
+assert.doesNotMatch(
+  staticWifiConnectorCpp,
+  /println\(.*PASSWORD|print\(.*PASSWORD|println\(.*password|print\(.*password/,
+  "Static WiFi logs must not print WiFi passwords",
+);
+assert.doesNotMatch(
+  `${autoTyperFirmware}\n${staticWifiConnector}\n${staticWifiConnectorCpp}\n${secretsExample}\n${packageTool}`,
+  /WiFiProv|NETWORK_PROV_SCHEME_BLE|AUTO_TYPER_WIFI_PROV|clearCredentialsAndRestartProvisioning|startProvisioning/,
+  "Firmware must not retain runtime provisioning symbols",
+);
+assert.match(packageTool, /compile-source/, "Arduino packaging tool must support source compile verification");
+assert.match(packageTool, /verify-package/, "Arduino packaging tool must support packaged library verification");
+assert.match(packageTool, /upload-package/, "Arduino packaging tool must support packaged library upload");
+assert.match(packageTool, /--build-path/, "Arduino packaging tool must force repo-local Arduino build paths");
+assert.match(packageTool, /--library", distLibraryDir/, "Packaged library verification must compile as a consumer sketch");
+assert.match(packageTool, /collectObjectFiles\(join\(sourceBuildDir, "libraries"\)\)/, "Packaged archive must bundle third-party library objects");
+assert.match(workspaceTool, /AutoTyper ESP32S3 Dev Module/, "Workspace generator must define a single visible AutoTyper board");
+assert.match(workspaceTool, /build\.core=autotyper_upstream:esp32/, "Workspace generator must point the custom board at the hidden upstream core");
+assert.match(workspaceTool, /build\.variant=autotyper_upstream:esp32s3/, "Workspace generator must point the custom board at the hidden upstream variant");
+assert.match(workspaceTool, /rmSync\(join\(workspaceDataDir, "packages\/esp32\/hardware"\)/, "Workspace generator must remove the official visible esp32 hardware package from the offline data dir");
+assert.match(workspaceTool, /Launch AutoTyper Arduino\.command/, "Workspace generator must create a launch script for the local Arduino IDE");
+assert.match(workspaceTool, /APP_CANDIDATES/, "Workspace launcher must search for a locally installed Arduino IDE");
+assert.match(workspaceTool, /ARDUINO_IDE_ANCHOR\.txt/, "Workspace generator must record the expected local Arduino IDE path");
+assert.match(workspaceTool, /Secrets\.h/, "Workspace generator must include an editable WiFi secrets template");
 
 const canRxTask = readFileSync(new URL("../can/CanRxTask.h", import.meta.url), "utf8");
 const autoTyperRuntime = readFileSync(new URL("../auto_typer_runtime.h", import.meta.url), "utf8");
@@ -552,6 +579,10 @@ const appTsx = readFileSync(new URL("../../../apps/desktop/src/ui/App.tsx", impo
 const groupStreamPlanner = readFileSync(new URL("../../../apps/desktop/src/domain/groupStreamPlanner.ts", import.meta.url), "utf8");
 const deviceLink = readFileSync(new URL("../../../apps/desktop/electron/device-link.ts", import.meta.url), "utf8");
 const electronMain = readFileSync(new URL("../../../apps/desktop/electron/main.ts", import.meta.url), "utf8");
+const electronPreload = readFileSync(new URL("../../../apps/desktop/electron/preload.ts", import.meta.url), "utf8");
+const viteEnv = readFileSync(new URL("../../../apps/desktop/src/vite-env.d.ts", import.meta.url), "utf8");
+const rootPackageJson = readFileSync(new URL("../../../package.json", import.meta.url), "utf8");
+const desktopPackageJson = readFileSync(new URL("../../../apps/desktop/package.json", import.meta.url), "utf8");
 const firmwareSetupBody = autoTyperRuntime.slice(
   autoTyperRuntime.indexOf("void setup()"),
   autoTyperRuntime.indexOf("printBanner();"),
@@ -579,9 +610,37 @@ assert.doesNotMatch(canRxTask, /WiFiClient|serializeJson|client_\.write|sendJson
 assert.match(firmwareSetupBody, /buildKeymap\(\);/, "Firmware setup must keep only a RAM fallback keymap");
 assert.doesNotMatch(autoTyperRuntime, /KeymapStore|keymapStore_/, "Firmware runtime must not persist keymap coordinates");
 assert.doesNotMatch(firmwareSetupBody, /keymapStore_\.load|keymapStore_\.save|layoutVersion\(\)/, "Firmware setup must not load or save stored keymap coordinates");
-assert.match(autoTyperIno, /MotorTelemetryBuffer gMotorTelemetry/, "Sketch must own the motor telemetry buffer");
-assert.match(autoTyperIno, /CanRxTask gCanRx\(gCanBus,\s*gFeedback,\s*gEvents,\s*gTrace,\s*&gMotorTelemetry\)/, "CAN RX task must observe telemetry through the buffer");
-assert.match(autoTyperIno, /GroupCommandServer gGroupServer\(kConfig,\s*gApp,\s*gMotorTelemetry,\s*gLog\)/, "Existing TCP server must drain telemetry and use configured log sink");
+assert.match(autoTyperFirmware, /MotorTelemetryBuffer gMotorTelemetry/, "Firmware core must own the motor telemetry buffer");
+assert.match(autoTyperFirmware, /CanRxTask gCanRx\(gCanBus,\s*gFeedback,\s*gEvents,\s*gTrace,\s*&gMotorTelemetry\)/, "CAN RX task must observe telemetry through the buffer");
+assert.match(autoTyperFirmware, /GroupCommandServer gGroupServer\(kConfig,\s*gApp,\s*gMotorTelemetry,\s*gLog\)/, "Existing TCP server must drain telemetry and use configured log sink");
+
+const packagedLibraryRoot = new URL("../../../dist/arduino/AutoTyperCore/", import.meta.url);
+assert.equal(existsSync(packagedLibraryRoot), true, "Generated Arduino library package must exist");
+const packagedLibraryProperties = readFileSync(new URL("./../../../dist/arduino/AutoTyperCore/library.properties", import.meta.url), "utf8");
+const packagedLibraryHeader = readFileSync(new URL("./../../../dist/arduino/AutoTyperCore/src/AutoTyperFirmware.h", import.meta.url), "utf8");
+const packagedLibraryConfigHeader = readFileSync(new URL("./../../../dist/arduino/AutoTyperCore/src/AutoTyperConfig.h", import.meta.url), "utf8");
+const packagedExample = readFileSync(
+  new URL("./../../../dist/arduino/AutoTyperCore/examples/AutoTyperStaticSecrets/AutoTyperStaticSecrets.ino", import.meta.url),
+  "utf8",
+);
+const packagedSecretsExample = readFileSync(
+  new URL("./../../../dist/arduino/AutoTyperCore/examples/AutoTyperStaticSecrets/Secrets.example.h", import.meta.url),
+  "utf8",
+);
+assert.equal(
+  existsSync(new URL("./../../../dist/arduino/AutoTyperCore/src/esp32s3/libauto_typer_core.a", import.meta.url)),
+  true,
+  "Generated Arduino library package must include the precompiled archive",
+);
+assert.match(packagedLibraryProperties, /precompiled=full/, "Generated library must be precompiled-only");
+assert.match(packagedLibraryProperties, /dot_a_linkage=true/, "Generated library must link through a dot-a archive");
+assert.equal(packagedLibraryHeader, autoTyperFirmwareHeader, "Generated firmware header must match the source public API");
+assert.equal(packagedLibraryConfigHeader, autoTyperConfigHeader, "Generated config header must match the source public API");
+assert.match(packagedExample, /#include <AutoTyperFirmware\.h>/, "Generated example must include the packaged public firmware header");
+assert.match(packagedExample, /#include "Secrets\.h"/, "Generated example must own its local Secrets.h");
+assert.match(packagedExample, /auto_typer::autoTyperSetup\(kFirmwareConfig\)/, "Generated example must pass config into setup");
+assert.match(packagedSecretsExample, /AUTO_TYPER_WIFI_SSID/, "Generated example secrets template must define AUTO_TYPER_WIFI_SSID");
+assert.match(packagedSecretsExample, /AUTO_TYPER_WIFI_PASSWORD/, "Generated example secrets template must define AUTO_TYPER_WIFI_PASSWORD");
 
 assert.match(groupCommandServer, /sendMotorTelemetry\(\)/, "TCP server tick must drain outbound motor telemetry");
 assert.match(groupCommandServer, /drainCriticalEvents/, "TCP server must drain critical motor events");
@@ -686,7 +745,7 @@ assert.match(deviceLink, /commandType === "exec_group"[\s\S]*group_accepted[\s\S
 assert.match(deviceLink, /cancelRequestedFor/, "DeviceLink must suppress repeated cancel storms for an active group");
 assert.doesNotMatch(deviceLink, /return \{ v: 1, type: "pong"/, "DeviceLink must not fabricate local ping responses");
 assert.match(electronMain, /transport_disconnect/, "TCP disconnect logs must use transport_disconnect");
-assert.match(autoTyperIno, /gGroupServer\.tick\(\);[\s\S]*gApp\.tick\(\);[\s\S]*delay\(1\)/, "Sketch loop must keep the current TCP/app lifecycle");
+assert.match(autoTyperFirmware, /gGroupServer\.tick\(\);[\s\S]*gApp\.tick\(\);[\s\S]*delay\(1\)/, "Firmware loop must keep the current TCP/app lifecycle");
 
 console.log("telemetry and anti-blocking regression tests passed");
 
@@ -983,11 +1042,6 @@ assert.doesNotMatch(
   /from "node:http"|from "node:https"|network:request/,
   "Electron main must not expose renderer-facing HTTP control transport",
 );
-assert.doesNotMatch(
-  electronMain,
-  /POST \/api\/jobs[\s\S]*retry|retry[\s\S]*POST \/api\/jobs/,
-  "POST /api/jobs must not gain automatic retry without idempotency",
-);
 assert.doesNotMatch(deviceLink, /magic0|magic1|headerLength|frameTypes|writeFrame|pushData/, "Desktop TCP protocol must not use binary frames");
 assert.match(deviceLink, /JSON\.stringify\(message\)\}\\n/, "DeviceLink must write NDJSON lines");
 assert.match(deviceLink, /MAX_TCP_MESSAGE_BYTES/, "DeviceLink must cap inbound NDJSON lines using shared bounds");
@@ -1009,22 +1063,6 @@ assert.match(groupStreamClient, /encodeExecGroup/, "Renderer group stream client
 assert.doesNotMatch(groupStreamClient, /timeoutMs: execGroupAckTimeoutMs|sendTaskEnd|type: "task_end"/, "Renderer group stream client must not send legacy timeout/task_end fields");
 assert.doesNotMatch(groupStreamClient, /sendExecBlock|exec_block|BlockStream|RemoteMotionBlock|blockId/, "Renderer group stream client must not retain legacy block execution");
 
-assert.match(httpServer, /kMaxJobRequestBytes\s*=\s*8192/, "Create job must cap request bodies at 8192 bytes");
-assert.doesNotMatch(httpServer, /void handleCreateJob\(\)\s*\{[\s\S]*StaticJsonDocument<512>/, "Create job must not use StaticJsonDocument<512>");
-assert.match(httpServer, /DynamicJsonDocument request\(body\.length\(\) \+ 512\)/, "Create job must size JSON parsing from body length");
-assert.match(httpServer, /body\.length\(\) > kMaxJobRequestBytes/, "Create job must reject oversized bodies");
-assert.match(httpServer, /sendError\(413,\s*"job_too_large"/, "Oversized job requests must return job_too_large");
-assert.match(httpServer, /sendHeader\("Connection",\s*"close"\)/, "Firmware JSON responses must close HTTP connections");
-assert.match(httpServer, /sendHeader\("Cache-Control",\s*"no-store"\)/, "Firmware JSON responses must disable response caching");
-assert.doesNotMatch(httpServer, /server_\.client\(\)\.stop\(\)/, "Firmware must not immediately hard-stop response clients");
-assert.match(httpServer, /\[http\] response status=/, "Firmware JSON responses must log response status");
-assert.match(httpServer, /json\.length\(\)/, "Firmware JSON responses must log response byte length");
-assert.match(httpServer, /\[http\] POST \/api\/jobs bodyBytes=/, "Create job must log request body bytes");
-assert.match(httpServer, /\[http\] POST \/api\/jobs invalid_json/, "Create job must log JSON parse errors");
-assert.match(httpServer, /\[http\] POST \/api\/jobs textLength=/, "Create job must log text length");
-assert.match(httpServer, /\[http\] POST \/api\/jobs missing text/, "Create job must log missing text");
-assert.match(httpServer, /\[http\] POST \/api\/jobs accepted=/, "Create job must log submit result");
-assert.match(httpServer, /\[http\] POST \/api\/jobs response sent/, "Create job must log response completion");
 assert.doesNotMatch(appTsx, /getKeymap\(\)/, "Desktop connect must not fetch device keymap over the fixed desktop keymap");
 assert.match(appTsx, /setKeymap\(currentFeiyu200Keymap\(\)\)/, "Desktop connect must reset to the desktop-owned fixed keymap");
 
@@ -1037,7 +1075,19 @@ assert.match(appTsx, /message\.type === "block_started"/, "Print Task UI may dis
 assert.doesNotMatch(appTsx, /sendExecBlock|BlockStream|totalBlocks|Block probe|块流|group_warn|sendTaskEnd/, "Print Task UI must not retain legacy block stream or group_warn/task_end code");
 assert.doesNotMatch(appTsx, /client\.createJob/, "Print Task must not call POST /api/jobs");
 assert.match(appTsx, /<TaskStatusPanel status=\{status\} logLines=\{logLines\} printTask=\{printTask\} \/>/, "Print Task page must show group stream task state");
-assert.doesNotMatch(appTsx, /WifiSetupPanel|setupClient\.wifiNetworks|setupClient\.configureWifi|finishWifiSetup/, "V1 settings must not expose undefined WiFi setup controls");
+assert.match(appTsx, /<h2>TCP 设备<\/h2>/, "Settings must keep the LAN TCP host/port flow");
+assert.match(appTsx, /<h2>Wi-Fi 配网<\/h2>/, "Settings must expose a provisioning panel");
+assert.match(electronMain, /wifiProvision:getStatus/, "Electron main must expose a provisioning status IPC bridge");
+assert.match(electronMain, /wifiProvision:provision/, "Electron main must expose a provisioning submit IPC bridge");
+assert.match(electronMain, /wifiProvision:finish/, "Electron main must expose a provisioning finish IPC bridge");
+assert.match(electronPreload, /wifiProvisionGetStatus/, "Electron preload must expose provisioning status");
+assert.match(electronPreload, /wifiProvisionSendCredentials/, "Electron preload must expose provisioning submit");
+assert.match(electronPreload, /wifiProvisionFinish/, "Electron preload must expose provisioning finish");
+assert.match(viteEnv, /wifiProvisionGetStatus/, "Renderer typings must include provisioning status bridge");
+assert.match(viteEnv, /wifiProvisionSendCredentials/, "Renderer typings must include provisioning submit bridge");
+assert.match(viteEnv, /wifiProvisionFinish/, "Renderer typings must include provisioning finish bridge");
+assert.match(appTsx, /wifiProvisionFinish/, "Renderer provisioning flow must explicitly finish AP mode after receiving IP");
+assert.doesNotMatch(sharedProtocol, /set_wifi|provision|Provisioning/, "Shared TCP protocol must not absorb provisioning commands");
 
 assert.match(groupCommandServer, /kGroupCommandPort\s*=\s*7777/, "Group command server must listen on TCP 7777");
 assert.match(groupCommandServer, /lineBuffer_ \+= static_cast<char>\(value\)/, "Group command server must buffer NDJSON input");
@@ -1061,12 +1111,12 @@ assert.match(groupCommandServer, /sendBlockEvent\("block_started"/, "Group comma
 assert.match(groupCommandServer, /sendBlockEvent\("block_done"/, "Group command server must emit block_done events");
 assert.doesNotMatch(groupCommandServer, /exec_block|sendBlockCommand|BlockCommand|kBlockCommand|currentBlockId|lastCompletedBlockId|FrameCodec|parseDesktopCommand|raw_can|can_frame|twai_transmit|group_warn|task_end/, "Group command server must not use legacy control commands, binary frames, or expose raw CAN");
 assert.doesNotMatch(groupCommandProtocol, /RemoteMotionBlock|parseRemoteBlock/, "Group command protocol must not expose legacy remote block parsing");
-assert.match(autoTyperIno, /#include "transport\/GroupCommandServer\.h"/, "Sketch must include GroupCommandServer");
-assert.match(autoTyperIno, /GroupCommandServer gGroupServer/, "Sketch must instantiate GroupCommandServer");
-assert.match(autoTyperIno, /gGroupServer\.begin\(\)/, "Sketch must start GroupCommandServer");
-assert.match(autoTyperIno, /WiFi\.setSleep\(false\)/, "Sketch must disable Wi-Fi sleep for TCP execution");
-assert.doesNotMatch(autoTyperIno, /gHttp\.begin|gHttp\.tick|HttpControlServer/, "Active sketch runtime must not start or tick HTTP control");
-assert.match(autoTyperIno, /gGroupServer\.tick\(\)[\s\S]*gApp\.tick\(\)[\s\S]*delay\(1\)/, "Sketch loop must tick group server, app, and use delay(1)");
+assert.match(autoTyperFirmware, /#include "transport\/GroupCommandServer\.h"/, "Firmware core must include GroupCommandServer");
+assert.match(autoTyperFirmware, /GroupCommandServer gGroupServer/, "Firmware core must instantiate GroupCommandServer");
+assert.match(autoTyperFirmware, /gGroupServer\.begin\(\)/, "Firmware core must start GroupCommandServer");
+assert.match(staticWifiConnectorCpp, /WiFi\.setSleep\(false\)/, "Static WiFi connector must disable Wi-Fi sleep for TCP execution");
+assert.doesNotMatch(autoTyperFirmware, /gHttp\.begin|gHttp\.tick|HttpControlServer/, "Active firmware runtime must not start or tick HTTP control");
+assert.match(autoTyperFirmware, /gGroupServer\.tick\(\)[\s\S]*gApp\.tick\(\)[\s\S]*delay\(1\)/, "Firmware loop must tick group server, app, and use delay(1)");
 assert.match(autoTyperRuntime, /submitRemoteGroup/, "Firmware must expose remote group submission");
 assert.match(autoTyperRuntime, /count > kRemoteGroupMaxSteps/, "Firmware must cap remote group size");
 assert.match(autoTyperRuntime, /MachinePointMm plannedPoint = remoteCurrentPoint_/, "Remote group conversion must track a local planned point");

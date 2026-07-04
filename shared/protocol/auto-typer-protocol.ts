@@ -18,10 +18,6 @@ export const TCP_COMMAND_TYPES = [
   "get_status",
   "subscribe_telemetry",
   "get_keymap",
-  "get_wifi_status",
-  "scan_wifi",
-  "configure_wifi",
-  "finish_wifi_setup",
   "probe",
   "press_diag_m5",
   "reset_fault",
@@ -37,11 +33,6 @@ export const TCP_TERMINAL_RESPONSE_TYPES = [
   "status",
   "telemetry_subscribed",
   "keymap",
-  "wifi_status",
-  "wifi_network",
-  "wifi_networks",
-  "wifi_config_result",
-  "wifi_setup_finished",
   "probe_result",
   "press_diag_m5_result",
   "reset_fault_result",
@@ -281,41 +272,6 @@ export interface ProtocolTraceResponse {
   };
 }
 
-export type WifiPhase = "connected" | "connecting" | "no_credentials" | "failed" | "idle";
-
-export type WifiEncryption =
-  | "open"
-  | "wep"
-  | "wpa"
-  | "wpa2"
-  | "wpa_wpa2"
-  | "wpa2_enterprise"
-  | "wpa3"
-  | "wpa2_wpa3"
-  | "unknown";
-
-export interface WifiStatus {
-  setupApActive: boolean;
-  setupSsid: string;
-  setupPassword: string;
-  setupIpAddress: string;
-  staConnected: boolean;
-  staConnecting: boolean;
-  staSsid: string;
-  ipAddress: string;
-  wifiRssi: number;
-  savedCredentials: boolean;
-  phase: WifiPhase;
-  lastError?: string;
-}
-
-export interface WifiNetwork {
-  ssid: string;
-  rssi: number;
-  channel: number;
-  encryption: WifiEncryption;
-}
-
 export type RemoteMotionProfile = {
   rpm: number;
   accelRaw: number;
@@ -367,32 +323,6 @@ export type GetKeymapMessage = {
   v: 1;
   requestId: string;
   type: "get_keymap";
-};
-
-export type GetWifiStatusMessage = {
-  v: 1;
-  requestId: string;
-  type: "get_wifi_status";
-};
-
-export type ScanWifiMessage = {
-  v: 1;
-  requestId: string;
-  type: "scan_wifi";
-};
-
-export type ConfigureWifiMessage = {
-  v: 1;
-  requestId: string;
-  type: "configure_wifi";
-  ssid: string;
-  password: string;
-};
-
-export type FinishWifiSetupMessage = {
-  v: 1;
-  requestId: string;
-  type: "finish_wifi_setup";
 };
 
 export type ExecGroupMessage = {
@@ -491,59 +421,6 @@ export type KeymapMessage = {
   requestId: string;
   coordinateSystem: CoordinateSystem;
   keys: Array<{ label: string; xMm: number; yMm: number }>;
-};
-
-export type WifiStatusMessage = {
-  v: 1;
-  type: "wifi_status";
-  requestId: string;
-  wifi: WifiStatus;
-};
-
-export type WifiNetworkMessage = {
-  v: 1;
-  type: "wifi_network";
-  requestId: string;
-  network: WifiNetwork;
-};
-
-export type WifiScanStartedMessage = {
-  v: 1;
-  type: "wifi_scan_started";
-  requestId: string;
-  ok?: boolean;
-  message?: string;
-};
-
-export type WifiNetworksMessage = {
-  v: 1;
-  type: "wifi_networks";
-  requestId: string;
-  ok: boolean;
-  count: number;
-  networks: WifiNetwork[];
-  code?: string;
-  message?: string;
-};
-
-export type WifiConfigResultMessage = {
-  v: 1;
-  type: "wifi_config_result";
-  requestId: string;
-  ok: boolean;
-  message: string;
-  code?: string;
-  wifi: WifiStatus;
-};
-
-export type WifiSetupFinishedMessage = {
-  v: 1;
-  type: "wifi_setup_finished";
-  requestId: string;
-  ok: boolean;
-  message: string;
-  code?: string;
-  wifi: WifiStatus;
 };
 
 export type ProbeResultMessage = {
@@ -716,10 +593,6 @@ export type GroupStreamCommandMessage =
   | GetStatusMessage
   | SubscribeTelemetryMessage
   | GetKeymapMessage
-  | GetWifiStatusMessage
-  | ScanWifiMessage
-  | ConfigureWifiMessage
-  | FinishWifiSetupMessage
   | ExecGroupMessage
   | CancelMessage
   | FinishTaskMessage
@@ -734,12 +607,6 @@ export type GroupStreamEventMessage =
   | StatusMessage
   | TelemetrySubscribedMessage
   | KeymapMessage
-  | WifiStatusMessage
-  | WifiScanStartedMessage
-  | WifiNetworkMessage
-  | WifiNetworksMessage
-  | WifiConfigResultMessage
-  | WifiSetupFinishedMessage
   | ProbeResultMessage
   | PressDiagM5ResultMessage
   | ResetFaultResultMessage

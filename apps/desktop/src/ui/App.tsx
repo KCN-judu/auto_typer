@@ -17,7 +17,6 @@ import {
   Send,
   Settings,
   Square,
-  Wifi,
   Wrench,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -34,8 +33,6 @@ import type {
   MotorStateUpdateMessage,
   TaskGroup,
   TelemetryMessage,
-  WifiNetwork,
-  WifiStatus,
 } from "../../../../shared/protocol/auto-typer-protocol";
 import {
   formatExecutionTimeout,
@@ -47,14 +44,21 @@ import type { PlannedRemoteMotionGroup } from "../domain/groupStreamPlanner";
 import { planTextToRemoteMotionGroups } from "../domain/groupStreamPlanner";
 import { currentFeiyu200Keymap, validateKeymap } from "../domain/keymap";
 import { mockKeymap, mockStatus } from "../domain/mockDevice";
-import { SerialWifiClient } from "../domain/serialWifiClient";
-import type { SerialWifiConnectionState } from "../domain/serialWifiClient";
 import { DashboardPage } from "./dashboard/DashboardPage";
 import { KeymapPage } from "./keymap/KeymapPage";
 
 type View = "dashboard" | "job" | "debug" | "settings" | "keymap";
 type ConnectionState = "disconnected" | "connecting" | "connected" | "desync" | "transport_fault";
 type StreamState = "disconnected" | "connecting" | "connected" | "running" | "fault";
+type ProvisioningState =
+  | "idle"
+  | "probing_ap"
+  | "sending_credentials"
+  | "waiting_sta"
+  | "finishing_ap"
+  | "sta_connected"
+  | "sta_failed";
+type WifiProvisionStatus = NonNullable<Window["autoTyper"]> extends { wifiProvisionGetStatus: (...args: never[]) => Promise<infer T> } ? T : never;
 
 type PrintTaskState = {
   stream: StreamState;
@@ -74,18 +78,14 @@ export function App() {
   const [view, setView] = useState<View>("dashboard");
   const [tcpHost, setTcpHost] = useState("192.168.4.42");
   const [tcpPort, setTcpPort] = useState(defaultPort);
+  const [provisionBaseUrl, setProvisionBaseUrl] = useState("http://192.168.4.1");
+  const [wifiSsid, setWifiSsid] = useState("");
+  const [wifiPassword, setWifiPassword] = useState("");
+  const [provisionState, setProvisionState] = useState<ProvisioningState>("idle");
+  const [provisionStatus, setProvisionStatus] = useState<WifiProvisionStatus | null>(null);
   const [connection, setConnection] = useState<ConnectionState>("disconnected");
   const [status, setStatus] = useState<DeviceStatus>(mockStatus);
   const [keymap, setKeymap] = useState<KeymapDocument>(mockKeymap);
-  const [wifiStatus, setWifiStatus] = useState<WifiStatus | undefined>();
-  const [wifiNetworks, setWifiNetworks] = useState<WifiNetwork[]>([]);
-  const [wifiSsid, setWifiSsid] = useState("");
-  const [wifiPassword, setWifiPassword] = useState("");
-  const [wifiBusy, setWifiBusy] = useState(false);
-  const [wifiBusyLabel, setWifiBusyLabel] = useState("");
-  const [serialWifiConnection, setSerialWifiConnection] = useState<SerialWifiConnectionState>("disconnected");
-  const [serialPorts, setSerialPorts] = useState<Array<{ path: string; label: string }>>([]);
-  const [selectedSerialPort, setSelectedSerialPort] = useState("");
   const [jobText, setJobText] = useState("asdf jkl");
   const [debugStepPulses, setDebugStepPulses] = useState(80);
   const [debugRpm, setDebugRpm] = useState(800);
@@ -100,12 +100,12 @@ export function App() {
   });
   const [logLines, setLogLines] = useState<string[]>(["等待 TCP 连接"]);
   const streamClient = useMemo(() => new GroupStreamClient(), []);
-  const serialWifiClient = useMemo(() => new SerialWifiClient(), []);
   const keymapIssues = useMemo(() => validateKeymap(keymap), [keymap]);
   const printTaskRef = useRef(printTask);
   const activeGroupIdRef = useRef<string | undefined>();
   const activeGroupSeqRef = useRef<number | undefined>();
   const returnZeroAfterCancelRef = useRef(false);
+  const provisionPollRef = useRef<number | undefined>();
 
   useEffect(() => {
     printTaskRef.current = printTask;
@@ -119,18 +119,25 @@ export function App() {
       if (store.lastTcpPort) {
         setTcpPort(store.lastTcpPort);
       }
-    });
-  }, []);
-
-  useEffect(() => streamClient.onMessage(handleTcpEvent), [streamClient]);
-
-  useEffect(() => {
-    return window.autoTyper?.serialWifiOnLog?.((event) => {
-      if (!event.protocol) {
-        appendLog(`[serial] ${event.line}`);
+      if (store.lastProvisionBaseUrl) {
+        setProvisionBaseUrl(store.lastProvisionBaseUrl);
+      }
+      if (store.savedWifiSsid) {
+        setWifiSsid(store.savedWifiSsid);
+      }
+      if (store.savedWifiPassword) {
+        setWifiPassword(store.savedWifiPassword);
       }
     });
   }, []);
+
+  useEffect(() => () => {
+    if (provisionPollRef.current !== undefined) {
+      window.clearInterval(provisionPollRef.current);
+    }
+  }, []);
+
+  useEffect(() => streamClient.onMessage(handleTcpEvent), [streamClient]);
 
   async function connect(hostOverride?: string) {
     const host = hostOverride ?? tcpHost;
@@ -155,85 +162,109 @@ export function App() {
     }
   }
 
-  async function connectSerialWifi() {
-    setSerialWifiConnection("connecting");
-    try {
-      let portPath = selectedSerialPort;
-      if (serialPorts.length === 0) {
-        const ports = await refreshSerialPorts();
-        portPath = selectedSerialPort || ports[0]?.path || "";
+  async function persistProvisioningFields(next: Partial<{
+    lastProvisionBaseUrl: string;
+    savedWifiSsid: string;
+    savedWifiPassword: string;
+    lastTcpHost: string;
+    lastTcpPort: number;
+  }>) {
+    const current = await window.autoTyper?.readStore();
+    if (!current || !window.autoTyper) {
+      return;
+    }
+    await window.autoTyper.writeStore({
+      ...current,
+      ...next,
+    });
+  }
+
+  async function readProvisionStatus() {
+    if (!window.autoTyper) {
+      throw new Error("Provisioning IPC is unavailable");
+    }
+    setProvisionState("probing_ap");
+    const payload = await window.autoTyper.wifiProvisionGetStatus({ baseUrl: provisionBaseUrl });
+    setProvisionStatus(payload);
+    appendLog(`AP 状态 ${payload.state}${payload.ap ? ` ${payload.ap.ssid}@${payload.ap.ip}` : ""}`);
+    if (payload.state === "CONNECTED" && payload.ip) {
+      setProvisionState("finishing_ap");
+      setTcpHost(payload.ip);
+      await persistProvisioningFields({ lastProvisionBaseUrl: provisionBaseUrl, lastTcpHost: payload.ip, lastTcpPort: tcpPort });
+      if (!window.autoTyper) {
+        throw new Error("Provisioning IPC is unavailable");
       }
-      await serialWifiClient.connect(portPath || undefined);
-      setSerialWifiConnection("connected");
-      const next = await serialWifiClient.getWifiStatus();
-      setWifiStatus(next);
-      if (next.staSsid) {
-        setWifiSsid(next.staSsid);
-      }
-      appendLog("USB 串口 WiFi 配置已连接");
-      if (next.staConnected && next.ipAddress) {
-        await connectTcpFromWifiStatus(next);
-      }
-    } catch (error) {
-      setSerialWifiConnection(serialWifiClient.isSupported() ? "disconnected" : "unsupported");
-      appendLog(error instanceof Error ? error.message : "USB 串口连接失败");
+      await window.autoTyper.wifiProvisionFinish({ baseUrl: provisionBaseUrl });
+      setProvisionState("sta_connected");
+      appendLog(`配网成功，TCP Host 已回填 ${payload.ip}，AP 已结束，请切回目标 Wi-Fi`);
+      return payload;
+    }
+    if (payload.state === "FAILED") {
+      setProvisionState("sta_failed");
+      appendLog(`配网失败 ${payload.reason ?? "UNKNOWN"}`);
+      return payload;
+    }
+    setProvisionState(payload.state === "CONNECTING" ? "waiting_sta" : "idle");
+    await persistProvisioningFields({ lastProvisionBaseUrl: provisionBaseUrl });
+    return payload;
+  }
+
+  function stopProvisionPolling() {
+    if (provisionPollRef.current !== undefined) {
+      window.clearInterval(provisionPollRef.current);
+      provisionPollRef.current = undefined;
     }
   }
 
-  async function refreshSerialPorts() {
-    const ports = await serialWifiClient.listPorts();
-    setSerialPorts(ports);
-    if (!selectedSerialPort && ports[0]) {
-      setSelectedSerialPort(ports[0].path);
-    }
-    appendLog(`发现 ${ports.length} 个串口`);
-    return ports;
+  function startProvisionPolling() {
+    stopProvisionPolling();
+    provisionPollRef.current = window.setInterval(() => {
+      void readProvisionStatus().then((payload) => {
+        if (payload.state === "CONNECTED" || payload.state === "FAILED") {
+          stopProvisionPolling();
+        }
+      }).catch((error) => {
+        stopProvisionPolling();
+        setProvisionState("sta_failed");
+        appendLog(error instanceof Error ? error.message : "读取 AP 状态失败");
+      });
+    }, 2500);
   }
 
-  async function disconnectSerialWifi() {
-    await serialWifiClient.disconnect().catch(() => undefined);
-    setSerialWifiConnection(serialWifiClient.isSupported() ? "disconnected" : "unsupported");
-    appendLog("USB 串口 WiFi 配置已断开");
-  }
-
-  async function connectTcpFromWifiStatus(nextWifi?: WifiStatus) {
-    setWifiBusy(true);
-    setWifiBusyLabel("读取 IP");
-    try {
-      const next = nextWifi?.staConnected && nextWifi.ipAddress
-        ? nextWifi
-        : await waitForSerialWifiIp(nextWifi);
-      setWifiStatus(next);
-      if (!next.staConnected || !next.ipAddress) {
-        appendLog("固件尚未连接 WiFi，无法读取可连接 IP");
-        return;
-      }
-      if (next.staSsid) {
-        setWifiSsid(next.staSsid);
-      }
-      setTcpHost(next.ipAddress);
-      appendLog(`串口读取到固件 IP ${next.ipAddress}，开始连接 TCP`);
-      await connect(next.ipAddress);
-    } catch (error) {
-      appendLog(error instanceof Error ? error.message : "读取 IP 并连接失败");
-    } finally {
-      setWifiBusy(false);
-      setWifiBusyLabel("");
+  async function provisionWifi(useSavedOnly = false) {
+    if (!window.autoTyper) {
+      throw new Error("Provisioning IPC is unavailable");
     }
-  }
-
-  async function waitForSerialWifiIp(initial?: WifiStatus): Promise<WifiStatus> {
-    const startedAt = Date.now();
-    let next = initial;
-    while (Date.now() - startedAt < 30000) {
-      if (next?.staConnected && next.ipAddress) {
-        return next;
-      }
-      await sleep(800);
-      next = await serialWifiClient.getWifiStatus();
-      setWifiStatus(next);
+    const ssid = useSavedOnly ? wifiSsid.trim() : wifiSsid.trim();
+    if (!ssid) {
+      appendLog("缺少 SSID，无法配网");
+      setProvisionState("sta_failed");
+      return;
     }
-    return next ?? await serialWifiClient.getWifiStatus();
+    setProvisionState("sending_credentials");
+    const payload = await window.autoTyper.wifiProvisionSendCredentials({
+      baseUrl: provisionBaseUrl,
+      ssid,
+      password: wifiPassword,
+    });
+    setProvisionStatus(payload);
+    setProvisionState(payload.state === "FAILED" ? "sta_failed" : "waiting_sta");
+    await persistProvisioningFields({
+      lastProvisionBaseUrl: provisionBaseUrl,
+      savedWifiSsid: ssid,
+      savedWifiPassword: wifiPassword,
+    });
+    appendLog(`已发送配网到 ${provisionBaseUrl}，目标 SSID=${ssid}`);
+    if (payload.state === "CONNECTED" && payload.ip) {
+      setTcpHost(payload.ip);
+      await persistProvisioningFields({ lastTcpHost: payload.ip, lastTcpPort: tcpPort });
+      setProvisionState("finishing_ap");
+      await window.autoTyper.wifiProvisionFinish({ baseUrl: provisionBaseUrl });
+      setProvisionState("sta_connected");
+      appendLog(`配网成功，TCP Host 已回填 ${payload.ip}，AP 已结束，请切回目标 Wi-Fi`);
+      return;
+    }
+    startProvisionPolling();
   }
 
   async function refreshStatus() {
@@ -495,62 +526,6 @@ export function App() {
       const message = error instanceof Error ? error.message : "全回零失败";
       setPrintTask((task) => ({ ...task, running: false, stream: "fault", currentLabel: "", fault: message }));
       appendLog(message);
-    }
-  }
-
-  async function refreshWifiStatus() {
-    setWifiBusy(true);
-    setWifiBusyLabel("刷新 WiFi");
-    try {
-      const next = await serialWifiClient.getWifiStatus();
-      setWifiStatus(next);
-      if (next.staSsid) {
-        setWifiSsid(next.staSsid);
-      }
-      appendLog("串口 WiFi 状态已刷新");
-    } catch (error) {
-      appendLog(error instanceof Error ? error.message : "WiFi 状态刷新失败");
-    } finally {
-      setWifiBusy(false);
-      setWifiBusyLabel("");
-    }
-  }
-
-  async function scanWifiNetworks() {
-    setWifiBusy(true);
-    setWifiBusyLabel("扫描网络");
-    appendLog("开始扫描 WiFi 网络");
-    try {
-      const result = await serialWifiClient.scanWifi();
-      const networks = [...result.networks].sort((a, b) => b.rssi - a.rssi || a.ssid.localeCompare(b.ssid));
-      setWifiNetworks(networks);
-      if (!wifiSsid && result.networks[0]) {
-        setWifiSsid(networks[0].ssid);
-      }
-      appendLog(`发现 ${result.networks.length} 个 WiFi 网络`);
-    } catch (error) {
-      appendLog(error instanceof Error ? error.message : "WiFi 扫描失败");
-    } finally {
-      setWifiBusy(false);
-      setWifiBusyLabel("");
-    }
-  }
-
-  async function configureWifi() {
-    setWifiBusy(true);
-    setWifiBusyLabel("连接 WiFi");
-    try {
-      const result = await serialWifiClient.configureWifi(wifiSsid.trim(), wifiPassword);
-      setWifiStatus(result.wifi);
-      appendLog(result.ok ? `WiFi 已连接 ${result.wifi.ipAddress}` : `${result.code ?? "wifi_failed"}: ${result.message}`);
-      if (result.ok) {
-        await connectTcpFromWifiStatus(result.wifi);
-      }
-    } catch (error) {
-      appendLog(error instanceof Error ? error.message : "WiFi 配置失败");
-    } finally {
-      setWifiBusy(false);
-      setWifiBusyLabel("");
     }
   }
 
@@ -931,6 +906,30 @@ export function App() {
             <div className="settingsStack">
               <div className="panel">
                 <div className="panelHeader">
+                  <h2>Wi-Fi 配网</h2>
+                  <span>SoftAP 192.168.4.1</span>
+                </div>
+                <div className="formGrid">
+                  <label>设备 URL<input value={provisionBaseUrl} onChange={(event) => setProvisionBaseUrl(event.target.value)} /></label>
+                  <label>SSID<input value={wifiSsid} onChange={(event) => setWifiSsid(event.target.value)} /></label>
+                  <label>密码<input type="password" value={wifiPassword} onChange={(event) => setWifiPassword(event.target.value)} /></label>
+                </div>
+                <div className="stateRows compactRows">
+                  <StateRow label="AP 状态" value={provisionStatus?.state ?? provisionState} />
+                  <StateRow label="AP 地址" value={provisionStatus?.ap?.ip ?? "192.168.4.1"} />
+                  <StateRow label="目标 SSID" value={provisionStatus?.targetSsid || wifiSsid || "-"} />
+                  <StateRow label="返回 IP" value={provisionStatus?.ip || "-"} />
+                  {provisionStatus?.reason && <StateRow label="失败原因" value={provisionStatus.reason} />}
+                </div>
+                <div className="actionRow wrap">
+                  <button className="secondary" onClick={() => void readProvisionStatus()}>探测 AP</button>
+                  <button className="primary" onClick={() => void provisionWifi(false)}>配网</button>
+                  <button className="secondary" disabled={!wifiSsid} onClick={() => void provisionWifi(true)}>一键配网</button>
+                </div>
+                <p className="hintText">先让电脑连接 ESP32 的 SoftAP，配网成功后会自动回填 TCP Host，并提示切回目标局域网。</p>
+              </div>
+              <div className="panel">
+                <div className="panelHeader">
                   <h2>TCP 设备</h2>
                   <span>raw NDJSON</span>
                 </div>
@@ -941,85 +940,6 @@ export function App() {
                 <div className="actionRow">
                   <button className="primary" onClick={() => void connect()}>连接</button>
                   <button className="secondary" onClick={() => void streamClient.disconnect()}>断开</button>
-                </div>
-              </div>
-              <div className="panel wifiPanel">
-                <div className="panelHeader">
-                  <h2>WiFi 配置</h2>
-                  <span>{wifiBusy ? wifiBusyLabel : serialWifiConnection === "connected" ? wifiStatus?.phase ?? "unknown" : serialWifiConnection}</span>
-                </div>
-                <div className="wifiSetupCard">
-                  <div className="wifiSetupMark"><Wifi size={20} /></div>
-                  <div>
-                    <div className="wifiSetupTitle">{serialWifiConnection === "connected" ? "USB 串口 WiFi 配置" : "选择 ESP32 USB 串口"}</div>
-                    <div className="wifiSetupSub">
-                      {wifiStatus?.staConnected ? `STA ${wifiStatus.ipAddress} / ${wifiStatus.staSsid}` : "串口扫描网络，保存后自动连接返回的 IP"}
-                    </div>
-                  </div>
-                </div>
-                <div className="formGrid wifiFormGrid">
-                  <label>
-                    USB 串口端口
-                    <select value={selectedSerialPort} onChange={(event) => setSelectedSerialPort(event.target.value)}>
-                      <option value="">自动选择</option>
-                      {serialPorts.map((port) => (
-                        <option key={port.path} value={port.path}>{port.label} / {port.path}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    扫描到的网络
-                    <select
-                      value={wifiNetworks.some((network) => network.ssid === wifiSsid) ? wifiSsid : ""}
-                      onChange={(event) => {
-                        if (event.target.value) {
-                          setWifiSsid(event.target.value);
-                        }
-                      }}
-                    >
-                      <option value="">手动输入 SSID</option>
-                      {wifiNetworks.map((network) => (
-                        <option key={`${network.ssid}-${network.channel}-${network.rssi}`} value={network.ssid}>
-                          {network.ssid} ({network.rssi} dBm / ch {network.channel} / {network.encryption})
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    SSID
-                    <input value={wifiSsid} onChange={(event) => setWifiSsid(event.target.value)} />
-                  </label>
-                  <label>
-                    Password
-                    <input type="password" value={wifiPassword} onChange={(event) => setWifiPassword(event.target.value)} />
-                  </label>
-                </div>
-                <div className="actionRow wrap">
-                  <button className="secondary" disabled={wifiBusy || serialWifiConnection === "connecting"} onClick={() => void refreshSerialPorts()}>刷新串口</button>
-                  <button className="secondary" disabled={wifiBusy || serialWifiConnection === "connecting"} onClick={connectSerialWifi}>连接串口</button>
-                  <button className="secondary" disabled={wifiBusy || serialWifiConnection !== "connected"} onClick={disconnectSerialWifi}>断开串口</button>
-                  <button className="secondary" disabled={serialWifiConnection !== "connected" || wifiBusy} onClick={refreshWifiStatus}>刷新 WiFi</button>
-                  <button className="secondary" disabled={serialWifiConnection !== "connected" || wifiBusy} onClick={scanWifiNetworks}>
-                    {wifiBusyLabel === "扫描网络" ? "扫描中..." : "扫描网络"}
-                  </button>
-                  <button className="primary" disabled={serialWifiConnection !== "connected" || wifiBusy || wifiSsid.trim().length === 0} onClick={configureWifi}>保存并连接 TCP</button>
-                  <button className="secondary" disabled={serialWifiConnection !== "connected" || wifiBusy} onClick={() => void connectTcpFromWifiStatus()}>读取 IP 并连接</button>
-                </div>
-                <div className="stateRows wifiStateRows">
-                  <StateRow label="串口" value={serialWifiConnection} />
-                  <StateRow label="STA" value={wifiStatus?.staConnected ? `${wifiStatus.staSsid} ${wifiStatus.ipAddress}` : wifiStatus?.staConnecting ? "connecting" : "offline"} />
-                  <StateRow label="RSSI" value={wifiStatus?.staConnected ? `${wifiStatus.wifiRssi} dBm` : "-"} />
-                  <StateRow label="凭据" value={wifiStatus?.savedCredentials ? "saved" : "empty"} />
-                  {wifiStatus?.lastError && <StateRow label="错误" value={wifiStatus.lastError} />}
-                </div>
-                <div className="networkList">
-                  {wifiNetworks.map((network) => (
-                    <button className="networkRow" key={`${network.ssid}-${network.channel}`} onClick={() => setWifiSsid(network.ssid)}>
-                      <span>{network.ssid}</span>
-                      <code>{network.rssi} dBm / ch {network.channel} / {network.encryption}</code>
-                    </button>
-                  ))}
-                  {wifiNetworks.length === 0 && <div className="emptyState">尚未扫描网络</div>}
                 </div>
               </div>
             </div>
@@ -1304,9 +1224,6 @@ function clampInteger(value: number, minValue: number, maxValue: number): number
   return Math.min(Math.max(Math.round(value), minValue), maxValue);
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
-}
 
 function telemetryRoleToMotorRole(role: string): MotorRole {
   switch (role) {

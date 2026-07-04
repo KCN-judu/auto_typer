@@ -168,6 +168,13 @@ button:disabled {
   gap: 18px;
 }
 
+.hintText {
+  margin: 12px 0 0;
+  color: var(--ink-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .topbar {
   display: flex;
   align-items: center;
@@ -203,6 +210,10 @@ h3 {
 .connectionBox {
   display: flex;
   gap: 8px;
+}
+
+.compactRows {
+  margin-top: 14px;
 }
 
 input,
@@ -569,56 +580,6 @@ label.checkbox.compact {
 
 .pressJogButton {
   height: 58px;
-}
-
-.wifiPanel {
-  min-height: 480px;
-}
-
-.wifiSetupCard {
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 14px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  background:
-    linear-gradient(135deg, rgba(37, 92, 125, 0.08), transparent 58%),
-    #fffdf8;
-}
-
-.wifiSetupMark {
-  width: 44px;
-  height: 44px;
-  border-radius: 8px;
-  display: grid;
-  place-items: center;
-  background: var(--blueprint);
-  color: #fffdf8;
-}
-
-.wifiSetupTitle {
-  font-weight: 720;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-}
-
-.wifiSetupSub {
-  margin-top: 3px;
-  color: var(--ink-muted);
-  font-size: 12px;
-}
-
-.wifiFormGrid {
-  margin-top: 14px;
-}
-
-.wifiFormGrid label:first-child,
-.wifiFormGrid label:last-child {
-  grid-column: 1 / -1;
-}
-
-.wifiStateRows {
-  margin-top: 14px;
 }
 
 .networkList {

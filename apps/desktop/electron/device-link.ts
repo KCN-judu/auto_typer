@@ -12,8 +12,6 @@ import {
 } from "../../../shared/protocol/auto-typer-protocol.js";
 
 const requestTimeoutMs = 5000;
-const wifiScanTimeoutMs = 15000;
-const wifiConfigureTimeoutMs = 18000;
 const tcpConnectTimeoutMs = 5000;
 const helloTimeoutMs = 3000;
 const groupAdmissionTimeoutMs = 3000;
@@ -480,10 +478,6 @@ function terminalTypesFor(commandType: GroupStreamCommandMessage["type"]): Set<s
     get_status: "status",
     subscribe_telemetry: "telemetry_subscribed",
     get_keymap: "keymap",
-    get_wifi_status: "wifi_status",
-    scan_wifi: "wifi_networks",
-    configure_wifi: "wifi_config_result",
-    finish_wifi_setup: "wifi_setup_finished",
     probe: "probe_result",
     press_diag_m5: "press_diag_m5_result",
     reset_fault: "reset_fault_result",
@@ -499,12 +493,6 @@ function terminalTypesFor(commandType: GroupStreamCommandMessage["type"]): Set<s
 function defaultTimeoutFor(message: GroupStreamCommandMessage): number {
   if (message.type === "exec_group") {
     return groupAdmissionTimeoutMs;
-  }
-  if (message.type === "scan_wifi") {
-    return wifiScanTimeoutMs;
-  }
-  if (message.type === "configure_wifi") {
-    return wifiConfigureTimeoutMs;
   }
   return requestTimeoutMs;
 }

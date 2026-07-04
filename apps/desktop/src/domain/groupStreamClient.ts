@@ -14,11 +14,6 @@ import type {
   ResetFaultResultMessage,
   StatusMessage,
   TaskGroup,
-  WifiConfigResultMessage,
-  WifiNetworksMessage,
-  WifiSetupFinishedMessage,
-  WifiStatus,
-  WifiStatusMessage,
 } from "../../../../shared/protocol/auto-typer-protocol";
 import { encodeExecGroup } from "./groupStreamPlanner";
 
@@ -88,52 +83,6 @@ export class GroupStreamClient {
       throw responseError(message, "get_keymap");
     }
     return keymapFromMessage(message as KeymapMessage);
-  }
-
-  async getWifiStatus(): Promise<WifiStatus> {
-    const message = await this.sendCommand({ v: 1, requestId: this.nextId("wifi"), type: "get_wifi_status" });
-    if (message.type !== "wifi_status") {
-      throw responseError(message, "get_wifi_status");
-    }
-    return (message as WifiStatusMessage).wifi;
-  }
-
-  async scanWifi(): Promise<WifiNetworksMessage> {
-    const message = await this.sendCommand({ v: 1, requestId: this.nextId("scan"), type: "scan_wifi" });
-    if (message.type !== "wifi_networks") {
-      throw responseError(message, "scan_wifi");
-    }
-    const networks = message as WifiNetworksMessage;
-    if (!networks.ok) {
-      throw new Error(`${networks.code ?? "wifi_scan_failed"}: ${networks.message ?? "WiFi scan failed"}`);
-    }
-    return networks;
-  }
-
-  async configureWifi(ssid: string, password: string): Promise<WifiConfigResultMessage> {
-    const message = await this.sendCommand({
-      v: 1,
-      requestId: this.nextId("wifi-config"),
-      type: "configure_wifi",
-      ssid,
-      password,
-    });
-    if (message.type !== "wifi_config_result") {
-      throw responseError(message, "configure_wifi");
-    }
-    return message as WifiConfigResultMessage;
-  }
-
-  async finishWifiSetup(): Promise<WifiSetupFinishedMessage> {
-    const message = await this.sendCommand({
-      v: 1,
-      requestId: this.nextId("wifi-finish"),
-      type: "finish_wifi_setup",
-    });
-    if (message.type !== "wifi_setup_finished") {
-      throw responseError(message, "finish_wifi_setup");
-    }
-    return message as WifiSetupFinishedMessage;
   }
 
   async sendExecGroup(group: TaskGroup): Promise<GroupAcceptedMessage> {

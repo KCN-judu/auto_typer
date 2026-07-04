@@ -5,20 +5,11 @@
 #include "auto_typer_types.h"
 #include "config/MachineConfig.h"
 
-#if __has_include("config/Secrets.h")
-#include "config/Secrets.h"
-#else
-#define AUTO_TYPER_WIFI_SSID ""
-#define AUTO_TYPER_WIFI_PASSWORD ""
-#endif
-
 namespace auto_typer {
 
 inline TypingConfig defaultTypingConfig() {
   TypingConfig config{};
   config.serialBaudrate = 115200;
-  config.wifiSsid = AUTO_TYPER_WIFI_SSID;
-  config.wifiPassword = AUTO_TYPER_WIFI_PASSWORD;
   config.deviceId = "esp32-s3-auto-typer";
   config.firmwareVersion = "0.1.0";
 

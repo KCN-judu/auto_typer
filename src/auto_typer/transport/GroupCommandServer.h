@@ -2,7 +2,6 @@
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
-#include <Preferences.h>
 #include <WiFi.h>
 
 #include "../auto_typer_runtime.h"
@@ -31,17 +30,11 @@ class GroupCommandServer {
         clientConnectedAtMs_(0),
         telemetryForcePending_(false),
         outboundOrder_(0),
-        clientSessionId_(0),
-        setupApActive_(false),
-        staConnecting_(false),
-        savedCredentials_(false),
-        lastWifiAttemptMs_(0),
-        lastWifiError_("") {}
+        clientSessionId_(0) {}
 
   void begin() {
     clearOutboundQueue();
     clearDedupeLedger();
-    updateWifiConnectionState();
     server_.begin();
     server_.setNoDelay(true);
     log_.print("[tcp] WiFi IP: ");
@@ -51,7 +44,6 @@ class GroupCommandServer {
   }
 
   void tick() {
-    updateWifiConnectionState();
     closeStaleHandshakeClient();
     acceptClient();
     readClient();
@@ -212,22 +204,6 @@ class GroupCommandServer {
       sendKeymap(requestId);
       return;
     }
-    if (strcmp(type, "get_wifi_status") == 0) {
-      sendWifiStatus(requestId);
-      return;
-    }
-    if (strcmp(type, "scan_wifi") == 0) {
-      sendWifiNetworks(requestId);
-      return;
-    }
-    if (strcmp(type, "configure_wifi") == 0) {
-      handleConfigureWifi(request);
-      return;
-    }
-    if (strcmp(type, "finish_wifi_setup") == 0) {
-      handleFinishWifiSetup(requestId);
-      return;
-    }
     if (strcmp(type, "probe") == 0) {
       const bool ok = app_.probeMotors();
       sendProbeResult(requestId, ok);
@@ -316,49 +292,6 @@ class GroupCommandServer {
     recordDedupeEntry(requestId, groupId, seq, true, "", "", count);
   }
 
-  void handleConfigureWifi(JsonDocument& request) {
-    const char* requestId = request["requestId"] | "";
-    const char* ssid = request["ssid"] | "";
-    const char* password = request["password"] | "";
-    if (strlen(ssid) == 0 || strlen(ssid) > kMaxWifiSsidLength) {
-      sendWifiConfigResult(requestId, false, "invalid_wifi_ssid", "WiFi SSID is required");
-      return;
-    }
-    if (strlen(password) > 0 && (strlen(password) < 8 || strlen(password) > kMaxWifiPasswordLength)) {
-      sendWifiConfigResult(requestId, false, "invalid_wifi_password", "WiFi password must be empty or 8-63 characters");
-      return;
-    }
-    if (!saveWifiCredentials(String(ssid), String(password))) {
-      sendWifiConfigResult(requestId, false, "wifi_credentials_save_failed", "WiFi credentials could not be saved");
-      return;
-    }
-    savedCredentials_ = true;
-    connectStation(ssid, password);
-    const bool connected = waitForStation(12000);
-    if (!connected) {
-      lastWifiError_ = "station_connect_failed";
-      startSetupAp();
-    }
-    sendWifiConfigResult(requestId,
-                         connected,
-                         connected ? "" : "station_connect_failed",
-                         connected ? "WiFi station connected" : "WiFi station connection failed");
-  }
-
-  void handleFinishWifiSetup(const char* requestId) {
-    updateWifiConnectionState();
-    if (WiFi.status() != WL_CONNECTED) {
-      sendWifiSetupFinished(requestId, false, "wifi_not_connected", "Station WiFi is not connected");
-      return;
-    }
-    if (setupApActive_) {
-      WiFi.softAPdisconnect(true);
-      setupApActive_ = false;
-      WiFi.mode(WIFI_STA);
-    }
-    sendWifiSetupFinished(requestId, true, "", "WiFi setup finished");
-  }
-
   void sendPendingEvents() {
     if (!client_ || !client_.connected()) {
       return;
@@ -410,7 +343,6 @@ class GroupCommandServer {
     caps.add("reset_fault");
     caps.add("release_line_feed_origin");
     caps.add("line_feed_home");
-    caps.add("wifi_setup");
     caps.add("press_motor");
     caps.add("press_diag_m5");
     JsonObject limits = doc.createNestedObject("limits");
@@ -568,101 +500,6 @@ class GroupCommandServer {
     doc["upAckSeen"] = result.upAckSeen;
     doc["upReachedSeen"] = result.upReachedSeen;
     doc["traceCount"] = result.traceCount;
-    enqueueJson(0, doc);
-  }
-
-  void sendWifiStatus(const char* requestId) {
-    StaticJsonDocument<512> doc;
-    doc["v"] = 1;
-    doc["type"] = "wifi_status";
-    doc["requestId"] = requestId != nullptr ? requestId : "";
-    writeWifiStatus(doc.createNestedObject("wifi"));
-    enqueueJson(0, doc);
-  }
-
-  void sendWifiNetworks(const char* requestId) {
-    DynamicJsonDocument doc(4096);
-    doc["v"] = 1;
-    doc["type"] = "wifi_networks";
-    doc["requestId"] = requestId != nullptr ? requestId : "";
-    JsonArray networks = doc.createNestedArray("networks");
-    struct NetworkEntry {
-      String ssid;
-      int32_t rssi;
-      int32_t channel;
-      wifi_auth_mode_t encryption;
-    };
-    NetworkEntry entries[kMaxWifiNetworks];
-    size_t count = 0;
-    const int found = WiFi.scanNetworks(false, false);
-    if (found < 0) {
-      doc["ok"] = false;
-      doc["code"] = "wifi_scan_failed";
-      doc["message"] = "WiFi scan failed";
-      enqueueJson(0, doc);
-      return;
-    }
-    for (int i = 0; i < found && count < kMaxWifiNetworks; ++i) {
-      const String ssid = WiFi.SSID(i);
-      if (ssid.length() == 0) {
-        continue;
-      }
-      const int32_t rssi = WiFi.RSSI(i);
-      int existing = -1;
-      for (size_t j = 0; j < count; ++j) {
-        if (entries[j].ssid == ssid) {
-          existing = static_cast<int>(j);
-          break;
-        }
-      }
-      if (existing >= 0) {
-        if (rssi > entries[existing].rssi) {
-          entries[existing].rssi = rssi;
-          entries[existing].channel = WiFi.channel(i);
-          entries[existing].encryption = WiFi.encryptionType(i);
-        }
-        continue;
-      }
-      entries[count] = {ssid, rssi, WiFi.channel(i), WiFi.encryptionType(i)};
-      ++count;
-    }
-    WiFi.scanDelete();
-    for (size_t i = 0; i < count; ++i) {
-      JsonObject item = networks.createNestedObject();
-      item["ssid"] = entries[i].ssid;
-      item["rssi"] = entries[i].rssi;
-      item["channel"] = entries[i].channel;
-      item["encryption"] = encryptionText(entries[i].encryption);
-    }
-    doc["ok"] = true;
-    enqueueJson(0, doc);
-  }
-
-  void sendWifiConfigResult(const char* requestId, bool ok, const char* code, const char* message) {
-    StaticJsonDocument<640> doc;
-    doc["v"] = 1;
-    doc["type"] = "wifi_config_result";
-    doc["requestId"] = requestId != nullptr ? requestId : "";
-    doc["ok"] = ok;
-    if (!ok && code != nullptr && code[0] != '\0') {
-      doc["code"] = code;
-    }
-    doc["message"] = message != nullptr ? message : "";
-    writeWifiStatus(doc.createNestedObject("wifi"));
-    enqueueJson(0, doc);
-  }
-
-  void sendWifiSetupFinished(const char* requestId, bool ok, const char* code, const char* message) {
-    StaticJsonDocument<640> doc;
-    doc["v"] = 1;
-    doc["type"] = "wifi_setup_finished";
-    doc["requestId"] = requestId != nullptr ? requestId : "";
-    doc["ok"] = ok;
-    if (!ok && code != nullptr && code[0] != '\0') {
-      doc["code"] = code;
-    }
-    doc["message"] = message != nullptr ? message : "";
-    writeWifiStatus(doc.createNestedObject("wifi"));
     enqueueJson(0, doc);
   }
 
@@ -976,188 +813,8 @@ class GroupCommandServer {
     motor["lastUpdatedAtMs"] = snapshot.lastUpdatedAtMs;
   }
 
-  void writeWifiStatus(JsonObject json) {
-    updateWifiConnectionState();
-    json["setupApActive"] = setupApActive_;
-    json["setupSsid"] = setupSsid_;
-    json["setupPassword"] = setupPassword_;
-    json["setupIpAddress"] = WiFi.softAPIP().toString();
-    json["staConnected"] = WiFi.status() == WL_CONNECTED;
-    json["staConnecting"] = staConnecting_;
-    json["staSsid"] = WiFi.SSID();
-    json["ipAddress"] = WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "";
-    json["wifiRssi"] = WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0;
-    json["savedCredentials"] = savedCredentials_;
-    json["phase"] = wifiPhaseText();
-    if (lastWifiError_.length() > 0) {
-      json["lastError"] = lastWifiError_;
-    }
-  }
-
-  void beginWifi() {
-    configureSetupApIdentity();
-    String ssid;
-    String password;
-    savedCredentials_ = loadWifiCredentials(ssid, password);
-    if (!savedCredentials_ && strlen(config_.wifiSsid) > 0) {
-      ssid = config_.wifiSsid;
-      password = config_.wifiPassword;
-      savedCredentials_ = true;
-    }
-    if (savedCredentials_) {
-      connectStation(ssid.c_str(), password.c_str());
-      if (!waitForStation(12000)) {
-        lastWifiError_ = "station_connect_failed";
-        startSetupAp();
-      }
-    } else {
-      lastWifiError_ = "no_credentials";
-      startSetupAp();
-    }
-    log_.print("[tcp] WiFi IP: ");
-    log_.println(currentIp());
-  }
-
-  void configureSetupApIdentity() {
-    const String mac = WiFi.macAddress();
-    String suffix = mac;
-    suffix.replace(":", "");
-    if (suffix.length() > 6) {
-      suffix = suffix.substring(suffix.length() - 6);
-    }
-    setupSsid_ = String("auto-typer-setup-") + suffix.substring(suffix.length() > 4 ? suffix.length() - 4 : 0);
-    setupPassword_ = String("admin123");
-  }
-
-  bool loadWifiCredentials(String& ssid, String& password) {
-    Preferences prefs;
-    if (!prefs.begin("auto-typer", true)) {
-      return false;
-    }
-    ssid = prefs.getString("wifiSsid", "");
-    password = prefs.getString("wifiPass", "");
-    prefs.end();
-    return ssid.length() > 0;
-  }
-
-  bool saveWifiCredentials(const String& ssid, const String& password) {
-    Preferences prefs;
-    if (!prefs.begin("auto-typer", false)) {
-      return false;
-    }
-    const bool ok = prefs.putString("wifiSsid", ssid) > 0 && prefs.putString("wifiPass", password) == password.length();
-    prefs.end();
-    return ok;
-  }
-
-  void startSetupAp() {
-    if (setupApActive_) {
-      return;
-    }
-    WiFi.mode(WIFI_AP_STA);
-    setupApActive_ = WiFi.softAP(setupSsid_.c_str(), setupPassword_.c_str());
-    if (setupApActive_) {
-      log_.print("[tcp] WiFi setup AP started: ");
-      log_.print(setupSsid_);
-      log_.print(" password=");
-      log_.println(setupPassword_);
-      char message[64];
-      snprintf(message, sizeof(message), "Setup WiFi %s", setupSsid_.c_str());
-      app_.showMessage(message);
-    } else {
-      log_.println("[tcp] WiFi setup AP failed");
-      lastWifiError_ = "setup_ap_failed";
-    }
-  }
-
-  void connectStation(const char* ssid, const char* password) {
-    WiFi.mode(setupApActive_ ? WIFI_AP_STA : WIFI_STA);
-    WiFi.begin(ssid, password);
-    staConnecting_ = true;
-    lastWifiAttemptMs_ = millis();
-    lastWifiError_ = "";
-    log_.print("[tcp] Connecting WiFi SSID: ");
-    log_.println(ssid);
-  }
-
-  bool waitForStation(uint32_t timeoutMs) {
-    const uint32_t startedAt = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - startedAt < timeoutMs) {
-      delay(50);
-      app_.tick();
-      log_.print(".");
-    }
-    log_.println();
-    updateWifiConnectionState();
-    return WiFi.status() == WL_CONNECTED;
-  }
-
-  void updateWifiConnectionState() {
-    if (WiFi.status() == WL_CONNECTED) {
-      if (staConnecting_) {
-        log_.print("[tcp] WiFi connected, IP: ");
-        log_.println(WiFi.localIP().toString());
-      }
-      staConnecting_ = false;
-      lastWifiError_ = "";
-      return;
-    }
-    if (staConnecting_ && millis() - lastWifiAttemptMs_ > kWifiConnectTimeoutMs) {
-      staConnecting_ = false;
-      lastWifiError_ = "station_connect_failed";
-      startSetupAp();
-      log_.println("[tcp] WiFi station connection timed out");
-    }
-  }
-
-  const char* wifiPhaseText() const {
-    if (WiFi.status() == WL_CONNECTED) {
-      return "connected";
-    }
-    if (staConnecting_) {
-      return "connecting";
-    }
-    if (!savedCredentials_) {
-      return "no_credentials";
-    }
-    if (lastWifiError_.length() > 0) {
-      return "failed";
-    }
-    return "idle";
-  }
-
   String currentIp() const {
-    if (WiFi.status() == WL_CONNECTED) {
-      return WiFi.localIP().toString();
-    }
-    return setupApActive_ ? WiFi.softAPIP().toString() : "";
-  }
-
-  static const char* encryptionText(wifi_auth_mode_t encryption) {
-    switch (encryption) {
-      case WIFI_AUTH_OPEN:
-        return "open";
-      case WIFI_AUTH_WEP:
-        return "wep";
-      case WIFI_AUTH_WPA_PSK:
-        return "wpa";
-      case WIFI_AUTH_WPA2_PSK:
-        return "wpa2";
-      case WIFI_AUTH_WPA_WPA2_PSK:
-        return "wpa_wpa2";
-      case WIFI_AUTH_WPA2_ENTERPRISE:
-        return "wpa2_enterprise";
-#if defined(WIFI_AUTH_WPA3_PSK)
-      case WIFI_AUTH_WPA3_PSK:
-        return "wpa3";
-#endif
-#if defined(WIFI_AUTH_WPA2_WPA3_PSK)
-      case WIFI_AUTH_WPA2_WPA3_PSK:
-        return "wpa2_wpa3";
-#endif
-      default:
-        return "unknown";
-    }
+    return WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "";
   }
 
   uint16_t clampTelemetryInterval(uint32_t intervalMs) const {
@@ -1423,20 +1080,9 @@ class GroupCommandServer {
   uint32_t outboundOrder_;
   DedupeEntry dedupeLedger_[8];
   uint32_t clientSessionId_;
-  bool setupApActive_;
-  bool staConnecting_;
-  bool savedCredentials_;
-  uint32_t lastWifiAttemptMs_;
-  String setupSsid_;
-  String setupPassword_;
-  String lastWifiError_;
   static constexpr size_t kOutboundQueueCapacity = 32;
   static constexpr size_t kDedupeLedgerCapacity = 8;
   static constexpr uint16_t kMotorStateUpdateIntervalMs = 25;
-  static constexpr size_t kMaxWifiNetworks = 24;
-  static constexpr size_t kMaxWifiSsidLength = 32;
-  static constexpr size_t kMaxWifiPasswordLength = 63;
-  static constexpr uint32_t kWifiConnectTimeoutMs = 20000;
 };
 
 }  // namespace auto_typer
