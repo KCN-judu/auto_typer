@@ -20,6 +20,9 @@ Commands in this workspace should be run through `rtk`.
 ```bash
 rtk npm run desktop:dev
 rtk npm run desktop:build
+rtk npm run desktop:pack
+rtk npm run desktop:dist:mac
+rtk npm run desktop:dist:win
 rtk npm run desktop:typecheck
 rtk npm run firmware:test
 rtk npm run firmware:compile
@@ -75,6 +78,16 @@ The runtime semantics are:
 - `reset_fault`, `cancel`, `release_line_feed_origin`, `probe`, and `press_diag_m5` are maintenance or diagnostic commands on the same TCP control stream.
 
 The protocol route and message types live in `shared/protocol/auto-typer-protocol.ts`.
+
+## Desktop Packaging
+
+- `rtk npm run desktop:pack`: build the Electron app and generate an unpacked application bundle in `apps/desktop/release/`.
+- `rtk npm run desktop:dist:mac`: build macOS distributables (`.dmg` and `.zip`) on a Mac.
+- `rtk npm run desktop:dist:win`: build the Windows portable package on a Windows machine.
+- The packaging pipeline uses `electron-builder` with assets from `apps/desktop/resources/`.
+- Without Apple Developer signing credentials, the macOS app is still distributable, but Gatekeeper will treat it as an unidentified developer app on first launch.
+- When signing credentials are available later, `electron-builder` can use standard environment variables such as `CSC_LINK`, `CSC_KEY_PASSWORD`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`, `WIN_CSC_LINK`, and `WIN_CSC_KEY_PASSWORD`.
+- The current repository intentionally leaves signing disabled by default so local and CI packaging can succeed before certificate setup.
 
 ## Safety Notes
 

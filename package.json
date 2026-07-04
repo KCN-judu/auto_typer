@@ -8,6 +8,10 @@
   "scripts": {
     "desktop:dev": "npm run dev --workspace @auto-typer/desktop",
     "desktop:build": "npm run build --workspace @auto-typer/desktop",
+    "desktop:pack": "npm run pack --workspace @auto-typer/desktop",
+    "desktop:dist": "npm run dist --workspace @auto-typer/desktop",
+    "desktop:dist:mac": "npm run dist:mac --workspace @auto-typer/desktop",
+    "desktop:dist:win": "npm run dist:win --workspace @auto-typer/desktop",
     "desktop:typecheck": "npm run typecheck --workspace @auto-typer/desktop",
     "desktop:test": "npm run prepare:electron --workspace @auto-typer/desktop && tsc -p apps/desktop/tsconfig.test.json && node apps/desktop/electron/device-link.test.mjs && node apps/desktop/electron/group-execution-watchdog.test.mjs && rm -rf apps/desktop/dist-test",
     "tcp:probe": "node apps/desktop/electron/tcp-probe.mjs",

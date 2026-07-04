@@ -4,6 +4,7 @@ node_modules/
 apps/*/node_modules/
 apps/*/dist/
 apps/*/dist-electron/
+apps/*/release/
 
 .arduino-build/
 .arduino-cache/

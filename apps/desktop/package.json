@@ -2,6 +2,8 @@
   "name": "@auto-typer/desktop",
   "private": true,
   "version": "0.1.0",
+  "description": "Electron desktop controller for the Auto Typer firmware",
+  "author": "Auto Typer",
   "type": "module",
   "main": "dist-electron/apps/desktop/electron/main.js",
   "scripts": {
@@ -10,11 +12,14 @@
     "dev:main": "wait-on http://127.0.0.1:5173 && electron .",
     "prepare:electron": "node electron/check-electron.cjs && tsc -p tsconfig.electron.json",
     "build": "npm run typecheck && vite build && npm run prepare:electron",
+    "pack": "npm run build && electron-builder --dir --config electron-builder.json",
+    "dist": "npm run build && electron-builder --config electron-builder.json",
+    "dist:mac": "npm run build && electron-builder --mac --config electron-builder.json",
+    "dist:win": "npm run build && electron-builder --win portable --config electron-builder.json",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.electron.json"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.3.4",
-    "electron": "^42.5.0",
     "lucide-react": "^0.468.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -25,6 +30,8 @@
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "concurrently": "^9.1.0",
+    "electron": "42.5.0",
+    "electron-builder": "^26.0.12",
     "typescript": "^5.7.2",
     "wait-on": "^8.0.1"
   }
