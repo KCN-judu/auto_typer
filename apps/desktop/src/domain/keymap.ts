@@ -1,4 +1,4 @@
-import type { KeyBinding, KeymapDocument } from "../../../../shared/protocol/auto-typer-protocol";
+import type { KeyBinding, KeymapDocument } from "../../../../shared/protocol/protocolTypes";
 
 export type KeymapIssue = {
   level: "error" | "warning";

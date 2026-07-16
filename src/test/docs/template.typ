@@ -1,7 +1,8 @@
 #let theme = {
   set page(
     paper: "a4",
-    margin: (x: 18mm, y: 16mm),
+    margin: (top: 17mm, bottom: 18mm, x: 18mm),
+    numbering: "1",
   )
   set text(
     font: ("PingFang SC", "Helvetica Neue", "Arial Unicode MS", "Menlo"),
@@ -10,6 +11,7 @@
   set par(justify: false, leading: 0.45em)
   set heading(numbering: "1.")
   set table(stroke: 0.6pt + luma(185))
+  show link: set text(fill: rgb("#1E5BB8"))
 
   show heading.where(level: 1): it => block(
     inset: (top: 8pt, bottom: 6pt),
@@ -57,3 +59,41 @@
   #v(4pt)
   #body
 ]
+
+#let note-box(title, body, warning: false) = {
+  let fill-color = if warning { rgb("#FFF1EE") } else { rgb("#EEF7FF") }
+  let stroke-color = if warning { rgb("#D85B43") } else { rgb("#4E87C7") }
+  let title-color = if warning { rgb("#8F2F22") } else { rgb("#214F82") }
+  block(
+    width: 100%,
+    fill: fill-color,
+    inset: 10pt,
+    radius: 6pt,
+    stroke: (left: 3pt + stroke-color),
+  )[
+    #text(10.5pt, weight: "bold", fill: title-color)[#title]
+    #v(4pt)
+    #body
+  ]
+}
+
+#let command(code) = block(
+  width: 100%,
+  fill: rgb("#17202B"),
+  inset: 9pt,
+  radius: 5pt,
+)[
+  #set text(font: "Menlo", size: 8.5pt, fill: rgb("#E8EEF5"))
+  #raw(code, block: true, lang: "bash")
+]
+
+#let screenshot(path, caption) = figure(
+  block(
+    width: 100%,
+    inset: 3pt,
+    radius: 5pt,
+    stroke: 0.7pt + luma(185),
+    image(path, width: 100%),
+  ),
+  caption: caption,
+)

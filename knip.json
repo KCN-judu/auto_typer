@@ -1,0 +1,28 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "ignoreFiles": [
+    ".tmp/**"
+  ],
+  "ignoreBinaries": [
+    "tsc"
+  ],
+  "workspaces": {
+    "apps/desktop": {
+      "entry": [
+        "electron/main.ts",
+        "electron/preload.ts",
+        "electron/*.test.mjs"
+      ],
+      "project": [
+        "src/**/*.{ts,tsx}",
+        "electron/**/*.{ts,mjs}",
+        "../../shared/protocol/**/*.ts"
+      ],
+      "ignoreIssues": {
+        "electron/*.test.mjs": [
+          "unresolved"
+        ]
+      }
+    }
+  }
+}

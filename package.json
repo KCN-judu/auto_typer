@@ -13,14 +13,18 @@
     "desktop:dist:mac": "npm run dist:mac --workspace @auto-typer/desktop",
     "desktop:dist:win": "npm run dist:win --workspace @auto-typer/desktop",
     "desktop:typecheck": "npm run typecheck --workspace @auto-typer/desktop",
-    "desktop:test": "npm run prepare:electron --workspace @auto-typer/desktop && tsc -p apps/desktop/tsconfig.test.json && node apps/desktop/electron/device-link.test.mjs && node apps/desktop/electron/group-execution-watchdog.test.mjs && rm -rf apps/desktop/dist-test",
+    "desktop:test": "npm run prepare:electron --workspace @auto-typer/desktop && node apps/desktop/dist-electron/apps/desktop/electron/absoluteMotionEncoder.test.js && node apps/desktop/electron/deviceLink.test.mjs",
+    "unused": "knip",
     "tcp:probe": "node apps/desktop/electron/tcp-probe.mjs",
-    "firmware:test": "node src/auto_typer/test/run-tests.mjs",
+    "firmware:test": "node src/auto_typer/test/runTests.mjs",
     "firmware:compile": "node tools/auto-typer-arduino.mjs compile-source",
     "firmware:package": "node tools/auto-typer-arduino.mjs package",
     "firmware:package:verify": "node tools/auto-typer-arduino.mjs verify-package",
     "firmware:package:upload": "node tools/auto-typer-arduino.mjs upload-package",
     "firmware:workspace": "node tools/auto-typer-workspace.mjs package",
     "firmware:workspace:verify": "node tools/auto-typer-workspace.mjs verify"
+  },
+  "devDependencies": {
+    "knip": "^6.25.0"
   }
 }

@@ -1,4 +1,4 @@
-import type { MachinePointMm } from "./auto-typer-protocol";
+import type { MachinePointMm } from "./protocolTypes";
 
 export function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;

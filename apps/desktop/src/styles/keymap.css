@@ -58,10 +58,10 @@
 
 /* ── SVG Canvas ── */
 .kmCanvasWrap {
-  border: 1px solid var(--dash-card-border);
+  border: 1px solid var(--line);
   border-radius: 10px;
-  background: var(--dash-card);
-  box-shadow: var(--dash-card-shadow);
+  background: var(--bench-panel);
+  box-shadow: var(--shadow);
   overflow: hidden;
   min-height: 0;
   position: relative;
@@ -158,11 +158,11 @@
 }
 
 .kmInspector {
-  border: 1px solid var(--dash-card-border);
+  border: 1px solid var(--line);
   border-radius: 10px;
-  background: var(--dash-card);
+  background: var(--bench-panel);
   padding: 16px;
-  box-shadow: var(--dash-card-shadow);
+  box-shadow: var(--shadow);
   display: grid;
   gap: 10px;
   align-content: start;
@@ -211,16 +211,16 @@
   color: var(--km-node-selected);
   text-align: center;
   padding: 8px 0;
-  border-bottom: 1px solid var(--dash-card-border);
+  border-bottom: 1px solid var(--line);
 }
 
 /* ── Legend ── */
 .kmLegend {
-  border: 1px solid var(--dash-card-border);
+  border: 1px solid var(--line);
   border-radius: 10px;
-  background: var(--dash-card);
+  background: var(--bench-panel);
   padding: 14px 16px;
-  box-shadow: var(--dash-card-shadow);
+  box-shadow: var(--shadow);
   display: grid;
   gap: 8px;
 }

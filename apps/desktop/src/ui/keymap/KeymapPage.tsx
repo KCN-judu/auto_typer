@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import type { DeviceStatus, KeymapDocument } from "../../../../../shared/protocol/auto-typer-protocol";
+import type { DeviceStatus, KeymapDocument } from "../../../../../shared/protocol/protocolTypes";
 import {
   buildVisualNodes,
   computeBBox,

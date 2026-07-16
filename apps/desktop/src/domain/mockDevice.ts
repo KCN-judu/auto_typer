@@ -1,4 +1,4 @@
-import type { DeviceStatus, KeymapDocument, MotorRole } from "../../../../shared/protocol/auto-typer-protocol";
+import type { DeviceStatus, KeymapDocument, MotorRole } from "../../../../shared/protocol/protocolTypes";
 import { currentFeiyu200Keymap } from "./keymap";
 
 const mockMotor = (id: number, role: MotorRole) => ({
@@ -65,8 +65,8 @@ export const mockStatus: DeviceStatus = {
     pendingFrameValid: false,
     lastAlertAtMs: 0,
     lastFaultAtMs: 0,
-    lastTxError: "",
-    lastCommandQueueError: "",
+    lastTxError: 0,
+    lastCommandQueueError: 0,
     lastFaultCode: "",
     lastFaultMessage: "",
   },

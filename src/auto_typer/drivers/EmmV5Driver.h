@@ -9,12 +9,12 @@ namespace auto_typer {
 
 class EmmV5Driver {
  public:
-  struct MoveRelativeCommand {
+  struct MoveAbsoluteCommand {
     uint8_t motorId;
     MotorDirection direction;
     uint16_t rpm;
     uint8_t acceleration;
-    uint32_t steps;
+    uint32_t targetSteps;
     bool sync;
   };
 
@@ -32,18 +32,22 @@ class EmmV5Driver {
     return sendCommand(EmmV5CommandCodec::disableMotor(motorId, sync), highPriority);
   }
 
-  bool moveRelative(uint8_t motorId,
+  bool unlockMotor(uint8_t motorId, bool highPriority = false) {
+    return sendCommand(EmmV5CommandCodec::unlockMotor(motorId), highPriority);
+  }
+
+  bool moveAbsolute(uint8_t motorId,
                     MotorDirection direction,
                     uint16_t rpm,
                     uint8_t acceleration,
-                    uint32_t steps,
+                    uint32_t targetSteps,
                     bool sync,
                     bool highPriority = false) {
-    return sendCommand(EmmV5CommandCodec::moveRelative({motorId, direction, rpm, acceleration, steps, sync}),
+    return sendCommand(EmmV5CommandCodec::moveAbsolute({motorId, direction, rpm, acceleration, targetSteps, sync}),
                        highPriority);
   }
 
-  bool moveRelativeBatch(const MoveRelativeCommand* commands,
+  bool moveAbsoluteBatch(const MoveAbsoluteCommand* commands,
                          size_t count,
                          bool triggerBroadcast,
                          bool highPriority = false) {
@@ -54,11 +58,11 @@ class EmmV5Driver {
     size_t frameCount = 0;
     for (size_t i = 0; i < count; ++i) {
       const EmmV5Command command =
-          EmmV5CommandCodec::moveRelative({commands[i].motorId,
+          EmmV5CommandCodec::moveAbsolute({commands[i].motorId,
                                            commands[i].direction,
                                            commands[i].rpm,
                                            commands[i].acceleration,
-                                           commands[i].steps,
+                                           commands[i].targetSteps,
                                            commands[i].sync});
       if (!EmmV5CommandCodec::append(command, frames, EmmV5CommandCodec::kMaxBatchFrames, frameCount)) {
         return false;
@@ -79,8 +83,12 @@ class EmmV5Driver {
     return tx_.availableForWrite();
   }
 
-  static constexpr size_t moveRelativeFrameCount() {
+  static constexpr size_t moveAbsoluteFrameCount() {
     return 2;
+  }
+
+  bool clearPosition(uint8_t motorId, bool highPriority = false) {
+    return sendCommand(EmmV5CommandCodec::clearPosition(motorId), highPriority);
   }
 
   static constexpr size_t triggerBroadcastFrameCount() {

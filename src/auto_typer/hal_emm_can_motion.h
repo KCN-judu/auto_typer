@@ -81,11 +81,11 @@ class EmmCanMotionHal {
     return sendCommand(command, sizeof(command));
   }
 
-  bool moveRelative(uint8_t motorId,
+  bool moveAbsolute(uint8_t motorId,
                     MotorDirection direction,
                     uint16_t rpm,
                     uint8_t acceleration,
-                    uint32_t steps,
+                    uint32_t targetSteps,
                     bool sync) const {
     const uint8_t command[] = {
       motorId,
@@ -94,11 +94,11 @@ class EmmCanMotionHal {
       static_cast<uint8_t>((rpm >> 8) & 0xFF),
       static_cast<uint8_t>(rpm & 0xFF),
       acceleration,
-      static_cast<uint8_t>((steps >> 24) & 0xFF),
-      static_cast<uint8_t>((steps >> 16) & 0xFF),
-      static_cast<uint8_t>((steps >> 8) & 0xFF),
-      static_cast<uint8_t>(steps & 0xFF),
-      0x00,
+      static_cast<uint8_t>((targetSteps >> 24) & 0xFF),
+      static_cast<uint8_t>((targetSteps >> 16) & 0xFF),
+      static_cast<uint8_t>((targetSteps >> 8) & 0xFF),
+      static_cast<uint8_t>(targetSteps & 0xFF),
+      0x01,
       static_cast<uint8_t>(sync),
       0x6B,
     };

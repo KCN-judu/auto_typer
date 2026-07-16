@@ -223,7 +223,7 @@ class MotionExecutor {
   struct MotorSupervisionState {
     bool active;
     uint8_t motorId;
-    int32_t deltaSteps;
+    int32_t distanceSteps;
     bool baselineKnown;
     int32_t initialPulse;
     int32_t targetPulse;
@@ -343,10 +343,10 @@ class MotionExecutor {
   }
 
   bool startMoveXY(const MotionStep& step) {
-    const uint32_t xSteps = absoluteSteps(step.deltaSteps.x);
-    const uint32_t ySteps = absoluteSteps(step.deltaSteps.yLeft);
-    const bool hasX = xSteps > 0;
-    const bool hasY = ySteps > 0;
+    const uint32_t xSteps = absoluteSteps(activeSupervision_.x.distanceSteps);
+    const uint32_t ySteps = absoluteSteps(activeSupervision_.yLeft.distanceSteps);
+    const bool hasX = activeSupervision_.x.active;
+    const bool hasY = activeSupervision_.yLeft.active || activeSupervision_.yRight.active;
     if (!hasX && !hasY) {
       return true;
     }
@@ -360,58 +360,60 @@ class MotionExecutor {
                                                step.profile.maxRpm,
                                                config_.motionRuntime.minimumCoordinatedRpm);
     if (hasX && hasY) {
-      const MotorDirection yLeftDirection = directionForSignedSteps(step.deltaSteps.yLeft);
-      const MotorDirection yRightDirection = yLeftDirection == MotorDirection::Cw ? MotorDirection::Ccw
-                                                                                  : MotorDirection::Cw;
-      const EmmV5Driver::MoveRelativeCommand commands[] = {
+      const MotorDirection yLeftDirection = directionForSignedSteps(activeSupervision_.yLeft.targetPulse);
+      const MotorDirection yRightDirection = directionForSignedSteps(activeSupervision_.yRight.targetPulse);
+      const EmmV5Driver::MoveAbsoluteCommand commands[] = {
         {config_.topology.xMotorId,
-         directionForSignedSteps(step.deltaSteps.x),
+         directionForSignedSteps(activeSupervision_.x.targetPulse),
          xRpm,
          step.profile.acceleration,
-         xSteps,
+         absoluteSteps(activeSupervision_.x.targetPulse),
          true},
-        {config_.topology.yLeftMotorId, yLeftDirection, yRpm, step.profile.acceleration, ySteps, true},
-        {config_.topology.yRightMotorId, yRightDirection, yRpm, step.profile.acceleration, ySteps, true},
+        {config_.topology.yLeftMotorId, yLeftDirection, yRpm, step.profile.acceleration,
+         absoluteSteps(activeSupervision_.yLeft.targetPulse), true},
+        {config_.topology.yRightMotorId, yRightDirection, yRpm, step.profile.acceleration,
+         absoluteSteps(activeSupervision_.yRight.targetPulse), true},
       };
       const size_t queueBefore = driver_.availableForWrite();
-      const bool ok = driver_.moveRelativeBatch(commands, sizeof(commands) / sizeof(commands[0]), true, true);
+      const bool ok = driver_.moveAbsoluteBatch(commands, sizeof(commands) / sizeof(commands[0]), true, true);
       logMoveCommandBatchResult(step, commands, sizeof(commands) / sizeof(commands[0]), queueBefore, true, ok);
       return ok;
     }
     if (hasX) {
-      const MotorDirection direction = directionForSignedSteps(step.deltaSteps.x);
+      const MotorDirection direction = directionForSignedSteps(activeSupervision_.x.targetPulse);
       const size_t queueBefore = driver_.availableForWrite();
-      const bool ok = driver_.moveRelative(config_.topology.xMotorId,
+      const bool ok = driver_.moveAbsolute(config_.topology.xMotorId,
                                            direction,
                                            xRpm,
                                            step.profile.acceleration,
-                                           xSteps,
+                                           absoluteSteps(activeSupervision_.x.targetPulse),
                                            false,
                                            true);
       logMoveCommandIssueResult(step,
                                 config_.topology.xMotorId,
-                                step.deltaSteps.x,
+                                activeSupervision_.x.targetPulse,
                                 direction,
                                 xRpm,
                                 step.profile.acceleration,
                                 false,
                                 queueBefore,
                                 ok,
-                                EmmV5Driver::moveRelativeFrameCount());
+                                EmmV5Driver::moveAbsoluteFrameCount());
       if (!ok) {
         return false;
       }
     }
     if (hasY) {
-      const MotorDirection yLeftDirection = directionForSignedSteps(step.deltaSteps.yLeft);
-      const MotorDirection yRightDirection = yLeftDirection == MotorDirection::Cw ? MotorDirection::Ccw
-                                                                                  : MotorDirection::Cw;
-      const EmmV5Driver::MoveRelativeCommand commands[] = {
-        {config_.topology.yLeftMotorId, yLeftDirection, yRpm, step.profile.acceleration, ySteps, true},
-        {config_.topology.yRightMotorId, yRightDirection, yRpm, step.profile.acceleration, ySteps, true},
+      const MotorDirection yLeftDirection = directionForSignedSteps(activeSupervision_.yLeft.targetPulse);
+      const MotorDirection yRightDirection = directionForSignedSteps(activeSupervision_.yRight.targetPulse);
+      const EmmV5Driver::MoveAbsoluteCommand commands[] = {
+        {config_.topology.yLeftMotorId, yLeftDirection, yRpm, step.profile.acceleration,
+         absoluteSteps(activeSupervision_.yLeft.targetPulse), true},
+        {config_.topology.yRightMotorId, yRightDirection, yRpm, step.profile.acceleration,
+         absoluteSteps(activeSupervision_.yRight.targetPulse), true},
       };
       const size_t queueBefore = driver_.availableForWrite();
-      const bool ok = driver_.moveRelativeBatch(commands, sizeof(commands) / sizeof(commands[0]), true, true);
+      const bool ok = driver_.moveAbsoluteBatch(commands, sizeof(commands) / sizeof(commands[0]), true, true);
       logMoveCommandBatchResult(step, commands, sizeof(commands) / sizeof(commands[0]), queueBefore, true, ok);
       if (!ok) {
         return false;
@@ -421,29 +423,29 @@ class MotionExecutor {
   }
 
   bool startLineFeed(const MotionStep& step) {
-    const uint32_t steps = absoluteSteps(step.deltaSteps.lineFeed);
-    if (steps == 0) {
+    if (!activeSupervision_.lineFeed.active) {
       return true;
     }
-    const MotorDirection direction = directionForSignedSteps(step.deltaSteps.lineFeed);
+    const int32_t target = activeSupervision_.lineFeed.targetPulse;
+    const MotorDirection direction = directionForSignedSteps(target);
     const size_t queueBefore = driver_.availableForWrite();
-    const bool ok = driver_.moveRelative(config_.topology.lineFeedMotorId,
+    const bool ok = driver_.moveAbsolute(config_.topology.lineFeedMotorId,
                                          direction,
                                          step.profile.maxRpm,
                                          step.profile.acceleration,
-                                         steps,
+                                         absoluteSteps(target),
                                          false,
                                          true);
     logMoveCommandIssueResult(step,
                               config_.topology.lineFeedMotorId,
-                              step.deltaSteps.lineFeed,
+                              target,
                               direction,
                               step.profile.maxRpm,
                               step.profile.acceleration,
                               false,
                               queueBefore,
                               ok,
-                              EmmV5Driver::moveRelativeFrameCount());
+                              EmmV5Driver::moveAbsoluteFrameCount());
     return ok;
   }
 
@@ -451,101 +453,99 @@ class MotionExecutor {
     if (!driver_.enableMotor(config_.topology.lineFeedMotorId)) {
       return false;
     }
-    const int32_t signedSteps = activeSupervision_.lineFeed.deltaSteps;
-    const uint32_t steps = absoluteSteps(signedSteps);
-    if (steps == 0) {
+    if (!activeSupervision_.lineFeed.active) {
       return true;
     }
-    const MotorDirection direction = directionForSignedSteps(signedSteps);
+    const int32_t target = activeSupervision_.lineFeed.targetPulse;
+    const MotorDirection direction = directionForSignedSteps(target);
     const size_t queueBefore = driver_.availableForWrite();
-    const bool ok = driver_.moveRelative(config_.topology.lineFeedMotorId,
+    const bool ok = driver_.moveAbsolute(config_.topology.lineFeedMotorId,
                                          direction,
                                          step.profile.maxRpm,
                                          step.profile.acceleration,
-                                         steps,
+                                         absoluteSteps(target),
                                          false,
                                          true);
     logMoveCommandIssueResult(step,
                               config_.topology.lineFeedMotorId,
-                              signedSteps,
+                              target,
                               direction,
                               step.profile.maxRpm,
                               step.profile.acceleration,
                               false,
                               queueBefore,
                               ok,
-                              EmmV5Driver::moveRelativeFrameCount());
+                              EmmV5Driver::moveAbsoluteFrameCount());
     return ok;
   }
 
   bool startPressMotor(const MotionStep& step) {
-    const int32_t signedSteps = step.deltaSteps.press;
-    const uint32_t steps = absoluteSteps(signedSteps);
-    if (steps == 0) {
+    if (!activeSupervision_.press.active) {
       return true;
     }
-    const MotorDirection direction = directionForSignedSteps(signedSteps);
+    const int32_t target = activeSupervision_.press.targetPulse;
+    const MotorDirection direction = directionForSignedSteps(target);
     const size_t queueBefore = driver_.availableForWrite();
-    const bool ok = driver_.moveRelative(config_.topology.pressMotorId,
+    const bool ok = driver_.moveAbsolute(config_.topology.pressMotorId,
                                          direction,
                                          step.profile.maxRpm,
                                          step.profile.acceleration,
-                                         steps,
+                                         absoluteSteps(target),
                                          false,
                                          true);
     logMoveCommandIssueResult(step,
                               config_.topology.pressMotorId,
-                              signedSteps,
+                              target,
                               direction,
                               step.profile.maxRpm,
                               step.profile.acceleration,
                               false,
                               queueBefore,
                               ok,
-                              EmmV5Driver::moveRelativeFrameCount());
+                              EmmV5Driver::moveAbsoluteFrameCount());
     return ok;
   }
 
   bool startReturnZero(const MotionStep& step) {
-    EmmV5Driver::MoveRelativeCommand commands[3]{};
+    EmmV5Driver::MoveAbsoluteCommand commands[3]{};
     size_t count = 0;
     appendReturnZeroCommand(commands, count, activeSupervision_.x, step, true);
     appendReturnZeroCommand(commands, count, activeSupervision_.yLeft, step, true);
     appendReturnZeroCommand(commands, count, activeSupervision_.yRight, step, true);
     if (count > 0) {
       const size_t queueBefore = driver_.availableForWrite();
-      const bool ok = driver_.moveRelativeBatch(commands, count, true, true);
+      const bool ok = driver_.moveAbsoluteBatch(commands, count, true, true);
       logMoveCommandBatchResult(step, commands, count, queueBefore, true, ok);
       if (!ok) {
         return false;
       }
     }
     if (activeSupervision_.press.active) {
-      const MotorDirection direction = directionForSignedSteps(activeSupervision_.press.deltaSteps);
+      const MotorDirection direction = directionForSignedSteps(activeSupervision_.press.targetPulse);
       const size_t queueBefore = driver_.availableForWrite();
-      const bool ok = driver_.moveRelative(config_.topology.pressMotorId,
+      const bool ok = driver_.moveAbsolute(config_.topology.pressMotorId,
                                            direction,
                                            step.profile.maxRpm,
                                            step.profile.acceleration,
-                                           absoluteSteps(activeSupervision_.press.deltaSteps),
+                                           absoluteSteps(activeSupervision_.press.targetPulse),
                                            false,
                                            true);
       logMoveCommandIssueResult(step,
                                 config_.topology.pressMotorId,
-                                activeSupervision_.press.deltaSteps,
+                                activeSupervision_.press.targetPulse,
                                 direction,
                                 step.profile.maxRpm,
                                 step.profile.acceleration,
                                 false,
                                 queueBefore,
                                 ok,
-                                EmmV5Driver::moveRelativeFrameCount());
+                                EmmV5Driver::moveAbsoluteFrameCount());
       return ok;
     }
     return true;
   }
 
-  void appendReturnZeroCommand(EmmV5Driver::MoveRelativeCommand* commands,
+  void appendReturnZeroCommand(EmmV5Driver::MoveAbsoluteCommand* commands,
                                size_t& count,
                                const MotorSupervisionState& supervision,
                                const MotionStep& step,
@@ -555,10 +555,10 @@ class MotionExecutor {
     }
     commands[count] = {
       supervision.motorId,
-      directionForSignedSteps(supervision.deltaSteps),
+      directionForSignedSteps(supervision.targetPulse),
       step.profile.maxRpm,
       step.profile.acceleration,
-      absoluteSteps(supervision.deltaSteps),
+      absoluteSteps(supervision.targetPulse),
       sync,
     };
     ++count;
@@ -609,11 +609,11 @@ class MotionExecutor {
     }
     lastFeedbackPollMs_ = nowMs;
     if (step.kind == MotionStepKind::MoveXY) {
-      if (step.deltaSteps.x != 0) {
+      if (activeSupervision_.x.active) {
         driver_.requestInputPulseCount(config_.topology.xMotorId);
         driver_.requestVelocity(config_.topology.xMotorId);
       }
-      if (step.deltaSteps.yLeft != 0) {
+      if (activeSupervision_.yLeft.active || activeSupervision_.yRight.active) {
         driver_.requestInputPulseCount(config_.topology.yLeftMotorId);
         driver_.requestVelocity(config_.topology.yLeftMotorId);
         driver_.requestInputPulseCount(config_.topology.yRightMotorId);
@@ -639,13 +639,13 @@ class MotionExecutor {
     const uint32_t elapsed = nowMs - stepStartedAtMs_;
     updateActiveSupervision(nowMs);
     if (step.kind == MotionStepKind::MoveXY) {
-      if (step.deltaSteps.x != 0 && commandResponseFault(activeSupervision_.x)) {
+      if (activeSupervision_.x.active && commandResponseFault(activeSupervision_.x)) {
         return false;
       }
-      if (step.deltaSteps.x != 0 && !motorSupervisionSatisfied(activeSupervision_.x, nowMs, elapsed, step)) {
+      if (activeSupervision_.x.active && !motorSupervisionSatisfied(activeSupervision_.x, nowMs, elapsed, step)) {
         return false;
       }
-      if (step.deltaSteps.yLeft != 0) {
+      if (activeSupervision_.yLeft.active || activeSupervision_.yRight.active) {
         if (commandResponseFault(activeSupervision_.yLeft) || commandResponseFault(activeSupervision_.yRight)) {
           return false;
         }
@@ -722,14 +722,14 @@ class MotionExecutor {
     log_.print(elapsedMs);
     log_.print(" timeoutMs=");
     log_.print(step.profile.timeoutMs);
-    log_.print(" dxSteps=");
-    log_.print(step.deltaSteps.x);
-    log_.print(" dySteps=");
-    log_.print(step.deltaSteps.yRight);
-    log_.print(" pressSteps=");
-    log_.print(step.deltaSteps.press);
-    log_.print(" lineFeedSteps=");
-    log_.print(step.deltaSteps.lineFeed);
+    log_.print(" xTarget=");
+    log_.print(step.targetSteps.x);
+    log_.print(" yRightTarget=");
+    log_.print(step.targetSteps.yRight);
+    log_.print(" pressTarget=");
+    log_.print(step.targetSteps.press);
+    log_.print(" lineFeedTarget=");
+    log_.print(step.targetSteps.lineFeed);
     log_.print(" completionSampleCount=");
     log_.print(completionSampleCount_);
     log_.print(" settleStartedAtMs=");
@@ -792,17 +792,17 @@ class MotionExecutor {
   }
 
   void logMoveCommandBatchResult(const MotionStep& step,
-                                 const EmmV5Driver::MoveRelativeCommand* commands,
+                                 const EmmV5Driver::MoveAbsoluteCommand* commands,
                                  size_t count,
                                  size_t queueBefore,
                                  bool triggerBroadcast,
                                  bool enqueueResult) const {
-    const size_t frames = count * EmmV5Driver::moveRelativeFrameCount() +
+    const size_t frames = count * EmmV5Driver::moveAbsoluteFrameCount() +
                           (triggerBroadcast ? EmmV5Driver::triggerBroadcastFrameCount() : 0);
     for (size_t i = 0; i < count; ++i) {
       const int32_t signedSteps = commands[i].direction == MotorDirection::Cw
-                                      ? static_cast<int32_t>(commands[i].steps)
-                                      : -static_cast<int32_t>(commands[i].steps);
+                                      ? static_cast<int32_t>(commands[i].targetSteps)
+                                      : -static_cast<int32_t>(commands[i].targetSteps);
       logMoveCommandIssueResult(step,
                                 commands[i].motorId,
                                 signedSteps,
@@ -836,7 +836,7 @@ class MotionExecutor {
     log_.print(motionStepKindName(step.kind));
     log_.print(" motorId=");
     log_.print(motorId);
-    log_.print(" command=moveRelative commandByte=0xFD signedSteps=");
+    log_.print(" command=moveAbsolute commandByte=0xFD targetSteps=");
     log_.print(signedSteps);
     log_.print(" direction=");
     log_.print(direction == MotorDirection::Cw ? "cw" : "ccw");
@@ -871,8 +871,8 @@ class MotionExecutor {
     log_.print(label);
     log_.print(" id=");
     log_.print(supervision.motorId);
-    log_.print(" deltaSteps=");
-    log_.print(supervision.deltaSteps);
+    log_.print(" distanceSteps=");
+    log_.print(supervision.distanceSteps);
     log_.print(" baselineKnown=");
     log_.print(supervision.baselineKnown ? 1 : 0);
     log_.print(" initialPulse=");
@@ -914,56 +914,40 @@ class MotionExecutor {
 
   void captureSupervisionState(const MotionStep& step, uint32_t startedAtMs) {
     activeSupervision_ = {};
-    if (step.kind == MotionStepKind::ReturnZero) {
-      activeSupervision_.x = makeReturnZeroSupervision(config_.topology.xMotorId, startedAtMs);
-      activeSupervision_.yLeft = makeReturnZeroSupervision(config_.topology.yLeftMotorId, startedAtMs);
-      activeSupervision_.yRight = makeReturnZeroSupervision(config_.topology.yRightMotorId, startedAtMs);
-      activeSupervision_.press = makeReturnZeroSupervision(config_.topology.pressMotorId, startedAtMs);
-      return;
-    }
-    if (step.kind == MotionStepKind::LineFeedHome) {
-      activeSupervision_.lineFeed = makeLineFeedHomeSupervision(startedAtMs);
-      return;
-    }
-    activeSupervision_.x = makeSupervision(config_.topology.xMotorId, step.deltaSteps.x, startedAtMs);
-    activeSupervision_.yLeft = makeSupervision(config_.topology.yLeftMotorId, step.deltaSteps.yLeft, startedAtMs);
-    activeSupervision_.yRight = makeSupervision(config_.topology.yRightMotorId, step.deltaSteps.yRight, startedAtMs);
-    activeSupervision_.lineFeed =
-        makeSupervision(config_.topology.lineFeedMotorId, step.deltaSteps.lineFeed, startedAtMs);
-    activeSupervision_.press = makeSupervision(config_.topology.pressMotorId, step.deltaSteps.press, startedAtMs);
+    activeSupervision_.x =
+        makeSupervision(config_.topology.xMotorId, step.targetSteps.x, step.hasXTarget, startedAtMs);
+    activeSupervision_.yLeft =
+        makeSupervision(config_.topology.yLeftMotorId, step.targetSteps.yLeft, step.hasYTargets, startedAtMs);
+    activeSupervision_.yRight =
+        makeSupervision(config_.topology.yRightMotorId, step.targetSteps.yRight, step.hasYTargets, startedAtMs);
+    activeSupervision_.lineFeed = makeSupervision(config_.topology.lineFeedMotorId,
+                                                  step.targetSteps.lineFeed,
+                                                  step.hasLineFeedTarget,
+                                                  startedAtMs);
+    activeSupervision_.press = makeSupervision(config_.topology.pressMotorId,
+                                               step.targetSteps.press,
+                                               step.hasPressTarget,
+                                               startedAtMs);
   }
 
   bool stepHasActiveMotion(const MotionStep& step) const {
-    if (step.kind == MotionStepKind::ReturnZero || step.kind == MotionStepKind::LineFeedHome) {
-      return true;
-    }
-    return step.deltaSteps.x != 0 || step.deltaSteps.yLeft != 0 || step.deltaSteps.yRight != 0 ||
-           step.deltaSteps.lineFeed != 0 || step.deltaSteps.press != 0;
+    return step.hasXTarget || step.hasYTargets || step.hasLineFeedTarget || step.hasPressTarget;
   }
 
   bool baselineReady(const MotionStep& step, uint32_t nowMs) const {
-    if (step.kind == MotionStepKind::ReturnZero) {
-      return motorBaselineReady(feedback_.get(config_.topology.xMotorId), nowMs) &&
-             motorBaselineReady(feedback_.get(config_.topology.yLeftMotorId), nowMs) &&
-             motorBaselineReady(feedback_.get(config_.topology.yRightMotorId), nowMs) &&
-             motorBaselineReady(feedback_.get(config_.topology.pressMotorId), nowMs);
-    }
-    if (step.kind == MotionStepKind::LineFeedHome) {
-      return motorBaselineReady(feedback_.get(config_.topology.lineFeedMotorId), nowMs);
-    }
-    if (step.deltaSteps.x != 0 && !motorBaselineReady(feedback_.get(config_.topology.xMotorId), nowMs)) {
+    if (step.hasXTarget && !motorBaselineReady(feedback_.get(config_.topology.xMotorId), nowMs)) {
       return false;
     }
-    if (step.deltaSteps.yLeft != 0 &&
+    if (step.hasYTargets &&
         (!motorBaselineReady(feedback_.get(config_.topology.yLeftMotorId), nowMs) ||
          !motorBaselineReady(feedback_.get(config_.topology.yRightMotorId), nowMs))) {
       return false;
     }
-    if (step.deltaSteps.lineFeed != 0 &&
+    if (step.hasLineFeedTarget &&
         !motorBaselineReady(feedback_.get(config_.topology.lineFeedMotorId), nowMs)) {
       return false;
     }
-    if (step.deltaSteps.press != 0 && !motorBaselineReady(feedback_.get(config_.topology.pressMotorId), nowMs)) {
+    if (step.hasPressTarget && !motorBaselineReady(feedback_.get(config_.topology.pressMotorId), nowMs)) {
       return false;
     }
     return true;
@@ -980,11 +964,14 @@ class MotionExecutor {
     driver_.requestVelocity(config_.topology.pressMotorId);
   }
 
-  MotorSupervisionState makeSupervision(uint8_t motorId, int32_t deltaSteps, uint32_t startedAtMs) const {
+  MotorSupervisionState makeSupervision(uint8_t motorId,
+                                        int32_t targetSteps,
+                                        bool requested,
+                                        uint32_t startedAtMs) const {
     MotorSupervisionState supervision{};
-    supervision.active = deltaSteps != 0;
+    supervision.active = requested;
     supervision.motorId = motorId;
-    supervision.deltaSteps = deltaSteps;
+    supervision.targetPulse = targetSteps;
     supervision.startedAtMs = startedAtMs;
     supervision.commandIssueMs = startedAtMs;
     if (!supervision.active) {
@@ -995,53 +982,12 @@ class MotionExecutor {
     supervision.baselineKnown = motorBaselineReady(state, nowMs);
     if (supervision.baselineKnown) {
       supervision.initialPulse = state.inputPulseSteps;
-      supervision.targetPulse = state.inputPulseSteps + deltaSteps;
+      supervision.distanceSteps = targetSteps - state.inputPulseSteps;
       supervision.pulseReferenceKnown = true;
+      if (absoluteSigned(supervision.distanceSteps) <= config_.motionRuntime.positionToleranceSteps) {
+        supervision.active = false;
+      }
     }
-    return supervision;
-  }
-
-  MotorSupervisionState makeReturnZeroSupervision(uint8_t motorId, uint32_t startedAtMs) const {
-    MotorSupervisionState supervision{};
-    supervision.motorId = motorId;
-    supervision.startedAtMs = startedAtMs;
-    supervision.commandIssueMs = startedAtMs;
-    const uint32_t nowMs = millis();
-    const MotorState state = feedback_.get(motorId);
-    supervision.baselineKnown = motorBaselineReady(state, nowMs);
-    if (!supervision.baselineKnown || absoluteSigned(state.inputPulseSteps) <= config_.motionRuntime.positionToleranceSteps) {
-      return supervision;
-    }
-    supervision.active = true;
-    supervision.initialPulse = state.inputPulseSteps;
-    supervision.targetPulse = 0;
-    supervision.deltaSteps = -state.inputPulseSteps;
-    supervision.pulseReferenceKnown = true;
-    return supervision;
-  }
-
-  MotorSupervisionState makeLineFeedHomeSupervision(uint32_t startedAtMs) const {
-    MotorSupervisionState supervision{};
-    supervision.motorId = config_.topology.lineFeedMotorId;
-    supervision.startedAtMs = startedAtMs;
-    supervision.commandIssueMs = startedAtMs;
-    const uint32_t nowMs = millis();
-    const MotorState state = feedback_.get(config_.topology.lineFeedMotorId);
-    supervision.baselineKnown = motorBaselineReady(state, nowMs);
-    if (!supervision.baselineKnown) {
-      return supervision;
-    }
-    const int32_t targetPulse =
-        signedStepsForDirection(config_.lineFeed.returnTotalSteps, config_.lineFeed.returnDirection);
-    const int32_t deltaSteps = targetPulse - state.inputPulseSteps;
-    if (absoluteSigned(deltaSteps) <= config_.motionRuntime.positionToleranceSteps) {
-      return supervision;
-    }
-    supervision.active = true;
-    supervision.initialPulse = state.inputPulseSteps;
-    supervision.targetPulse = targetPulse;
-    supervision.deltaSteps = deltaSteps;
-    supervision.pulseReferenceKnown = true;
     return supervision;
   }
 
@@ -1307,11 +1253,11 @@ class MotionExecutor {
 
   uint32_t expectedMoveMs(const MotionStep& step) const {
     if (step.kind == MotionStepKind::ReturnZero || step.kind == MotionStepKind::LineFeedHome) {
-      uint32_t maxSteps = absoluteSteps(activeSupervision_.x.deltaSteps);
-      const uint32_t yLeftSteps = absoluteSteps(activeSupervision_.yLeft.deltaSteps);
-      const uint32_t yRightSteps = absoluteSteps(activeSupervision_.yRight.deltaSteps);
-      const uint32_t pressSteps = absoluteSteps(activeSupervision_.press.deltaSteps);
-      const uint32_t homeLineFeedSteps = absoluteSteps(activeSupervision_.lineFeed.deltaSteps);
+      uint32_t maxSteps = absoluteSteps(activeSupervision_.x.distanceSteps);
+      const uint32_t yLeftSteps = absoluteSteps(activeSupervision_.yLeft.distanceSteps);
+      const uint32_t yRightSteps = absoluteSteps(activeSupervision_.yRight.distanceSteps);
+      const uint32_t pressSteps = absoluteSteps(activeSupervision_.press.distanceSteps);
+      const uint32_t homeLineFeedSteps = absoluteSteps(activeSupervision_.lineFeed.distanceSteps);
       if (yLeftSteps > maxSteps) {
         maxSteps = yLeftSteps;
       }
@@ -1331,10 +1277,10 @@ class MotionExecutor {
       const uint64_t denominator = static_cast<uint64_t>(step.profile.maxRpm) * config_.calibration.stepsPerRev;
       return static_cast<uint32_t>((numerator + denominator - 1) / denominator);
     }
-    uint32_t maxSteps = absoluteSteps(step.deltaSteps.x);
-    const uint32_t ySteps = absoluteSteps(step.deltaSteps.yLeft);
-    const uint32_t lineFeedSteps = absoluteSteps(step.deltaSteps.lineFeed);
-    const uint32_t pressSteps = absoluteSteps(step.deltaSteps.press);
+    uint32_t maxSteps = absoluteSteps(activeSupervision_.x.distanceSteps);
+    const uint32_t ySteps = absoluteSteps(activeSupervision_.yLeft.distanceSteps);
+    const uint32_t lineFeedSteps = absoluteSteps(activeSupervision_.lineFeed.distanceSteps);
+    const uint32_t pressSteps = absoluteSteps(activeSupervision_.press.distanceSteps);
     if (ySteps > maxSteps) {
       maxSteps = ySteps;
     }

@@ -2,6 +2,8 @@
 
 Arduino test sketch for the `ESP32-S3` controller board in this repository.
 
+This is a standalone hardware connectivity sketch, not the production Auto Typer firmware. For production flashing, SoftAP provisioning, desktop connection, and printing, use [`../docs/auto_typer_flash_and_usage_guide.typ`](../docs/auto_typer_flash_and_usage_guide.typ).
+
 ## Target
 
 - MCU: `ESP32-S3`
@@ -27,13 +29,13 @@ Install these with Arduino Library Manager or `arduino-cli`:
 ## Architecture
 
 - `test.ino`: Arduino lifecycle entry only.
-- `app_config.h`: pin and protocol configuration.
-- `app_logic.h`: pure logic, status mapping, and default test plans.
-- `app_runtime.h`: application-level test coordinator and rotating loop schedule.
-- `hal_i2c.h`: I2C probing and scan side effects.
-- `hal_display.h`: OLED side effects via `Adafruit SH110X`.
-- `hal_servo.h`: PCA9685 side effects via `Adafruit PWM Servo Driver`.
-- `hal_can_motor.h`: TWAI + `Emm_V5.0` command side effects.
+- `appConfig.h`: pin and protocol configuration.
+- `appLogic.h`: pure logic, status mapping, and default test plans.
+- `appRuntime.h`: application-level test coordinator and rotating loop schedule.
+- `halI2c.h`: I2C probing and scan side effects.
+- `halDisplay.h`: OLED side effects via `Adafruit SH110X`.
+- `halServo.h`: PCA9685 side effects via `Adafruit PWM Servo Driver`.
+- `halCanMotor.h`: TWAI + `Emm_V5.0` command side effects.
 
 ## Notes
 
@@ -45,8 +47,8 @@ Install these with Arduino Library Manager or `arduino-cli`:
   - `1000 us` reverse
 - The test drives `CH0` and `CH1` together to avoid 0-based/1-based port numbering ambiguity on the PCA9685 board.
 - `loop()` rotates through I2C refresh, servo sweep, and CAN check instead of repeating only the servo test.
-- The default CAN connectivity speed is `300 RPM`.
-- The CAN test first saves motor control mode `2` (closed-loop) before enable and speed commands.
+- The CAN test saves closed-loop mode, enables the motor, clears its pulse position, moves to the absolute target `+3200`, and returns to absolute `0` at `300 RPM`.
+- Place the motor mechanism at its physical origin before starting the sketch; position clearing establishes the pulse coordinate but does not perform mechanical homing.
 
 ## Expected serial speed
 

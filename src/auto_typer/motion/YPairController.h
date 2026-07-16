@@ -10,19 +10,22 @@ class YPairController {
   YPairController(const TypingConfig& config, EmmV5Driver& driver)
       : config_(config), driver_(driver) {}
 
-  bool moveRelative(int32_t yLeftSteps, uint16_t rpm, uint8_t acceleration) {
-    const uint32_t steps = absoluteSteps(yLeftSteps);
-    if (steps == 0) {
-      return true;
-    }
-    const MotorDirection leftDirection = directionForSignedSteps(yLeftSteps);
-    const MotorDirection rightDirection = leftDirection == MotorDirection::Cw ? MotorDirection::Ccw
-                                                                              : MotorDirection::Cw;
-    const EmmV5Driver::MoveRelativeCommand commands[] = {
-      {config_.topology.yLeftMotorId, leftDirection, rpm, acceleration, steps, true},
-      {config_.topology.yRightMotorId, rightDirection, rpm, acceleration, steps, true},
+  bool moveAbsolute(int32_t yLeftTarget, int32_t yRightTarget, uint16_t rpm, uint8_t acceleration) {
+    const EmmV5Driver::MoveAbsoluteCommand commands[] = {
+      {config_.topology.yLeftMotorId,
+       directionForSignedSteps(yLeftTarget),
+       rpm,
+       acceleration,
+       absoluteSteps(yLeftTarget),
+       true},
+      {config_.topology.yRightMotorId,
+       directionForSignedSteps(yRightTarget),
+       rpm,
+       acceleration,
+       absoluteSteps(yRightTarget),
+       true},
     };
-    return driver_.moveRelativeBatch(commands, sizeof(commands) / sizeof(commands[0]), true);
+    return driver_.moveAbsoluteBatch(commands, sizeof(commands) / sizeof(commands[0]), true);
   }
 
   bool trigger() {

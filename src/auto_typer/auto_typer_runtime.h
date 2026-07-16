@@ -62,7 +62,7 @@ class AutoTyperApplication {
         startedRemoteGroupId_{},
         lastCompletedRemoteCommandId_{},
         remoteCommandActive_(false),
-        remoteGroupState_(RemoteGroupState::Idle),
+        remoteBlockState_(RemoteBlockState::Idle),
         remoteGroupStartedPending_(false),
         remoteDoneNotified_(false),
         remoteFaultNotified_(false),
@@ -78,7 +78,10 @@ class AutoTyperApplication {
         lastRemoteBlockStartedIndex_(static_cast<size_t>(-1)),
         lastRemoteBlockDoneIndex_(static_cast<size_t>(-1)),
         remoteCommandStartedAtMs_(0),
+        remoteMaxRuntimeMs_(0),
         lastRemoteCommandDurationMs_(0),
+        taskCompleteDisplayActive_(false),
+        taskCompleteDisplayedAtMs_(0),
         lineFeedPrimeRequired_(true) {
     for (uint8_t i = 0; i < kTrackedMotorCount; ++i) {
       lastMotorProbeMs_[i] = 0;
@@ -100,7 +103,11 @@ class AutoTyperApplication {
       showError();
       return;
     }
-    prepareMotorsBestEffort();
+    if (!prepareMotorsAtOrigin()) {
+      setFault("motor_origin_init_failed", "Motor position zeroing failed");
+      showError();
+      return;
+    }
     log_.println("Auto typer ready");
     display_.showStatus(DisplayStatus::Idle);
   }
@@ -127,7 +134,10 @@ class AutoTyperApplication {
       return;
     }
 
+    tickTaskCompleteDisplay();
+
     if (jobState_ == JobState::Queued) {
+      taskCompleteDisplayActive_ = false;
       const MachinePointMm startPoint = remoteCommandActive_ ? remoteCurrentPoint_ : MachinePointMm{NAN, NAN};
       const char* groupId = remoteCommandActive_ ? currentRemoteCommandId_ : "";
       const uint32_t seq = remoteCommandActive_ ? currentRemoteSeq_ : 0;
@@ -143,11 +153,17 @@ class AutoTyperApplication {
       jobState_ = JobState::Running;
       if (remoteCommandActive_) {
         remoteGroupStartedPending_ = true;
-        remoteGroupState_ = RemoteGroupState::Running;
+        remoteBlockState_ = RemoteBlockState::Running;
         copyString(startedRemoteGroupId_, sizeof(startedRemoteGroupId_), currentRemoteCommandId_);
         remoteCommandStartedAtMs_ = millis();
       }
       display_.showStatus(DisplayStatus::Printing);
+    }
+
+    if (remoteCommandActive_ && jobState_ == JobState::Running && remoteCommandStartedAtMs_ != 0 &&
+        remoteMaxRuntimeMs_ != 0 && millis() - remoteCommandStartedAtMs_ > remoteMaxRuntimeMs_) {
+      emergencyStopWithReason("block_runtime_timeout", "Atomic motion block exceeded policy.maxRuntimeMs");
+      return;
     }
 
     executor_.tick();
@@ -190,7 +206,7 @@ class AutoTyperApplication {
         jobState_ = JobState::Completed;
         lastRemoteCommandDurationMs_ = groupDurationMs;
         remoteCurrentPoint_ = executor_.currentPoint();
-        if (activePlanContainsLineFeedHome()) {
+        if (activePlanReachesLineFeedRest()) {
           lineFeedPrimeRequired_ = false;
         }
         copyString(lastCompletedRemoteCommandId_, sizeof(lastCompletedRemoteCommandId_), currentRemoteCommandId_);
@@ -287,24 +303,45 @@ class AutoTyperApplication {
       jobState_ = JobState::Cancelled;
     }
     display_.showStatus(DisplayStatus::Idle);
+    taskCompleteDisplayActive_ = false;
     if (cancellingRemote && jobState_ == JobState::Cancelled) {
       finalizeRemoteGroup("cancelled", "cancelled", "Remote group cancelled", remoteElapsedMs());
     } else if (cancellingRemote) {
-      remoteGroupState_ = RemoteGroupState::Cancelled;
+      remoteBlockState_ = RemoteBlockState::Cancelled;
     }
     return true;
   }
 
-  SubmitRemoteGroupResult submitRemoteGroup(const RemoteMotionStep* steps, size_t count, const char* groupId, uint32_t seq) {
-    SubmitRemoteGroupResult result{false, "", ""};
+  bool cancelQueuedRemoteBlock(const char* blockId, uint32_t seq, bool hasTarget) {
+    if (!remoteCommandActive_ || jobState_ != JobState::Queued) {
+      return false;
+    }
+    if (hasTarget &&
+        (blockId == nullptr || strcmp(blockId, currentRemoteCommandId_) != 0 || seq != currentRemoteSeq_)) {
+      return false;
+    }
+    jobState_ = JobState::Cancelled;
+    remoteBlockState_ = RemoteBlockState::Cancelled;
+    display_.showStatus(DisplayStatus::Idle);
+    taskCompleteDisplayActive_ = false;
+    finalizeRemoteGroup("cancelled", "cancelled", "Atomic motion block cancelled before execution", 0);
+    return true;
+  }
+
+  SubmitRemoteBlockResult submitRemoteBlock(const RemoteMotionStep* steps,
+                                             size_t count,
+                                             const char* groupId,
+                                             uint32_t seq,
+                                             uint32_t maxRuntimeMs) {
+    SubmitRemoteBlockResult result{false, "", ""};
     if (steps == nullptr || count == 0) {
-      result.rejectionCode = "invalid_group";
-      result.rejectionMessage = "Remote group must contain at least one step";
+      result.rejectionCode = "invalid_block";
+      result.rejectionMessage = "Atomic motion block must contain one step";
       return result;
     }
-    if (count > kRemoteGroupMaxSteps) {
-      result.rejectionCode = "group_too_large";
-      result.rejectionMessage = "Remote group contains too many steps";
+    if (count > kRemoteBlockMaxSteps) {
+      result.rejectionCode = "invalid_block";
+      result.rejectionMessage = "Atomic request must contain exactly one block";
       return result;
     }
     if (faulted_ || executor_.faulted()) {
@@ -323,10 +360,9 @@ class AutoTyperApplication {
       result.rejectionMessage = motionNotReadyMessage();
       return result;
     }
-    if (lineFeedPrimeRequired_ && remoteGroupNeedsLineFeed(steps, count) &&
-        !remoteGroupContainsLineFeedReturn(steps, count)) {
-      result.rejectionCode = "line_feed_prime_required";
-      result.rejectionMessage = "Line feed must be primed before motion";
+    if (maxRuntimeMs == 0 || maxRuntimeMs > kMaxBlockRuntimeMs) {
+      result.rejectionCode = "invalid_block";
+      result.rejectionMessage = "Atomic motion block runtime is outside the supported range";
       return result;
     }
 
@@ -335,25 +371,6 @@ class AutoTyperApplication {
     MachinePointMm plannedPoint = remoteCurrentPoint_;
     for (size_t i = 0; i < count; ++i) {
       MotionStep motionStep{};
-      if (steps[i].kind == RemoteMotionStepKind::LineFeed || steps[i].kind == RemoteMotionStepKind::LineFeedHome) {
-        const uint8_t lineCount = steps[i].kind == RemoteMotionStepKind::LineFeed ? steps[i].lines : 1;
-        if (lineCount == 0) {
-          result.rejectionCode = "invalid_block";
-          result.rejectionMessage = "line_feed lines is required";
-          activeMotionSteps_.count = 0;
-          return result;
-        }
-        for (uint8_t line = 0; line < lineCount; ++line) {
-          if (!appendLineFeedHomeSteps(result, plannedPoint, steps[i].profile)) {
-            activeMotionSteps_.count = 0;
-            return result;
-          }
-        }
-        if (steps[i].kind == RemoteMotionStepKind::LineFeed) {
-          plannedPoint.xMm = config_.homePoint.xMm;
-        }
-        continue;
-      }
       if (!convertRemoteStep(steps[i], motionStep, result, plannedPoint)) {
         activeMotionSteps_.count = 0;
         return result;
@@ -386,9 +403,10 @@ class AutoTyperApplication {
     lastRemoteBlockStartedIndex_ = static_cast<size_t>(-1);
     lastRemoteBlockDoneIndex_ = static_cast<size_t>(-1);
     remoteCommandStartedAtMs_ = 0;
+    remoteMaxRuntimeMs_ = maxRuntimeMs;
     lastRemoteCommandDurationMs_ = 0;
     remoteCommandActive_ = true;
-    remoteGroupState_ = RemoteGroupState::Queued;
+    remoteBlockState_ = RemoteBlockState::Queued;
     jobState_ = JobState::Queued;
     ++jobId_;
     activeTextLength_ = 0;
@@ -448,7 +466,7 @@ class AutoTyperApplication {
     return true;
   }
 
-  bool consumeRemoteGroupFinal(char* outGroupId,
+  bool consumeRemoteBlockFinal(char* outGroupId,
                                size_t outGroupIdSize,
                                uint32_t& seq,
                                const char*& status,
@@ -466,15 +484,16 @@ class AutoTyperApplication {
     message = remoteFinalMessage_;
     durationMs = lastRemoteCommandDurationMs_;
     remoteCommandActive_ = false;
+    remoteMaxRuntimeMs_ = 0;
     currentRemoteCommandId_[0] = '\0';
     startedRemoteGroupId_[0] = '\0';
     remoteFinalGroupId_[0] = '\0';
     if (strcmp(remoteFinalStatus_, "done") == 0) {
-      remoteGroupState_ = RemoteGroupState::Completed;
+      remoteBlockState_ = RemoteBlockState::Completed;
     } else if (strcmp(remoteFinalStatus_, "cancelled") == 0) {
-      remoteGroupState_ = RemoteGroupState::Cancelled;
+      remoteBlockState_ = RemoteBlockState::Cancelled;
     } else {
-      remoteGroupState_ = RemoteGroupState::Failed;
+      remoteBlockState_ = RemoteBlockState::Failed;
     }
     return true;
   }
@@ -488,6 +507,8 @@ class AutoTyperApplication {
     currentRemoteCommandId_[0] = '\0';
     startedRemoteGroupId_[0] = '\0';
     display_.showStatus(DisplayStatus::Complete);
+    taskCompleteDisplayActive_ = true;
+    taskCompleteDisplayedAtMs_ = millis();
     return true;
   }
 
@@ -503,13 +524,20 @@ class AutoTyperApplication {
     faultMessage_ = "";
     jobState_ = JobState::None;
     remoteCommandActive_ = false;
-    remoteGroupState_ = RemoteGroupState::Idle;
+    remoteBlockState_ = RemoteBlockState::Idle;
     remoteFinalPending_ = false;
+    remoteMaxRuntimeMs_ = 0;
+    taskCompleteDisplayActive_ = false;
     currentRemoteCommandId_[0] = '\0';
     probeMotorsBestEffort(300, true);
     const CanBusDiagnostics diagnostics = canBus_.diagnostics();
     if (!recovered || diagnostics.fatalFault) {
       setFault(diagnostics.lastFaultCode, diagnostics.lastFaultMessage);
+      showError();
+      return false;
+    }
+    if (!motionReady() || !pressReady()) {
+      setFault("motor_recovery_failed", "Motor readiness did not recover");
       showError();
       return false;
     }
@@ -557,8 +585,8 @@ class AutoTyperApplication {
     }
     MotorState state = feedback_.get(motorId);
     result.initialPulse = state.inputPulseSteps;
-    result.downTargetPulse = state.inputPulseSteps + config_.pressMotor.pressDeltaSteps;
-    if (!runPressDiagMove("press_down", 0, config_.pressMotor.pressDeltaSteps, result.downTargetPulse, result, true)) {
+    result.downTargetPulse = config_.pressMotor.pressTargetSteps;
+    if (!runPressDiagMove("press_down", 0, result.downTargetPulse, result, true)) {
       protocolTrace_.clearMotionContext();
       printPressDiagTrace(result);
       return result;
@@ -567,8 +595,8 @@ class AutoTyperApplication {
     protocolTrace_.setMotionContext("press_diag_m5", 0, 1, "press_up");
     state = feedback_.get(motorId);
     result.downPulse = state.inputPulseSteps;
-    result.upTargetPulse = state.inputPulseSteps + config_.pressMotor.releaseDeltaSteps;
-    if (!runPressDiagMove("press_up", 1, config_.pressMotor.releaseDeltaSteps, result.upTargetPulse, result, false)) {
+    result.upTargetPulse = config_.pressMotor.releaseTargetSteps;
+    if (!runPressDiagMove("press_up", 1, result.upTargetPulse, result, false)) {
       protocolTrace_.clearMotionContext();
       printPressDiagTrace(result);
       return result;
@@ -601,20 +629,20 @@ class AutoTyperApplication {
     return enabled ? motion_.enableMotor(motorId, sync) : motion_.disableMotor(motorId, sync);
   }
 
-  bool debugMotorMoveRelative(uint8_t motorId,
+  bool debugMotorMoveAbsolute(uint8_t motorId,
                               MotorDirection direction,
                               uint16_t rpm,
                               uint8_t acceleration,
-                              uint32_t steps,
+                              uint32_t targetSteps,
                               bool sync) {
     if (!canDebug()) {
       return false;
     }
     if (isYMotorGroup(motorId)) {
-      const int32_t signedSteps = direction == MotorDirection::Cw ? static_cast<int32_t>(steps)
-                                                                  : -static_cast<int32_t>(steps);
+      const int32_t signedTarget = direction == MotorDirection::Cw ? static_cast<int32_t>(targetSteps)
+                                                                   : -static_cast<int32_t>(targetSteps);
       YPairController yPair(config_, motion_);
-      return yPair.moveRelative(signedSteps, rpm, acceleration);
+      return yPair.moveAbsolute(signedTarget, -signedTarget, rpm, acceleration);
     }
     if (motorId == config_.topology.yLeftMotorId || motorId == config_.topology.yRightMotorId) {
       return false;
@@ -622,7 +650,7 @@ class AutoTyperApplication {
     if (sync) {
       return false;
     }
-    return motion_.moveRelative(motorId, direction, rpm, acceleration, steps, false);
+    return motion_.moveAbsolute(motorId, direction, rpm, acceleration, targetSteps, false);
   }
 
   bool debugMotorStop(uint8_t motorId, bool sync) {
@@ -676,7 +704,7 @@ class AutoTyperApplication {
             activeTextLength_,
             executor_.activeTextIndex(),
             executor_.currentStep(),
-            activePlan_.count,
+            activeMotionSteps_.count,
             currentPoint(),
             lastPlanStatus_,
             failedKey_,
@@ -695,11 +723,11 @@ class AutoTyperApplication {
   }
 
   bool pressReady() const {
-    return requiredMotorReady(config_.topology.pressMotorId);
+    return !faulted_ && requiredMotorReady(config_.topology.pressMotorId);
   }
 
   bool motionReady() const {
-    return motionTransportReady() && requiredMotorReady(config_.topology.xMotorId) &&
+    return !faulted_ && motionTransportReady() && requiredMotorReady(config_.topology.xMotorId) &&
            requiredMotorReady(config_.topology.yLeftMotorId) &&
            requiredMotorReady(config_.topology.yRightMotorId) &&
            requiredMotorReady(config_.topology.lineFeedMotorId);
@@ -738,8 +766,8 @@ class AutoTyperApplication {
     return currentRemoteSeq_;
   }
 
-  RemoteGroupState remoteGroupState() const {
-    return remoteGroupState_;
+  RemoteBlockState remoteBlockState() const {
+    return remoteBlockState_;
   }
 
   MachinePointMm currentPoint() const {
@@ -793,24 +821,22 @@ class AutoTyperApplication {
 
   bool runPressDiagMove(const char* label,
                         size_t blockIndex,
-                        int32_t signedSteps,
                         int32_t targetPulse,
                         PressDiagResult& result,
                         bool down) {
     protocolTrace_.setMotionContext("press_diag_m5", 0, blockIndex, label);
     const uint8_t motorId = config_.topology.pressMotorId;
-    const uint32_t steps = absoluteSteps(signedSteps);
-    const MotorDirection direction = directionForSignedSteps(signedSteps);
+    const MotorDirection direction = directionForSignedSteps(targetPulse);
     const size_t queueBefore = motion_.availableForWrite();
     const uint32_t issueMs = millis();
-    const bool enqueued = motion_.moveRelative(motorId,
+    const bool enqueued = motion_.moveAbsolute(motorId,
                                                direction,
                                                config_.pressMotor.rpm,
                                                config_.pressMotor.acceleration,
-                                               steps,
+                                               absoluteSteps(targetPulse),
                                                false,
                                                true);
-    logPressDiagIssue(label, signedSteps, direction, queueBefore, enqueued, issueMs);
+    logPressDiagIssue(label, targetPulse, direction, queueBefore, enqueued, issueMs);
     if (!enqueued) {
       result.code = "motion_command_rejected";
       result.message = "M5 diagnostic motion command was rejected";
@@ -912,7 +938,7 @@ class AutoTyperApplication {
     log_.print(label);
     log_.print(" motorId=");
     log_.print(config_.topology.pressMotorId);
-    log_.print(" command=moveRelative signedSteps=");
+    log_.print(" command=moveAbsolute targetSteps=");
     log_.print(signedSteps);
     log_.print(" direction=");
     log_.print(direction == MotorDirection::Cw ? "cw" : "ccw");
@@ -925,7 +951,7 @@ class AutoTyperApplication {
     log_.print(" enqueueResult=");
     log_.print(enqueued ? 1 : 0);
     log_.print(" framesEnqueued=");
-    log_.print(enqueued ? EmmV5Driver::moveRelativeFrameCount() : 0);
+    log_.print(enqueued ? EmmV5Driver::moveAbsoluteFrameCount() : 0);
     log_.print(" commandIssueMs=");
     log_.println(issueMs);
   }
@@ -990,8 +1016,44 @@ class AutoTyperApplication {
     log_.println(config_.motionRuntime.defaultMoveRpm);
   }
 
-  void prepareMotorsBestEffort() {
+  bool prepareMotorsAtOrigin() {
     probeMotorsBestEffort(150, true);
+    const uint8_t motors[] = {
+      config_.topology.xMotorId,
+      config_.topology.yLeftMotorId,
+      config_.topology.yRightMotorId,
+      config_.topology.lineFeedMotorId,
+      config_.topology.pressMotorId,
+    };
+    const uint32_t clearStartedAtMs = millis();
+    for (uint8_t motorId : motors) {
+      if (!motion_.clearPosition(motorId, true)) {
+        return false;
+      }
+    }
+    pumpCanFor(200);
+    for (uint8_t motorId : motors) {
+      motion_.requestInputPulseCount(motorId);
+      motion_.requestVelocity(motorId);
+    }
+    pumpCanFor(200);
+    for (uint8_t motorId : motors) {
+      const MotorState state = feedback_.get(motorId);
+      if (state.lastAckCommand != 0x0A || state.lastAckMs < clearStartedAtMs || !state.hasInputPulse ||
+          absoluteSteps(state.inputPulseSteps) > config_.motionRuntime.positionToleranceSteps) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  void pumpCanFor(uint16_t durationMs) {
+    const uint32_t startedAtMs = millis();
+    while (millis() - startedAtMs < durationMs) {
+      canTx_.tick(4);
+      canRx_.tick(16);
+      delay(5);
+    }
   }
 
   bool emergencyStopWithReason(const char* code, const char* message) {
@@ -999,8 +1061,11 @@ class AutoTyperApplication {
     executor_.emergencyStop();
     canTx_.tick(8);
     disableAllMotorsBestEffort();
+    canTx_.tick(8);
+    unlockAllMotorsBestEffort();
     setFault(code, message);
     jobState_ = JobState::Failed;
+    taskCompleteDisplayActive_ = false;
     if (remoteCommandActive_) {
       finalizeRemoteGroup("failed", code, message, remoteElapsedMs());
     }
@@ -1022,6 +1087,7 @@ class AutoTyperApplication {
     faulted_ = true;
     faultCode_ = code;
     faultMessage_ = message;
+    remoteFaultNotified_ = true;
   }
 
   uint32_t remoteElapsedMs() const {
@@ -1068,9 +1134,25 @@ class AutoTyperApplication {
     motion_.disableMotor(config_.topology.pressMotorId, false, true);
   }
 
+  void unlockAllMotorsBestEffort() {
+    motion_.unlockMotor(config_.topology.xMotorId, true);
+    motion_.unlockMotor(config_.topology.yLeftMotorId, true);
+    motion_.unlockMotor(config_.topology.yRightMotorId, true);
+    motion_.unlockMotor(config_.topology.lineFeedMotorId, true);
+    motion_.unlockMotor(config_.topology.pressMotorId, true);
+  }
+
+  void tickTaskCompleteDisplay() {
+    if (!taskCompleteDisplayActive_ || millis() - taskCompleteDisplayedAtMs_ < kTaskCompleteDisplayMs) {
+      return;
+    }
+    taskCompleteDisplayActive_ = false;
+    display_.showStatus(DisplayStatus::Idle);
+  }
+
   bool convertRemoteStep(const RemoteMotionStep& remoteStep,
                           MotionStep& step,
-                          SubmitRemoteGroupResult& result,
+                          SubmitRemoteBlockResult& result,
                           MachinePointMm currentPoint) const {
     step = MotionStep{};
     step.profile = defaultMotionProfile(config_);
@@ -1090,53 +1172,52 @@ class AutoTyperApplication {
     switch (remoteStep.kind) {
       case RemoteMotionStepKind::MoveXY: {
         step.kind = MotionStepKind::MoveXY;
-        step.deltaSteps.x = remoteStep.dxSteps;
-        step.deltaSteps.yLeft = -remoteStep.dySteps;
-        step.deltaSteps.yRight = remoteStep.dySteps;
-        step.deltaSteps.lineFeed = 0;
-        step.deltaSteps.press = 0;
+        step.targetSteps = remoteStep.targetSteps;
+        step.hasXTarget = remoteStep.hasXTarget;
+        step.hasYTargets = remoteStep.hasYLeftTarget && remoteStep.hasYRightTarget;
         const float stepsPerMmValue = kinematicsStepsPerMm(config_.calibration);
-        const float dxMm = stepsPerMmValue == 0.0f ? 0.0f : static_cast<float>(remoteStep.dxSteps) / stepsPerMmValue;
-        const float dyMm = stepsPerMmValue == 0.0f ? 0.0f : static_cast<float>(remoteStep.dySteps) / stepsPerMmValue;
-        step.targetMm = {currentPoint.xMm + dxMm, currentPoint.yMm + dyMm};
+        step.targetMm = {
+          step.hasXTarget && stepsPerMmValue != 0.0f
+              ? config_.homePoint.xMm + static_cast<float>(remoteStep.targetSteps.x) / stepsPerMmValue
+              : currentPoint.xMm,
+          step.hasYTargets && stepsPerMmValue != 0.0f
+              ? config_.homePoint.yMm + static_cast<float>(remoteStep.targetSteps.yRight) / stepsPerMmValue
+              : currentPoint.yMm,
+        };
         step.profile.settleMs = config_.xProfile.settleMs > config_.yProfile.settleMs ? config_.xProfile.settleMs
                                                                                         : config_.yProfile.settleMs;
         return true;
       }
       case RemoteMotionStepKind::PressDown:
         step.kind = MotionStepKind::PressDown;
-        step.deltaSteps.press = config_.pressMotor.pressDeltaSteps;
-        step.profile.maxRpm = config_.pressMotor.rpm;
-        step.profile.acceleration = config_.pressMotor.acceleration;
         step.profile.settleMs = config_.pressMotor.settleMs;
-        step.profile.timeoutMs = config_.pressMotor.timeoutMs;
+        step.targetSteps.press = remoteStep.targetSteps.press;
+        step.hasPressTarget = true;
         return true;
       case RemoteMotionStepKind::PressUp:
         step.kind = MotionStepKind::PressUp;
-        step.deltaSteps.press = config_.pressMotor.releaseDeltaSteps;
-        step.profile.maxRpm = config_.pressMotor.rpm;
-        step.profile.acceleration = config_.pressMotor.acceleration;
+        step.targetSteps.press = remoteStep.targetSteps.press;
+        step.hasPressTarget = true;
         step.profile.settleMs = config_.pressMotor.settleMs;
-        step.profile.timeoutMs = config_.pressMotor.timeoutMs;
         return true;
       case RemoteMotionStepKind::CharacterRelease:
-        step.kind = MotionStepKind::CharacterRelease;
-        step.deltaSteps.lineFeed =
-            signedStepsForDirection(config_.lineFeed.characterReleaseSteps, config_.lineFeed.releaseDirection);
-        step.profile.maxRpm = config_.lineFeed.rpm;
-        step.profile.acceleration = config_.lineFeed.acceleration;
+      case RemoteMotionStepKind::LineFeedHome:
+        step.kind = remoteStep.kind == RemoteMotionStepKind::LineFeedHome ? MotionStepKind::LineFeedHome
+                                                                          : MotionStepKind::CharacterRelease;
         step.profile.settleMs = config_.lineFeed.characterReleaseSettleMs;
+        step.targetSteps.lineFeed = remoteStep.targetSteps.lineFeed;
+        step.hasLineFeedTarget = true;
         return true;
       case RemoteMotionStepKind::LineFeed:
         result.rejectionCode = "invalid_block";
         result.rejectionMessage = "line_feed must be expanded before conversion";
         return false;
-      case RemoteMotionStepKind::LineFeedHome:
-        result.rejectionCode = "invalid_block";
-        result.rejectionMessage = "line_feed_home must be expanded before conversion";
-        return false;
       case RemoteMotionStepKind::ReturnZero:
         step.kind = MotionStepKind::ReturnZero;
+        step.targetSteps = {};
+        step.hasXTarget = true;
+        step.hasYTargets = true;
+        step.hasPressTarget = true;
         step.profile.settleMs = max3(config_.xProfile.settleMs, config_.yProfile.settleMs, config_.pressMotor.settleMs);
         step.targetMm = config_.homePoint;
         return true;
@@ -1150,7 +1231,7 @@ class AutoTyperApplication {
     return false;
   }
 
-  bool appendLineFeedHomeSteps(SubmitRemoteGroupResult& result,
+  bool appendLineFeedHomeSteps(SubmitRemoteBlockResult& result,
                                MachinePointMm& currentPoint,
                                const RemoteMotionProfile& profile) {
     if (!validRemoteProfile(profile)) {
@@ -1161,6 +1242,8 @@ class AutoTyperApplication {
     MotionStep forward{};
     forward.kind = MotionStepKind::LineFeedHome;
     forward.targetMm = {config_.homePoint.xMm, currentPoint.yMm};
+    forward.targetSteps.lineFeed = config_.lineFeed.homeForwardTargetSteps;
+    forward.hasLineFeedTarget = true;
     forward.profile = lineFeedHomeProfile(profile);
     if (!appendActiveMotionStep(forward, result)) {
       return false;
@@ -1169,8 +1252,8 @@ class AutoTyperApplication {
     MotionStep release{};
     release.kind = MotionStepKind::LineFeedHomeRelease;
     release.targetMm = forward.targetMm;
-    release.deltaSteps.lineFeed =
-        signedStepsForDirection(config_.lineFeed.returnReleaseSteps, config_.lineFeed.releaseDirection);
+    release.targetSteps.lineFeed = config_.lineFeed.homeRestTargetSteps;
+    release.hasLineFeedTarget = true;
     release.profile = lineFeedHomeProfile(profile);
     if (!appendActiveMotionStep(release, result)) {
       return false;
@@ -1193,7 +1276,7 @@ class AutoTyperApplication {
            profile.accelRaw != 0 && profile.timeoutMs != 0 && profile.timeoutMs <= kMaxBlockTimeoutMs;
   }
 
-  bool appendActiveMotionStep(const MotionStep& step, SubmitRemoteGroupResult& result) {
+  bool appendActiveMotionStep(const MotionStep& step, SubmitRemoteBlockResult& result) {
     if (activeMotionSteps_.count >= sizeof(activeMotionSteps_.steps) / sizeof(activeMotionSteps_.steps[0])) {
       result.rejectionCode = "group_too_large";
       result.rejectionMessage = "Remote group expands to too many motion steps";
@@ -1204,10 +1287,10 @@ class AutoTyperApplication {
     return true;
   }
 
-  bool activePlanContainsLineFeedHome() const {
+  bool activePlanReachesLineFeedRest() const {
     for (size_t i = 0; i < activeMotionSteps_.count; ++i) {
-      if (activeMotionSteps_.steps[i].kind == MotionStepKind::LineFeedHome ||
-          activeMotionSteps_.steps[i].kind == MotionStepKind::LineFeedHomeRelease) {
+      if (activeMotionSteps_.steps[i].hasLineFeedTarget &&
+          activeMotionSteps_.steps[i].targetSteps.lineFeed == config_.lineFeed.homeRestTargetSteps) {
         return true;
       }
     }
@@ -1217,6 +1300,9 @@ class AutoTyperApplication {
   static bool remoteGroupContainsLineFeedReturn(const RemoteMotionStep* steps, size_t count) {
     for (size_t i = 0; i < count; ++i) {
       if (steps[i].kind == RemoteMotionStepKind::LineFeed || steps[i].kind == RemoteMotionStepKind::LineFeedHome) {
+        return true;
+      }
+      if (steps[i].hasLineFeedTarget && steps[i].targetSteps.lineFeed >= 10000) {
         return true;
       }
     }
@@ -1298,16 +1384,16 @@ class AutoTyperApplication {
     bool needsPressMotor = false;
     for (size_t i = 0; i < steps.count; ++i) {
       const MotionStep& step = steps.steps[i];
-      if (step.deltaSteps.x != 0) {
+      if (step.hasXTarget) {
         needsX = true;
       }
-      if (step.deltaSteps.yLeft != 0 || step.deltaSteps.yRight != 0) {
+      if (step.hasYTargets) {
         needsY = true;
       }
-      if (step.deltaSteps.lineFeed != 0) {
+      if (step.hasLineFeedTarget) {
         needsLineFeed = true;
       }
-      if (step.kind == MotionStepKind::PressDown || step.kind == MotionStepKind::PressUp || step.deltaSteps.press != 0) {
+      if (step.hasPressTarget) {
         needsPressMotor = true;
       }
     }
@@ -1328,17 +1414,17 @@ class AutoTyperApplication {
   }
 
   RequiredActuatorCheck checkRequiredActuator(const MotionStep& step) const {
-    if (step.deltaSteps.x != 0 && !requiredMotorReady(config_.topology.xMotorId)) {
+    if (step.hasXTarget && !requiredMotorReady(config_.topology.xMotorId)) {
       return {false, "x_motor_not_ready", "X motor is not ready"};
     }
-    if ((step.deltaSteps.yLeft != 0 || step.deltaSteps.yRight != 0) &&
+    if (step.hasYTargets &&
         (!requiredMotorReady(config_.topology.yLeftMotorId) || !requiredMotorReady(config_.topology.yRightMotorId))) {
       return {false, "y_pair_not_ready", "Y pair is not ready"};
     }
-    if (step.deltaSteps.lineFeed != 0 && !requiredMotorReady(config_.topology.lineFeedMotorId)) {
+    if (step.hasLineFeedTarget && !requiredMotorReady(config_.topology.lineFeedMotorId)) {
       return {false, "line_feed_not_ready", "Line feed motor is not ready"};
     }
-    if ((step.kind == MotionStepKind::PressDown || step.kind == MotionStepKind::PressUp || step.deltaSteps.press != 0) &&
+    if (step.hasPressTarget &&
         !requiredMotorReady(config_.topology.pressMotorId)) {
       return {false, "press_motor_not_ready", "Press motor is not ready"};
     }
@@ -1515,7 +1601,7 @@ class AutoTyperApplication {
   char startedRemoteGroupId_[49];
   char lastCompletedRemoteCommandId_[49];
   bool remoteCommandActive_;
-  RemoteGroupState remoteGroupState_;
+  RemoteBlockState remoteBlockState_;
   bool remoteGroupStartedPending_;
   bool remoteDoneNotified_;
   bool remoteFaultNotified_;
@@ -1531,7 +1617,10 @@ class AutoTyperApplication {
   size_t lastRemoteBlockStartedIndex_;
   size_t lastRemoteBlockDoneIndex_;
   uint32_t remoteCommandStartedAtMs_;
+  uint32_t remoteMaxRuntimeMs_;
   uint32_t lastRemoteCommandDurationMs_;
+  bool taskCompleteDisplayActive_;
+  uint32_t taskCompleteDisplayedAtMs_;
   bool lineFeedPrimeRequired_;
   static constexpr uint8_t kTrackedMotorCount = 5;
   static constexpr uint32_t kFeedbackFreshMs = 1500;
@@ -1539,6 +1628,7 @@ class AutoTyperApplication {
   static constexpr uint32_t kRecentAlertWindowMs = 5000;
   static constexpr uint16_t kRemoteDefaultRpm = 2000;
   static constexpr uint8_t kRemoteDefaultAccelerationRaw = 128;
+  static constexpr uint32_t kTaskCompleteDisplayMs = 3000;
   uint32_t lastMotorProbeMs_[kTrackedMotorCount];
 };
 

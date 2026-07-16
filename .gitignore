@@ -13,7 +13,5 @@ apps/*/release/
 dist/arduino/
 src/test/.arduino-cli/
 src/test/docs/auto_typer_connectivity_test.pdf
-
-# Local-only files
-src/auto_typer/config/Secrets.h
+src/test/docs/auto_typer_flash_and_usage_guide.pdf
 materials/

@@ -23,12 +23,12 @@ inline TypingConfig defaultTypingConfig() {
   config.calibration = {2.0f, 20, 3200};
 
   config.motionRuntime = defaultMotionRuntimeConfig();
-  config.pressMotor = {3000, 255, -2700, 2700, 80, 8000};
+  config.pressMotor = {3000, 255, -2700, 0, 80, 8000};
   config.xProfile = {config.motionRuntime.defaultMoveRpm, config.motionRuntime.defaultAccelerationRaw, 120};
   config.yProfile = {config.motionRuntime.defaultMoveRpm, config.motionRuntime.defaultAccelerationRaw, 120};
   config.xReturn = {true, 200, 3, 200, 180};
   config.yReturn = {true, 200, 3, 100, 180};
-  config.lineFeed = {500, 10, 16440, MotorDirection::Cw, 6400, 180, MotorDirection::Ccw, 400, 80};
+  config.lineFeed = {500, 10, 16400, 10000, 180, MotorDirection::Ccw, 400, 80};
 
   config.homePoint = {0.0f, 0.0f};
   config.sampleText = "asdf jkl";

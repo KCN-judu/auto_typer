@@ -40,6 +40,7 @@ inline MotionStepPlan& planMotionStepsInto(MotionStepPlan& plan,
                                              const TypingConfig& config) {
   resetMotionStepPlan(plan, typingPlan.status);
   MachinePointMm current = config.homePoint;
+  MotorTargetSteps targets{};
   if (typingPlan.status != PlanStatus::Ok) {
     return plan;
   }
@@ -53,7 +54,8 @@ inline MotionStepPlan& planMotionStepsInto(MotionStepPlan& plan,
     switch (typingStep.kind) {
       case TypingStepKind::Release:
         motionStep.kind = MotionStepKind::PressUp;
-        motionStep.deltaSteps.press = config.pressMotor.releaseDeltaSteps;
+        motionStep.targetSteps.press = config.pressMotor.releaseTargetSteps;
+        motionStep.hasPressTarget = true;
         motionStep.profile.maxRpm = config.pressMotor.rpm;
         motionStep.profile.acceleration = config.pressMotor.acceleration;
         motionStep.profile.settleMs = config.pressMotor.settleMs;
@@ -61,7 +63,8 @@ inline MotionStepPlan& planMotionStepsInto(MotionStepPlan& plan,
         break;
       case TypingStepKind::Press:
         motionStep.kind = MotionStepKind::PressDown;
-        motionStep.deltaSteps.press = config.pressMotor.pressDeltaSteps;
+        motionStep.targetSteps.press = config.pressMotor.pressTargetSteps;
+        motionStep.hasPressTarget = true;
         motionStep.profile.maxRpm = config.pressMotor.rpm;
         motionStep.profile.acceleration = config.pressMotor.acceleration;
         motionStep.profile.settleMs = config.pressMotor.settleMs;
@@ -69,30 +72,52 @@ inline MotionStepPlan& planMotionStepsInto(MotionStepPlan& plan,
         break;
       case TypingStepKind::CharacterRelease:
         motionStep.kind = MotionStepKind::CharacterRelease;
-        motionStep.deltaSteps.lineFeed =
-            signedStepsForDirection(config.lineFeed.characterReleaseSteps, config.lineFeed.releaseDirection);
+        targets.lineFeed += signedStepsForDirection(config.lineFeed.characterReleaseSteps, config.lineFeed.releaseDirection);
+        motionStep.targetSteps.lineFeed = targets.lineFeed;
+        motionStep.hasLineFeedTarget = true;
         motionStep.profile.maxRpm = config.lineFeed.rpm;
         motionStep.profile.acceleration = config.lineFeed.acceleration;
         motionStep.profile.settleMs = config.lineFeed.characterReleaseSettleMs;
         break;
       case TypingStepKind::LineFeed:
-        motionStep.kind = MotionStepKind::LineFeed;
-        motionStep.deltaSteps.lineFeed =
-            signedStepsForDirection(config.lineFeed.returnTotalSteps, config.lineFeed.returnDirection);
+        motionStep.kind = MotionStepKind::LineFeedHome;
+        motionStep.targetSteps.lineFeed = config.lineFeed.homeForwardTargetSteps;
+        motionStep.hasLineFeedTarget = true;
         motionStep.profile.maxRpm = config.lineFeed.rpm;
         motionStep.profile.acceleration = config.lineFeed.acceleration;
         motionStep.profile.settleMs = config.lineFeed.settleMs;
         motionStep.targetMm = {config.homePoint.xMm, current.yMm};
         current.xMm = config.homePoint.xMm;
+        if (!appendMotionStep(plan, motionStep)) {
+          return plan;
+        }
+        motionStep.kind = MotionStepKind::LineFeedHomeRelease;
+        motionStep.targetSteps.lineFeed = config.lineFeed.homeRestTargetSteps;
+        targets.lineFeed = config.lineFeed.homeRestTargetSteps;
+        if (!appendMotionStep(plan, motionStep)) {
+          return plan;
+        }
+        continue;
         break;
-      case TypingStepKind::MoveTo:
+      case TypingStepKind::MoveTo: {
         motionStep.kind = MotionStepKind::MoveXY;
-        motionStep.deltaSteps = xyDeltaSteps(current, typingStep.point, config.calibration);
+        targets.x = signedStepsForDirection(mmToMotorSteps(typingStep.point.xMm - config.homePoint.xMm,
+                                                           config.calibration).steps,
+                                            typingStep.point.xMm >= config.homePoint.xMm ? MotorDirection::Cw
+                                                                                         : MotorDirection::Ccw);
+        const AxisDeltaSteps yTarget = mmToMotorSteps(config.homePoint.yMm - typingStep.point.yMm,
+                                                      config.calibration);
+        targets.yLeft = signedStepsForDirection(yTarget.steps, yTarget.direction);
+        targets.yRight = -targets.yLeft;
+        motionStep.targetSteps = targets;
+        motionStep.hasXTarget = true;
+        motionStep.hasYTargets = true;
         motionStep.profile.settleMs = config.xProfile.settleMs > config.yProfile.settleMs
                                           ? config.xProfile.settleMs
                                           : config.yProfile.settleMs;
         current = typingStep.point;
         break;
+      }
       case TypingStepKind::Wait:
       default:
         motionStep.kind = MotionStepKind::Wait;

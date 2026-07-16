@@ -38,7 +38,7 @@ enum class JobState : uint8_t {
   Failed,
 };
 
-enum class RemoteGroupState : uint8_t {
+enum class RemoteBlockState : uint8_t {
   Idle,
   Queued,
   Running,
@@ -114,9 +114,8 @@ struct AxisConservativeReturnProfile {
 struct LineFeedProfile {
   uint16_t rpm;
   uint8_t acceleration;
-  uint32_t returnTotalSteps;
-  MotorDirection returnDirection;
-  uint32_t returnReleaseSteps;
+  int32_t homeForwardTargetSteps;
+  int32_t homeRestTargetSteps;
   uint32_t characterReleaseSteps;
   MotorDirection releaseDirection;
   uint16_t settleMs;
@@ -142,8 +141,8 @@ struct MotionRuntimeConfig {
 struct PressMotorProfile {
   uint16_t rpm;
   uint8_t acceleration;
-  int32_t pressDeltaSteps;
-  int32_t releaseDeltaSteps;
+  int32_t pressTargetSteps;
+  int32_t releaseTargetSteps;
   uint16_t settleMs;
   uint32_t timeoutMs;
 };
@@ -236,7 +235,11 @@ struct MotionProfile {
 struct MotionStep {
   MotionStepKind kind;
   MachinePointMm targetMm;
-  MotorTargetSteps deltaSteps;
+  MotorTargetSteps targetSteps;
+  bool hasXTarget;
+  bool hasYTargets;
+  bool hasLineFeedTarget;
+  bool hasPressTarget;
   MotionProfile profile;
   uint16_t waitMs;
 };
@@ -263,21 +266,24 @@ struct RemoteMotionProfile {
 
 struct RemoteMotionStep {
   RemoteMotionStepKind kind;
-  int32_t dxSteps;
-  int32_t dySteps;
-  uint8_t lines;
+  MotorTargetSteps targetSteps;
+  bool hasXTarget;
+  bool hasYLeftTarget;
+  bool hasYRightTarget;
+  bool hasLineFeedTarget;
+  bool hasPressTarget;
   uint16_t durationMs;
   RemoteMotionProfile profile;
 };
 
-static constexpr size_t kRemoteGroupMaxSteps = 32;
+static constexpr size_t kRemoteBlockMaxSteps = 1;
 static constexpr size_t kMaxTcpMessageBytes = 8192;
 static constexpr uint16_t kMinTelemetryIntervalMs = 50;
 static constexpr uint16_t kMaxTelemetryIntervalMs = 2000;
-static constexpr uint32_t kMaxGroupRuntimeMs = 30000;
+static constexpr uint32_t kMaxBlockRuntimeMs = 30000;
 static constexpr uint32_t kMaxBlockTimeoutMs = 10000;
 
-struct SubmitRemoteGroupResult {
+struct SubmitRemoteBlockResult {
   bool accepted;
   const char* rejectionCode;
   const char* rejectionMessage;

@@ -1,4 +1,4 @@
-import type { KeymapDocument, MachinePointMm } from "../../../../shared/protocol/auto-typer-protocol";
+import type { KeymapDocument, MachinePointMm } from "../../../../shared/protocol/protocolTypes";
 import { displayKey } from "./keymap";
 
 // ─── Visual Node ─────────────────────────────────────────────────────────────

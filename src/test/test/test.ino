@@ -1,11 +1,11 @@
 #include <Arduino.h>
 
-#include "app_config.h"
-#include "app_runtime.h"
-#include "hal_can_motor.h"
-#include "hal_display.h"
-#include "hal_i2c.h"
-#include "hal_servo.h"
+#include "appConfig.h"
+#include "appRuntime.h"
+#include "halCanMotor.h"
+#include "halDisplay.h"
+#include "halI2c.h"
+#include "halServo.h"
 
 namespace {
 

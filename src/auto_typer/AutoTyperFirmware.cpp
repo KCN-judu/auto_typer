@@ -11,8 +11,8 @@
 #include "can/ProtocolTrace.h"
 #include "drivers/EmmV5Driver.h"
 #include "hal_display.h"
-#include "network/StaticWifiConnector.h"
-#include "transport/GroupCommandServer.h"
+#include "network/ProvisioningWifiConnector.h"
+#include "transport/MotionProtocolServer.h"
 #include "transport/NullPrint.h"
 
 #ifndef AUTO_TYPER_SERIAL_DEBUG_LOGS
@@ -24,7 +24,6 @@ namespace {
 using namespace auto_typer;
 
 const TypingConfig kConfig = defaultTypingConfig();
-FirmwareConfig gFirmwareConfig = {};
 #if AUTO_TYPER_SERIAL_DEBUG_LOGS
 Print& gLog = Serial;
 #else
@@ -34,11 +33,10 @@ Print& gLog = gNullLog;
 DisplayHal gDisplay(kConfig.oled);
 CanBus gCanBus(kConfig.canBus);
 MotorFeedbackStore gFeedback;
-MotorTelemetryBuffer gMotorTelemetry;
 EmmV5EventStore gEvents;
 ProtocolTrace gTrace;
 CanTxQueue gCanTx(gCanBus, &gTrace);
-CanRxTask gCanRx(gCanBus, gFeedback, gEvents, gTrace, &gMotorTelemetry);
+CanRxTask gCanRx(gCanBus, gFeedback, gEvents, gTrace);
 EmmV5Driver gMotion(gCanTx);
 AutoTyperApplication gApp(kConfig,
                           gDisplay,
@@ -50,30 +48,29 @@ AutoTyperApplication gApp(kConfig,
                           gEvents,
                           gTrace,
                           gLog);
-GroupCommandServer gGroupServer(kConfig, gApp, gMotorTelemetry, gLog);
-StaticWifiConnector gWifi(gLog);
-bool gGroupServerStarted = false;
+MotionProtocolServer gMotionServer(kConfig, gApp, gLog);
+ProvisioningWifiConnector gWifi(gLog);
+bool gMotionServerStarted = false;
 
 }  // namespace
 
 namespace auto_typer {
 
-void autoTyperSetup(const FirmwareConfig& config) {
-  gFirmwareConfig = config;
+void autoTyperSetup() {
   Serial.begin(kConfig.serialBaudrate);
   delay(300);
-  gWifi.begin(gFirmwareConfig.wifi);
+  gWifi.begin();
   gApp.setup();
 }
 
 void autoTyperLoop() {
   gWifi.tick();
-  if (!gGroupServerStarted && gWifi.consumeTcpReady()) {
-    gGroupServer.begin();
-    gGroupServerStarted = true;
+  if (!gMotionServerStarted && gWifi.consumeTcpReady()) {
+    gMotionServer.begin();
+    gMotionServerStarted = true;
   }
-  if (gGroupServerStarted) {
-    gGroupServer.tick();
+  if (gMotionServerStarted) {
+    gMotionServer.tick();
   }
   gApp.tick();
   delay(1);

@@ -1,100 +1,130 @@
-# Auto Typer TCP Protocol
+# Auto Typer Atomic Motion Protocol
 
-This directory defines the JSON contract between the Electron controller and the ESP32 firmware.
+This directory defines the version 1 JSON contract between the Electron controller and the ESP32 firmware.
+
+The contract is intentionally controller-planned and device-executed. The desktop owns the keymap, text planning, coordinate conversion, and absolute pulse-position state. The firmware accepts concrete absolute motor targets and does not interpret text, keys, machine coordinates, or movement deltas.
+
+The desktop and firmware both implement this contract.
 
 ## Transport
 
 - Raw TCP NDJSON on port `7777`.
-- One JSON object per line.
-- The desktop sends one bounded `exec_group` at a time.
-- `group_accepted` is only admission feedback for that group.
-- Execution completion for a group is reported later via `group_done` and `group_final`.
-- After the final group, the desktop sends `finish_task` to let firmware close the overall remote print task state.
-- Firmware accepts at most one active group and rejects additional groups with `device_busy`.
+- One JSON object per line, with `v: 1` and a non-empty `requestId` on commands.
+- Only one motion block may be active at a time.
+- A client sends the next block only after receiving the terminal result for the active block.
+- The connection uses an initial handshake, explicit snapshots, and heartbeat request/response messages. The firmware does not emit unsolicited telemetry or motor-state messages.
 
-## Responsibilities
+## Messages
 
-- Desktop plans text, performs keymap lookup, converts machine coordinates to signed step deltas, chunks blocks into bounded groups, and schedules those groups in order.
-- Firmware validates each submitted group, maps it into runtime motion steps, executes through `MotionExecutor`, supervises CAN feedback, and reports execution progress and terminal state.
-- Key pressing is M5 Press stepper motion. It is not PWM or a separate press actuator model.
+Desktop commands:
 
-## Message Types
-
-Client messages:
-
-- `hello`
-- `get_status`
-- `subscribe_telemetry`
-- `get_keymap`
-- `probe`
-- `press_diag_m5`
-- `reset_fault`
-- `release_line_feed_origin`
+- `handshake`
+- `get_snapshot`
+- `heartbeat`
+- `execute_block`
 - `cancel`
 - `finish_task`
-- `exec_group`
-- `ping`
+- `emergency_stop`
+- `reset_fault`
 
-Firmware messages:
+Device responses and events:
 
-- `hello_ack`
-- `status`
-- `telemetry_subscribed`
-- `telemetry`
-- `motor_event`
-- `motor_state_update`
-- `telemetry_overflow`
-- `keymap`
-- `press_diag_m5_result`
-- `probe_result`
-- `reset_fault_result`
-- `release_line_feed_origin_result`
+- `handshake_ack`
+- `snapshot`
+- `heartbeat_ack`
+- `block_ack`
+- `block_result`
 - `cancel_result`
 - `finish_task_result`
-- `group_accepted`
-- `group_rejected`
-- `group_started`
-- `block_started`
-- `block_done`
-- `group_done`
-- `group_final`
+- `emergency_stop_result`
+- `reset_fault_result`
 - `fault`
 - `protocol_error`
-- `pong`
 
-## Semantics
+## Execution Lifecycle
 
-- `status` and `telemetry` are runtime snapshots.
-- `group_started`, `block_started`, and `block_done` are progress events for one admitted group.
-- `group_done` indicates the group reached its nominal end and includes the current point snapshot.
-- `group_final` is the normalized terminal outcome for the group: `done`, `failed`, or `cancelled`.
-- `fault` is an immediate failure signal on the control stream and should be treated as terminal for the affected run unless a later recovery flow succeeds.
-- `motor_event`, `motor_state_update`, and `telemetry_overflow` exist for observability and watchdog logic, not as hard completion acknowledgements.
+```text
+execute_block
+  -> block_ack
+  -> block_result(status: done | failed | cancelled)
+```
 
-## Motion Blocks
+`block_ack` means the device parsed and validated the entire request and reserved its execution slot. It is not motion completion. A request that does not receive this acknowledgement is uncertain and must not be resent automatically.
 
-Primary block types are:
+`block_result` is the only terminal event for an accepted block. A result with `failed` or `cancelled` prevents the controller from sending the next block. `fault` is reserved for device or transport failures that are not a normal result for an accepted block.
 
-- `move_xy`
-- `press_down`
-- `press_up`
-- `character_release`
-- `line_feed`
-- `line_feed_home`
-- `return_zero`
-- `wait`
+## Task Completion
 
-`move_xy` uses signed `dxSteps` and `dySteps` in machine coordinates. Press blocks use firmware M5 calibration deltas.
-`line_feed_home` enables M4, moves to the configured line-feed return total, then releases by the configured return-release steps.
-`release_line_feed_origin` is not a print block. It is a maintenance command that disables M4 while idle so the operator can manually return paper feed to origin; status then reports `lineFeedPrimeRequired`.
+The desktop sends `finish_task` only after its motion queue is empty and the final accepted block has returned `block_result(status: "done")`. The transport rejects a local finish attempt while a block is still active.
+
+After accepting `finish_task`, the firmware changes the OLED to `Complete` for 3000 ms and then returns the display text to `Idle`. This display dwell does not create another motion block.
+
+## Emergency Stop
+
+`emergency_stop` is independent from normal cancellation and may be sent while a block is active. It is not delayed behind ordinary mutating commands.
+
+The firmware clears queued CAN work, immediately stops all five motors, disables all five motors, sends the Emm_V5.0 clear-stall-protection command to all five motors, marks the device faulted, and switches the OLED to `Error`. Error remains latched until a successful `reset_fault`; it never returns to Idle on a timer.
+
+## Motion Block
+
+Each `execute_block` contains exactly one non-empty `block` array:
+
+```json
+{
+  "v": 1,
+  "requestId": "request-42",
+  "type": "execute_block",
+  "blockId": "job-7-0042",
+  "seq": 42,
+  "policy": {
+    "maxRuntimeMs": 20000,
+    "onDisconnect": "cancel"
+  },
+  "block": [
+    {
+      "type": "motor_move",
+      "motorId": 1,
+      "rpm": 1600,
+      "accelRaw": 128,
+      "timeoutMs": 10000,
+      "target": 12800
+    }
+  ]
+}
+```
+
+Supported actions are `motor_move` and `wait`. Every motor movement includes `motorId`, `rpm`, `accelRaw`, `timeoutMs`, and numeric `target`. The target unit is pulses and its meaning is always the motor's absolute target position.
+
+A block with one action is sequential. A block with multiple actions is permitted only for XY motion and may contain M1, M2, and M3 commands. Other motor actions must remain single-action blocks.
+
+## Position Mapping
+
+Before every power-on, the operator manually returns the complete mechanism to its defined mechanical origin. After enabling the motors, firmware sends the Emm_V5.0 position-clear command to all five motors and verifies near-zero input-pulse feedback before accepting motion. All motion commands then use absolute targets and never fall back to relative wire semantics.
+
+The desktop maintains logical position state `{ x, y, l, z }` and expands it to physical motor targets:
+
+- M1 target is `x`.
+- M2 target is `-y`.
+- M3 target is `y`.
+- M4 target is `l`.
+- M5 target is `z`.
+
+Planning is cumulative. For example, two M4 advances of `-180` pulses produce targets `-180` and `-360`. Press down and release use Z targets `-2700` and `0` when starting from the zero position.
+
+M4 line-feed home is a fixed absolute two-stage sequence: move to `16400`, then return to the paper-holding position `10000`. It is not represented as an increment from the current M4 position.
+
+## Normal Cancellation
+
+Normal cancellation is cooperative. The desktop stops consuming queued blocks but lets the currently acknowledged block reach `block_result(status: "done")`. It then discards every unsent block and submits an absolute return sequence: M1/M2/M3 to `0`, M4 to `16400` then `10000`, and M5 to `0`. A normally cancelled task does not send `finish_task`.
+
+The protocol `cancel` command only cancels a matching block that has been acknowledged but has not started motion. It returns `ok: false` for a running block. `policy.onDisconnect: "cancel"` has the same queued-only boundary: disconnect never interrupts a running block, its unsent terminal result is discarded, and a later connection obtains state through `get_snapshot`.
+
+Only `emergency_stop` may interrupt the active block immediately.
 
 ## Bounds
 
-Firmware enforces bounded groups:
-
-- `maxBlocksPerGroup`: 32
 - `maxMessageBytes`: 8192
-- `maxGroupRuntimeMs`: 30000
-- `maxBlockTimeoutMs`: 10000
+- `maxBlockRuntimeMs`: 30000
+- `maxActionTimeoutMs`: 10000
 
-Oversized or invalid messages are rejected without starting motion.
+An atomic block must contain at least one action. Numeric values must be finite and within the limits reported by `handshake_ack`.

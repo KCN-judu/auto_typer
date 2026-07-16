@@ -114,15 +114,13 @@ class EmmV5ProtocolParser {
       event.status = 0x9F;
       return event;
     }
-    if (event.dlc == 3 && event.raw[0] == 0xFD && event.raw[1] == 0x02) {
+    if (event.dlc == 3 && event.raw[1] == 0x02) {
       event.kind = EmmV5EventKind::CommandAcked;
-      event.command = 0xFD;
       event.status = 0x02;
       return event;
     }
-    if (event.dlc == 3 && event.raw[0] == 0xFD && event.raw[1] == 0xE2) {
+    if (event.dlc == 3 && event.raw[1] == 0xE2) {
       event.kind = EmmV5EventKind::CommandConditionNotMet;
-      event.command = 0xFD;
       event.status = 0xE2;
       return event;
     }

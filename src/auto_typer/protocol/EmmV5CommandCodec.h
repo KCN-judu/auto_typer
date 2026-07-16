@@ -13,12 +13,12 @@ struct EmmV5Command {
   size_t length;
 };
 
-struct EmmV5MoveRelativeCommand {
+struct EmmV5MoveAbsoluteCommand {
   uint8_t motorId;
   MotorDirection direction;
   uint16_t rpm;
   uint8_t acceleration;
-  uint32_t steps;
+  uint32_t targetSteps;
   bool sync;
 };
 
@@ -40,7 +40,11 @@ class EmmV5CommandCodec {
     return command({motorId, 0xF3, 0xAB, 0x00, static_cast<uint8_t>(sync), 0x6B});
   }
 
-  static EmmV5Command moveRelative(const EmmV5MoveRelativeCommand& move) {
+  static EmmV5Command unlockMotor(uint8_t motorId) {
+    return command({motorId, 0x0E, 0x52, 0x6B});
+  }
+
+  static EmmV5Command moveAbsolute(const EmmV5MoveAbsoluteCommand& move) {
     return command({
       move.motorId,
       0xFD,
@@ -48,14 +52,18 @@ class EmmV5CommandCodec {
       static_cast<uint8_t>((move.rpm >> 8) & 0xFF),
       static_cast<uint8_t>(move.rpm & 0xFF),
       move.acceleration,
-      static_cast<uint8_t>((move.steps >> 24) & 0xFF),
-      static_cast<uint8_t>((move.steps >> 16) & 0xFF),
-      static_cast<uint8_t>((move.steps >> 8) & 0xFF),
-      static_cast<uint8_t>(move.steps & 0xFF),
-      0x00,
+      static_cast<uint8_t>((move.targetSteps >> 24) & 0xFF),
+      static_cast<uint8_t>((move.targetSteps >> 16) & 0xFF),
+      static_cast<uint8_t>((move.targetSteps >> 8) & 0xFF),
+      static_cast<uint8_t>(move.targetSteps & 0xFF),
+      0x01,
       static_cast<uint8_t>(move.sync),
       0x6B,
     });
+  }
+
+  static EmmV5Command clearPosition(uint8_t motorId) {
+    return command({motorId, 0x0A, 0x6D, 0x6B});
   }
 
   static EmmV5Command triggerSynchronousMotion(uint8_t motorId) {

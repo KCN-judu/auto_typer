@@ -11,7 +11,7 @@ const workspaceDataDir = join(workspaceDir, "data");
 const workspaceSketchbookDir = join(workspaceDir, "sketchbook");
 const workspaceHardwareDir = join(workspaceSketchbookDir, "hardware");
 const workspaceLibrariesDir = join(workspaceSketchbookDir, "libraries");
-const workspaceSketchDir = join(workspaceSketchbookDir, "AutoTyperStaticSecrets");
+const workspaceSketchDir = join(workspaceSketchbookDir, "AutoTyperProvisioning");
 const workspaceCliConfigPath = join(workspaceHomeDir, ".arduinoIDE/arduino-cli.yaml");
 const workspaceLauncherPath = join(workspaceDir, "Launch AutoTyper Arduino.command");
 const workspaceIdeAnchorPath = join(workspaceDir, "ARDUINO_IDE_ANCHOR.txt");
@@ -133,37 +133,14 @@ function wrapperPlatformTxt() {
 function starterSketch() {
   return [
     '#include <AutoTyperFirmware.h>',
-    '#include "Secrets.h"',
-    "",
-    "namespace {",
-    "",
-    "const auto_typer::FirmwareConfig kFirmwareConfig = {",
-    "    {",
-    "        AUTO_TYPER_WIFI_SSID,",
-    "        AUTO_TYPER_WIFI_PASSWORD,",
-    "    },",
-    "};",
-    "",
-    "}  // namespace",
     "",
     "void setup() {",
-    "  auto_typer::autoTyperSetup(kFirmwareConfig);",
+    "  auto_typer::autoTyperSetup();",
     "}",
     "",
     "void loop() {",
     "  auto_typer::autoTyperLoop();",
     "}",
-    "",
-  ].join("\n");
-}
-
-function starterSecretsTemplate() {
-  return [
-    "#pragma once",
-    "",
-    "// Edit these values before uploading the firmware.",
-    '#define AUTO_TYPER_WIFI_SSID "your-wifi-ssid"',
-    '#define AUTO_TYPER_WIFI_PASSWORD "your-wifi-password"',
     "",
   ].join("\n");
 }
@@ -179,16 +156,16 @@ function workspaceReadme(ideAppPath) {
     "## Quick Start",
     "",
     "1. Open `Launch AutoTyper Arduino.command`.",
-    "2. Edit `sketchbook/AutoTyperStaticSecrets/Secrets.h` with your Wi-Fi credentials.",
-    "3. In Arduino IDE, select the serial port for the device.",
-    "4. Use the only supported board entry: `AutoTyper ESP32S3 Dev Module`.",
-    "5. Click Upload.",
+    "2. In Arduino IDE, select the serial port for the device.",
+    "3. Use the only supported board entry: `AutoTyper ESP32S3 Dev Module`.",
+    "4. Click Upload.",
+    "5. Connect to SoftAP `wifi-setup` with password `admin123`, then provision the target Wi-Fi from the desktop controller.",
     "",
     "The workspace ships with:",
     "- one visible AutoTyper board profile",
     "- the bundled `AutoTyperCore` library",
     "- the required ESP32 toolchain and support files",
-    "- a starter sketch ready for Wi-Fi editing",
+    "- a starter sketch ready for direct SoftAP provisioning",
     "- a launcher that opens this workspace with the locally installed Arduino IDE",
     "",
     "After boot, the device prints its connected Wi-Fi IP to serial.",
@@ -203,7 +180,7 @@ function workspaceLauncherScript() {
     "",
     'WORKSPACE_DIR="$(cd "$(dirname "$0")" && pwd)"',
     'HOME_DIR="$WORKSPACE_DIR/home"',
-    'SKETCH_PATH="$WORKSPACE_DIR/sketchbook/AutoTyperStaticSecrets/AutoTyperStaticSecrets.ino"',
+    'SKETCH_PATH="$WORKSPACE_DIR/sketchbook/AutoTyperProvisioning/AutoTyperProvisioning.ino"',
     'APP_CANDIDATES=(',
     '  "/Applications/Arduino IDE.app"',
     '  "/Applications/Arduino.app"',
@@ -259,9 +236,7 @@ function packageWorkspace() {
   cpSync(sourceAutoTyperCoreDir, join(workspaceLibrariesDir, "AutoTyperCore"), { recursive: true });
 
   mkdirSync(workspaceSketchDir, { recursive: true });
-  writeFileSync(join(workspaceSketchDir, "AutoTyperStaticSecrets.ino"), starterSketch());
-  writeFileSync(join(workspaceSketchDir, "Secrets.h"), starterSecretsTemplate());
-  writeFileSync(join(workspaceSketchDir, "Secrets.example.h"), starterSecretsTemplate());
+  writeFileSync(join(workspaceSketchDir, "AutoTyperProvisioning.ino"), starterSketch());
   writeFileSync(join(workspaceDir, "README.md"), workspaceReadme(ideAppPath));
   writeFileSync(workspaceIdeAnchorPath, `${ideAppPath}\n`);
 
@@ -275,7 +250,7 @@ function verifyWorkspace() {
 
   assert.equal(existsSync(workspaceIdeAnchorPath), true, "Workspace must record the expected local Arduino IDE path");
   assert.equal(existsSync(join(workspaceLibrariesDir, "AutoTyperCore/src/esp32s3/libauto_typer_core.a")), true);
-  assert.equal(existsSync(join(workspaceSketchDir, "Secrets.h")), true);
+  assert.equal(existsSync(join(workspaceSketchDir, "AutoTyperProvisioning.ino")), true);
   assert.equal(existsSync(join(workspaceWrapperPlatformDir, "boards.txt")), true);
   assert.equal(existsSync(join(workspaceUpstreamPlatformDir, "platform.txt")), true);
 

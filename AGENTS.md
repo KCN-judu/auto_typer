@@ -1,265 +1,147 @@
+@/Users/kcn/.codex/RTK.md
+
+--- project-doc ---
+
 # Auto Typer 项目快速索引
 
-这个仓库是一个 ESP32-S3 自动打字机项目，包含固件、桌面控制台、共享协议和硬件资料。后续修改时优先从本文定位入口，再去读对应源码。
+本仓库包含 ESP32-S3 主固件、Electron 桌面控制台、共享 TCP 协议、Arduino 打包工具、独立硬件测试草图和硬件资料。修改前先从本索引定位源码入口，并以代码而不是历史文档为准。
 
 ## 工作规则
 
-- 按仓库全局要求，运行 shell 命令时使用 `rtk` 前缀，例如 `rtk npm run desktop:typecheck`。
-- 不要把硬件动作的“命令发送成功”误认为“动作已经完成”。当前固件大部分运动控制只确认 CAN 帧发送成功，未确认电机实际到位。
-- 这里的运动状态主要由本地软件估算和累计步数维护，硬件丢步、堵转、同步失败或等待时间估算不足都会让软件状态和真实机械位置产生偏差。
+- 文件命名约定只约束文件名和路径名，不约束变量、函数、类型或类。桌面端 TypeScript 文件使用小驼峰，例如 `motionProtocolClient.ts`；固件 C++ 文件使用大驼峰，例如 `MotionProtocolServer.h`。
+- 不要把 CAN 发送成功、命令 ACK 或 `block_ack` 当成机械动作完成。已接收原子块只有对应的 `block_result` 才是终态。
+- 当前协议只接受绝对目标脉冲。桌面端维护累计逻辑位置；设备断电、急停、堵转或机构被人工移动后，计划位置可能与机械位置不一致。
+- 每次上电前必须人工把完整机构放回定义的机械原点。固件的 pulse clear 只建立电气零点，不执行机械回零。
 
 ## 目录索引
 
-- `src/auto_typer/`：主固件。目标是 ESP32-S3，控制 OLED、PCA9685 舵机、Emm_V5.0 CAN 电机，使用编译期 `Secrets.h` 静态 Wi-Fi 凭据，并提供基于 TCP 的远程 group 执行。
-- `apps/desktop/`：Electron + Vite + React 桌面控制台，用于连接 ESP32、创建任务、调试电机/舵机和维护键位映射。
-- `shared/protocol/`：桌面端和固件 TCP NDJSON 控制协议的 TypeScript 类型源。
-- `src/test/test/`：硬件连通性测试草图，覆盖 OLED、PCA9685、舵机和 CAN 电机。
-- `materials/`：电机、PCB、外壳、说明书和供应商例程资料。
+- `src/auto_typer/`：主固件，控制 OLED 和五台 Emm_V5.0 CAN 电机，提供 SoftAP 配网和 TCP `7777` 原子运动协议。
+- `apps/desktop/`：Electron + Vite + React 控制台，负责配网、连接、键位映射、文本规划、绝对脉冲编码、打印和恢复操作。
+- `shared/protocol/`：桌面与固件共同遵守的 TCP NDJSON v1 TypeScript 类型源。
+- `tools/`：固件源码编译、预编译 Arduino 库、离线 Arduino 工作区生成与验证脚本。
+- `src/test/test/`：独立硬件连通性测试草图，不是生产固件入口。
+- `src/test/docs/`：Typst 烧录与使用教程及真实界面截图。
+- `materials/`：电机、PCB、外壳、说明书和供应商资料。
 
 ## 关键入口
 
-- `src/auto_typer/auto_typer.ino`：薄 Arduino 生命周期入口。`setup()` / `loop()` 委托给 `AutoTyperFirmware.h` 的公开固件 API。
-- `src/auto_typer/network/StaticWifiConnector.h`：静态 Wi-Fi 连接器。读取 `config/Secrets.h` 中的 `AUTO_TYPER_WIFI_SSID` / `AUTO_TYPER_WIFI_PASSWORD`，在 Wi-Fi 就绪后放行 TCP server 启动。
-- `src/auto_typer/auto_typer_config.h`：默认硬件配置、运动参数、舵机参数、Wi-Fi、CAN 和机器拓扑。
-- `src/auto_typer/auto_typer_types.h`：核心枚举和结构体，包括 `JobState`、`DeviceMode`、`TypingStepKind`、运动 profile 和任务快照。
-- `src/auto_typer/typing_logic.h`：纯规划逻辑，把文本和 keymap 转成 `TypingPlan`。
-- `src/auto_typer/auto_typer_runtime.h`：固件应用状态机和动作执行逻辑，是状态、运动、回位和调试入口的核心。
-- `src/auto_typer/hal_emm_can_motion.h`：Emm_V5.0 CAN 命令封装。这里只负责组包和 `twai_transmit()`。
-- `src/auto_typer/transport/GroupCommandServer.h`：TCP `7777` NDJSON group command 入口，用于桌面端分组下发远程运动、遥测、取消、探测和故障恢复。
-- `src/auto_typer/can/`：CAN TX 队列、RX 任务、Emm_V5.0 事件解析、运动反馈缓存和协议 trace。
-- `shared/protocol/auto-typer-protocol.ts`：桌面端协议类型和路由常量。
+- `src/auto_typer/auto_typer.ino`：Arduino 生命周期入口，只调用无参 `autoTyperSetup()` 和 `autoTyperLoop()`。
+- `src/auto_typer/AutoTyperFirmware.cpp`：组装 Wi-Fi、CAN、反馈缓存、运行时和 TCP server；`setup()`/`loop()` 的实际委托目标。
+- `src/auto_typer/network/ProvisioningWifiConnector.h` 与 `src/auto_typer/ProvisioningWifiConnector.cpp`：SoftAP + STA 配网状态机和 HTTP `/api/status`、`/api/provision`、`/api/finish`。
+- `src/auto_typer/auto_typer_config.h`：设备 ID、CAN 引脚、机器拓扑、运动参数和绝对脉冲目标默认值。
+- `src/auto_typer/auto_typer_types.h`：任务、设备、运动、反馈和远程动作类型。
+- `src/auto_typer/auto_typer_runtime.h`：启动清零、任务状态、readiness、故障、原子块转换和运行时事件。
+- `src/auto_typer/motion/MotionExecutor.h`：动作状态机、ACK/脉冲/速度监督、取消和急停。
+- `src/auto_typer/transport/MotionProtocolParser.h`：`execute_block` 的结构与数值校验。
+- `src/auto_typer/transport/MotionProtocolServer.h`：TCP `7777` NDJSON v1 会话、命令、快照与终态事件。
+- `src/auto_typer/protocol/EmmV5CommandCodec.h`：Emm_V5.0 CAN 帧编码；位置命令使用绝对脉冲目标。
+- `src/auto_typer/can/`：TWAI、TX 队列、RX 任务、事件解析、反馈缓存和协议 trace。
+- `shared/protocol/protocolTypes.ts`：唯一共享 TypeScript 协议类型源。
+- `apps/desktop/electron/deviceLink.ts`：Electron TCP 链路。
+- `apps/desktop/electron/runtime/provisioning_http.ts`：桌面端 SoftAP HTTP 客户端。
+- `apps/desktop/src/domain/planner/motionBlockPlanner.ts`：文本到动作块规划。
+- `apps/desktop/src/domain/planner/absoluteMotionEncoder.ts`：逻辑位置到 M1-M5 绝对脉冲目标编码。
+- `apps/desktop/src/domain/runtime/executor/motionProtocolClient.ts`：握手、快照、控制命令和 block 客户端。
+- `apps/desktop/src/ui/hooks/usePrintTaskController.ts`：打印、普通取消回零、急停和内部调试操作编排。
 - `apps/desktop/src/ui/App.tsx`：桌面 UI 主组件。
-- `apps/desktop/src/domain/groupStreamClient.ts`：桌面端 TCP group command 客户端。
 
 ## 常用命令
 
-- `rtk npm run desktop:dev`：启动桌面端开发环境。
-- `rtk npm run desktop:build`：构建桌面端。
-- `rtk npm run desktop:typecheck`：桌面端类型检查。
+- `npm run desktop:dev`：启动 Electron 开发环境。
+- `npm run desktop:typecheck`：检查 renderer 与 Electron TypeScript。
+- `npm run desktop:test`：运行绝对运动编码和设备链路测试。
+- `npm run desktop:build`：类型检查并构建桌面端。
+- `npm run firmware:test`：运行固件宿主侧回归测试。
+- `npm run firmware:compile`：编译主固件源码。
+- `npm run firmware:package`：生成预编译 `AutoTyperCore`。
+- `npm run firmware:package:upload`：使用环境变量中的 Wi-Fi 凭据编译并上传。
+- `npm run firmware:workspace`：生成 macOS 离线 Arduino 工作区。
+- `npm run firmware:workspace:verify`：验证板型暴露和 starter sketch 编译。
 
-## 固件主流程
+## 启动与配网事实
 
-启动流程在 `AutoTyperApplication::setup()`：
+1. 无参 `autoTyperSetup()` 启动串口、调用 `gWifi.begin()`，再执行 `gApp.setup()`；固件没有编译期或 sketch 注入的 Wi-Fi 凭据接口。
+2. Wi-Fi 进入 `WIFI_AP_STA`，建立 SSID `wifi-setup`、密码 `admin123`、信道 `6` 的 SoftAP，并在端口 `80` 启动配网 HTTP server。
+3. 固件初始化 OLED、TWAI 和 CAN 队列；向 M1-M5 发送闭环模式/使能配置，清除五台电机脉冲位置，并验证 clear ACK 与近零输入脉冲。
+4. `/api/provision` 接收 SSID/密码并触发 STA 连接；连接超时为 `20000 ms`。
+5. `/api/finish` 只在 STA 已连接时成功；响应后约 `500 ms` 关闭 SoftAP，并通过 `consumeTcpReady()` 放行 TCP server 启动。
+6. TCP server 同时只允许一个 client；连接后 `3000 ms` 内未完成 handshake 会断开。
 
-1. 构建或加载飞宇 200 keymap。
-2. 初始化 I2C OLED。
-3. 初始化 PCA9685 舵机驱动。
-4. 等待 2000 ms。
-5. 初始化 TWAI/CAN。
-6. 对 X、Y 左、Y 右、走纸电机依次设置闭环控制模式并使能，每条命令之间固定 `delay(80)`。
-7. 执行初始走纸回车 `executeInitialLineFeed()`。
-8. 显示 Idle。
+Wi-Fi 必须通过 SoftAP `/api/provision` 直接配网。不要重新引入 `Secrets.h`、`FirmwareConfig`、Wi-Fi 宏或上传环境变量；修改配网行为时必须同步 README 与 Typst 教程。
 
-循环流程在 `auto_typer.ino`：
+## 协议事实
 
-1. `gWifi.tick()` 维护静态 Wi-Fi 连接和有限重试日志。
-2. Wi-Fi 连通后 `gGroupServer.tick()` 处理 TCP group command，接收远程 group、发送执行事件并推送遥测。
-3. `gApp.tick()` 推进当前运行时状态；如果有 queued 的本地任务或远程 group，就驱动同一个执行器状态机继续运行。
-4. `delay(1)`。
+客户端在 handshake 后可发送：
 
-注意：执行链路里仍有阻塞式动作和等待。长动作期间新的 TCP 输入、事件发送和控制响应都只能在返回主循环后继续推进。
+- `get_snapshot`
+- `heartbeat`
+- `execute_block`
+- `cancel`
+- `finish_task`
+- `emergency_stop`
+- `reset_fault`
 
-## 状态逻辑
+设备响应/事件包括：
 
-任务状态枚举在 `JobState`：
+- `handshake_ack`、`snapshot`、`heartbeat_ack`
+- `block_ack`、`block_result`
+- `cancel_result`、`finish_task_result`
+- `emergency_stop_result`、`reset_fault_result`
+- `fault`、`protocol_error`
 
-- `None`：初始无任务。
-- `Queued`：本地文本任务规划成功，或远程 `exec_group` 成功入队后进入。
-- `Running`：`tick()` 启动执行器后进入运行。
-- `Completed`：本地任务执行完成，或远程打印流在 `finishRemoteTask()` 后收尾完成。
-- `Cancelled`：`cancelCurrentJob()` 成功后进入。取消会停止当前执行流；远程 group 会额外产出对应的 cancelled 终态事件。
-- `Failed`：规划失败、执行失败、收尾失败或急停后进入。
+限制：
 
-本地文本任务主线：
+- 单行最大 `8192` bytes。
+- `policy.maxRuntimeMs` 最大 `30000 ms`。
+- 单动作 `timeoutMs` 最大 `10000 ms`。
+- 固件只有一个活动 block 槽；下一 block 必须等待当前 `block_result`。
+- block 允许单个 `motor_move` 或 `wait`；多动作 block 只允许 M1/M2/M3 的 XY 同步组合。
+- `get_snapshot` 是任务、CAN、motor readiness 和 fault 的唯一显式观测路径；固件不主动推送 telemetry/motor state。
 
-```text
-None/Completed/Cancelled/Failed
-  -> submitTextJob() plan ok
-  -> Queued
-  -> tick()
-  -> Running
-  -> executePlan() + returnToInitialPosition()
-  -> Completed
-```
+## 位置与任务事实
 
-失败和中断路径：
+桌面逻辑位置为 `{x, y, l, z}`，物理映射为：
 
-- `submitTextJob()` 如果 `planText()` 返回 `KeyNotFound` 或 `PlanFull`，直接进入 `Failed` 并显示 Error。
-- `executePlan()` 中任一步命令返回 false，进入 `Failed`，设置 `faulted_ = true`。
-- `returnToInitialPosition()` 失败，进入 `Failed`，设置 `faulted_ = true`。
-- `emergencyStop()` 总是发送停止所有电机命令、释放舵机、进入 `Failed`，设置 `faulted_ = true`。
-- `cancelCurrentJob()` 只接受 `Queued` 或 `Running`，成功后进入 `Cancelled`，不设置 `faulted_`。
+- M1 = `x`
+- M2 = `-y`
+- M3 = `y`
+- M4 = `l`
+- M5 = `z`
 
-远程 group 主线：
+当前默认目标/参数：
 
-```text
-TCP hello
-  -> exec_group
-  -> submitRemoteGroup() accepted
-  -> JobState::Queued
-  -> tick()
-  -> JobState::Running
-  -> group_started / block_started / block_done / group_done / group_final
-  -> finish_task
-  -> JobState::Completed
-```
+- 坐标换算 `80 steps/mm`。
+- XY 打印 `1600 RPM`、`accelRaw=128`、`timeoutMs=10000`。
+- M5 按压 `3000 RPM`、`accelRaw=255`；按下 `-2700`，释放 `0`。
+- M4 走纸到位是固定绝对序列 `16400 -> 10000`。
+- 普通字符释放会让 M4 在当前目标基础上累计 `-180` pulses。
 
-注意：
+当前桌面限制：`lineFeedPrimeRequired_` 初始为 true，只有包含 M4 rest target `10000` 的成功动作计划才会清除。`usePrintTaskController()` 返回了 `runLineFeedHome()`，但 `App.tsx` 没有把它绑定到可见控件，因此当前 UI 在全新上电状态不能独立完成首次走纸到位。修改 UI 或文档时不要假设该入口已经存在。
 
-- 单个 `exec_group` 的完成终态由 `group_final` 表示。
-- 整个远程打印任务的 UI 收尾由 `finish_task` 触发，不等同于单个 group 完成。
-- `group_accepted` 只表示 admission 成功，不表示机械开始动作或已经完成。
-
-设备模式 `DeviceMode` 是派生状态：
-
-- `faulted_ == true` 时返回 `Faulted`。
-- `JobState::Queued` 或 `JobState::Running` 时返回 `Running`。
-- 其他情况返回 `Idle`。
-- `DeviceMode::Debug` 目前只在类型中存在，没有运行时代码返回它。
-
-当前固件对外控制面只保留 TCP `7777` NDJSON group command stream。它承载三类语义：
-
-- 控制命令：`exec_group`、`finish_task`、`cancel`
-- 故障与维护：`reset_fault`、`release_line_feed_origin`、`probe`、`press_diag_m5`
-- 观测输出：`status`、`telemetry`、`motor_event`、`motor_state_update`、`group_*`
-
-## 打字计划逻辑
-
-`planText()` 把输入文本转换成最多 256 步的 `TypingPlan`：
-
-- 初始先追加 `Release(homePoint, servo.releaseMs)`。
-- 普通字符会先规范化大小写，然后在 keymap 中查找坐标。
-- 每个普通字符追加：
+远程 block 状态主线：
 
 ```text
-Release(current, servo.releaseMs)
-MoveTo(target, 0)
-Wait(target, servo.settleMs)
-Press(target, servo.pressMs)
-Release(target, servo.releaseMs)
-CharacterRelease(target, 0)
+execute_block
+  -> 完整校验
+  -> block_ack + Queued
+  -> tick() 启动 MotionExecutor + Running
+  -> ACK/输入脉冲/速度/timeout 监督
+  -> block_result(done | failed | cancelled)
 ```
 
-- 换行符 `\n` 或 `\r\n` 追加：
+`finish_task` 只在没有 queued/planning/running/cancelling/active block 时接受；成功后 OLED 显示 `Complete` `3000 ms`，然后回到 `Idle`。
 
-```text
-Release(current, servo.releaseMs)
-LineFeed(current, 0)
-```
+## 取消与故障事实
 
-- 换行后规划层把 `current.xMm` 重置为 `homePoint.xMm`。
-- 找不到字符时返回 `PlanStatus::KeyNotFound` 并记录 `failedKey`。
-- 步数超过 `TypingPlan.steps[256]` 时返回 `PlanStatus::PlanFull`。
+- 桌面普通取消是协作式的：等待当前 block 完成，丢弃未发送 block，再提交 XY→0、M4→16400→10000、M5→0 的绝对回零序列，不发送 `finish_task`。
+- 协议 `cancel` 与断线只取消 `Queued` block；Running block 不被普通取消中断。
+- `emergency_stop` 清空 CAN 队列、停止/失能/解锁五台电机、锁存 fault、使任务失败并显示 `Error`。
+- `reset_fault` 清理执行器和 CAN fault 后重新探测五台电机；CAN 或 motor readiness 未恢复时继续保持 fault。
+- 急停或异常停止后不能假设绝对坐标仍可信，必须先人工检查并恢复机械原点。
 
-## 运动时间逻辑
+## 文档维护
 
-坐标到步数：
-
-- `stepsPerMm = stepsPerRev / (beltPitchMm * pulleyTeeth)`。
-- 默认配置为 `stepsPerRev=3200`、`beltPitchMm=2.0`、`pulleyTeeth=20`，所以默认 `stepsPerMm=80`。
-- `mmToMotorSteps()` 使用 `fabs(deltaMm) * stepsPerMm`，再加 `0.5` 转成整数步。
-- X 轴 delta 是 `target.xMm - current.xMm`。
-- Y 轴 delta 是 `current.yMm - target.yMm`，方向定义和 X 轴相反。
-
-运动等待：
-
-- 所有软件等待统一走 `waitForMove(steps, rpm, settleMs)`。
-- `waitForMove()` 实际调用：
-
-```text
-delay(moveDurationMs(steps, rpm) + settleMs)
-```
-
-- `moveDurationMs()` 公式：
-
-```text
-ceil(steps * 60000 / (rpm * stepsPerRev))
-```
-
-- 如果 `steps == 0`、`rpm == 0` 或 `stepsPerRev == 0`，运动时间按 0 ms 处理。
-- 这个公式只按恒速估算，不显式计算加减速段；`acceleration` 只发送给电机驱动，不参与等待时间计算。
-
-默认运动参数：
-
-- X 常规移动：`rpm=800`、`acceleration=10`、`settleMs=120`。
-- Y 常规移动：`rpm=800`、`acceleration=10`、`settleMs=120`。
-- X 保守回位：`rpm=200`、`acceleration=3`、`errorSteps=150`、`settleMs=180`。
-- Y 保守回位：`rpm=200`、`acceleration=3`、`errorSteps=100`、`settleMs=180`。
-- 走纸：`rpm=500`、`acceleration=10`、`returnTotalSteps=16440`、`returnReleaseSteps=6400`、`characterReleaseSteps=180`、`settleMs=400`、`characterReleaseSettleMs=80`。
-- 舵机：`releaseMs=200`、`pressMs=200`、`settleMs=80`。
-
-轴运动执行：
-
-- X 轴：`moveXMotor()` 发送相对运动命令，更新本地 X 累计步数，然后按估算时间等待。
-- Y 轴：`moveYMotorGroup()` 向左右 Y 电机发送同步相对运动命令，右电机方向取反，然后分别发送同步触发；调用方通常随后调用 `waitForMove()`。
-- 走纸：`moveLineFeedMotor()` 发送相对运动命令，更新本地走纸累计步数，然后按估算时间等待。
-- `executeMove()` 先执行 X，再执行 Y，不是 X/Y 同时插补运动。
-
-回位逻辑：
-
-- `submitTextJob()` 开始时调用 `captureJobStartMotorPositions()`，记录 X、Y、走纸本地累计步数。
-- 任务结束后 `returnToInitialPosition()` 会释放舵机，然后保守回 X 和 Y。
-- 保守回位步数为 `abs(current - jobStart) - errorSteps`，小于等于误差步数时不回。
-- `returnLineFeedMotorToJobStart()` 存在，但当前任务完成路径没有调用它。
-
-## 没有等待硬件确认、直接发送的风险点
-
-CAN 层风险：
-
-- `EmmCanMotionHal::sendCommand()` 只检查 `ready_` 和 `twai_transmit(&message, pdMS_TO_TICKS(100))` 是否成功。
-- `twai_transmit()` 成功只代表 CAN 帧成功交给 TWAI 发送队列或发送路径，不代表电机驱动器已经执行、完成、到位或没有报警。
-- 当前代码没有读取 Emm_V5.0 的实时位置、实时转速、状态标志位、堵转/报警状态或回零状态。
-
-运动命令风险：
-
-- `moveXMotor()`、`moveLineFeedMotor()` 发送命令后直接按公式 `delay()`，没有硬件到位确认。
-- `moveYMotorGroup()` 只发送左右电机同步运动命令和同步触发命令，本身不等待；`executeMove()`、`conservativeReturnYMotorGroup()` 会在外层等待，但调试入口不额外等待。
-- `debugMotorMoveRelative()` 对 Y 组会调用 `moveYMotorGroup()` 后立即返回；这可能早于真实 Y 轴运动完成。
-- `debugMotorMoveRelative()` 对未知 motor id 直接调用 `motion_.moveRelative()`，没有等待、没有本地位置跟踪、没有到位确认。
-- `enableMotor()`、`disableMotor()`、`stopNow()`、`triggerSynchronousMotion()` 都是发送即返回，不读取驱动器确认。
-- `prepareMotors()` 设置闭环模式和使能电机后只固定等待 `80 ms`，没有确认模式切换或使能状态。
-
-状态和位置风险：
-
-- `currentPoint_` 在 `executeMove()` 成功返回后直接设为目标点；成功条件只是发送命令和等待估算时间成功，不代表机械真实到位。
-- X/Y/走纸位置由 `trackSignedMotorMove()` 本地累计。如果电机没有执行、丢步、堵转、同步触发失败或方向配置错误，本地累计会继续变化并污染后续回位。
-- `faulted_` 被设置为 true 后，需要通过 TCP group command `reset_fault` 尝试恢复；恢复是否成功取决于 CAN/执行器状态。
-- 任务执行是阻塞式 `delay()`，运行中 TCP 取消、故障恢复或其他控制命令都无法在长时间 delay 内被及时处理。
-
-同步运动风险：
-
-- Y 组用特殊 motor id `23` 表示逻辑组，实际控制电机 `2` 和 `3`。
-- 左右 Y 电机方向相反：右侧使用 `invertDirection(direction)`。
-- 同步模式下两台电机先接收 `moveRelative(..., sync=true)`，再分别发送 `triggerSynchronousMotion()`。代码没有确认两台驱动器都已缓存好命令，也没有确认同步触发后两台都开始运动。
-
-舵机风险：
-
-- 舵机 HAL 使用固定 dwell delay，不能确认按键是否真的压下或释放。
-- `debugServo()` 在 queued/running 时拒绝调试命令，但任务执行中的 `servo_.press()` / `servo_.release()` 仍是阻塞等待，不带外部反馈。
-
-## 协议和桌面端注意事项
-
-- `shared/protocol/auto-typer-protocol.ts` 是桌面端类型源；ESP32 端手写 JSON 字段名，需要人工保持一致。
-- 桌面端主要通过 TCP `7777` 的 NDJSON group command stream 获取分组执行事件和遥测。客户端必须先发 `hello`，再发 `exec_group`、`finish_task`、`cancel`、`reset_fault`、`release_line_feed_origin`、`probe`、`press_diag_m5` 或 `ping`。
-- `status` / `telemetry` 反映的是运行时快照；`group_done` / `group_final` 反映的是单个 group 的执行结果；两者不要混用。
-- `motor_event`、`motor_state_update` 和 `telemetry_overflow` 是 CAN 观测通道，不是动作完成确认。
-- 桌面端 debug 页在 `status.mode !== "running"` 时允许调试；固件端也会拒绝 queued/running 下的电机和舵机调试命令。
-
-## 测试草图
-
-`src/test/test/` 是独立 Arduino 测试草图：
-
-- `test.ino`：Arduino 生命周期入口。
-- `app_config.h`：测试用引脚和协议配置。
-- `app_logic.h`：测试计划和状态映射。
-- `app_runtime.h`：轮转执行 I2C、舵机和 CAN 测试。
-- `hal_i2c.h`、`hal_display.h`、`hal_servo.h`、`hal_can_motor.h`：测试用硬件 HAL。
-
-测试目标：
-
-- MCU：ESP32-S3。
-- I2C：SDA GPIO6、SCL GPIO7。
-- CAN/TWAI：TX GPIO4、RX GPIO5、500 kbps。
-- OLED：SH1106 128x32，优先 `0x3C`，fallback `0x3D`。
-- PCA9685：`0x40`。
-- Emm_V5.0 CAN 电机：地址 `1`。
+- 操作教程：`src/test/docs/auto_typer_flash_and_usage_guide.typ`。
+- 协议说明：`shared/protocol/README.md`。
+- 独立测试草图说明：`src/test/test/README.md`。
+- 协议、配网、板型、目标脉冲、UI 流程或安全语义变化时，同步更新对应文档和截图。

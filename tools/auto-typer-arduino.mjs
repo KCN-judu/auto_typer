@@ -25,47 +25,17 @@ function ensureCleanDir(dirPath) {
   mkdirSync(dirPath, { recursive: true });
 }
 
-function escapeCString(value) {
-  return value.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
-}
-
-function resolveSecrets({ requireRealSecrets }) {
-  const ssid = process.env.AUTO_TYPER_WIFI_SSID ?? "auto-typer-build-ssid";
-  const password = process.env.AUTO_TYPER_WIFI_PASSWORD ?? "auto-typer-build-password";
-  if (requireRealSecrets && (!process.env.AUTO_TYPER_WIFI_SSID || !process.env.AUTO_TYPER_WIFI_PASSWORD)) {
-    throw new Error("Set AUTO_TYPER_WIFI_SSID and AUTO_TYPER_WIFI_PASSWORD before running upload.");
-  }
-  return { ssid, password };
-}
-
-function writeSecretsHeader(filePath, secrets) {
-  writeFileSync(
-    filePath,
-    [
-      "#pragma once",
-      "",
-      `#define AUTO_TYPER_WIFI_SSID "${escapeCString(secrets.ssid)}"`,
-      `#define AUTO_TYPER_WIFI_PASSWORD "${escapeCString(secrets.password)}"`,
-      "",
-    ].join("\n"),
-  );
-}
-
-function stageSourceSketch(secrets) {
+function stageSourceSketch() {
   const sketchDir = join(buildRoot, "staging/source-sketch/auto_typer");
   ensureCleanDir(sketchDir);
   cpSync(sourceFirmwareDir, sketchDir, { recursive: true });
-  mkdirSync(join(sketchDir, "config"), { recursive: true });
-  writeSecretsHeader(join(sketchDir, "config/Secrets.h"), secrets);
   return sketchDir;
 }
 
-function stagePackageExampleSketch(secrets) {
-  const sketchDir = join(buildRoot, "staging/package-example/AutoTyperStaticSecrets");
+function stagePackageExampleSketch() {
+  const sketchDir = join(buildRoot, "staging/package-example/AutoTyperProvisioning");
   ensureCleanDir(sketchDir);
-  writeFileSync(join(sketchDir, "AutoTyperStaticSecrets.ino"), packageExampleSketch());
-  writeFileSync(join(sketchDir, "Secrets.example.h"), packageSecretsExample());
-  writeSecretsHeader(join(sketchDir, "Secrets.h"), secrets);
+  writeFileSync(join(sketchDir, "AutoTyperProvisioning.ino"), packageExampleSketch());
   return sketchDir;
 }
 
@@ -130,28 +100,24 @@ function resolveArchiveTool(sketchDir) {
 }
 
 function sourceCompileOnly() {
-  const secrets = resolveSecrets({ requireRealSecrets: false });
-  const sketchDir = stageSourceSketch(secrets);
+  const sketchDir = stageSourceSketch();
   compileSketch(sketchDir, join(buildRoot, "source-compile"));
 }
 
 function packageLibrary() {
-  const secrets = resolveSecrets({ requireRealSecrets: false });
-  const sourceSketchDir = stageSourceSketch(secrets);
+  const sourceSketchDir = stageSourceSketch();
   const sourceBuildDir = join(buildRoot, "source-compile");
   compileSketch(sourceSketchDir, sourceBuildDir);
 
   ensureCleanDir(distLibraryDir);
   mkdirSync(distLibrarySrcDir, { recursive: true });
   mkdirSync(distLibraryArchiveDir, { recursive: true });
-  mkdirSync(join(distLibraryDir, "examples/AutoTyperStaticSecrets"), { recursive: true });
+  mkdirSync(join(distLibraryDir, "examples/AutoTyperProvisioning"), { recursive: true });
 
   cpSync(join(sourceFirmwareDir, "AutoTyperFirmware.h"), join(distLibrarySrcDir, "AutoTyperFirmware.h"));
-  cpSync(join(sourceFirmwareDir, "AutoTyperConfig.h"), join(distLibrarySrcDir, "AutoTyperConfig.h"));
   writeFileSync(join(distLibraryDir, "library.properties"), packageLibraryProperties());
   writeFileSync(join(distLibraryDir, "README.md"), packageReadme());
-  writeFileSync(join(distLibraryDir, "examples/AutoTyperStaticSecrets/AutoTyperStaticSecrets.ino"), packageExampleSketch());
-  writeFileSync(join(distLibraryDir, "examples/AutoTyperStaticSecrets/Secrets.example.h"), packageSecretsExample());
+  writeFileSync(join(distLibraryDir, "examples/AutoTyperProvisioning/AutoTyperProvisioning.ino"), packageExampleSketch());
 
   const sketchObjectDir = join(sourceBuildDir, "sketch");
   const sketchObjects = readdirSync(sketchObjectDir)
@@ -174,8 +140,7 @@ function verifyPackagedLibrary() {
   if (!existsSync(join(distLibraryArchiveDir, "libauto_typer_core.a"))) {
     throw new Error("Packaged library archive is missing. Run the package command first.");
   }
-  const secrets = resolveSecrets({ requireRealSecrets: false });
-  const sketchDir = stagePackageExampleSketch(secrets);
+  const sketchDir = stagePackageExampleSketch();
   compileSketch(sketchDir, join(buildRoot, "package-verify"), ["--library", distLibraryDir]);
 }
 
@@ -204,8 +169,7 @@ function scorePort(address) {
 
 function uploadPackagedLibrary() {
   packageLibrary();
-  const secrets = resolveSecrets({ requireRealSecrets: true });
-  const sketchDir = stagePackageExampleSketch(secrets);
+  const sketchDir = stagePackageExampleSketch();
   const portArg = process.argv.slice(3).find((arg) => arg.startsWith("--port="));
   const port = portArg ? portArg.slice("--port=".length) : detectPort();
   compileSketch(sketchDir, join(buildRoot, "package-upload"), ["--library", distLibraryDir, "--upload", "--port", port]);
@@ -221,7 +185,7 @@ function packageLibraryProperties() {
     "paragraph=Static-library distribution of the Auto Typer firmware core for ESP32S3 Dev Module 16MB OPI PSRAM targets.",
     "category=Device Control",
     "architectures=esp32",
-    "includes=AutoTyperFirmware.h,AutoTyperConfig.h",
+    "includes=AutoTyperFirmware.h",
     "dot_a_linkage=true",
     "precompiled=full",
     "",
@@ -231,36 +195,14 @@ function packageLibraryProperties() {
 function packageExampleSketch() {
   return [
     '#include <AutoTyperFirmware.h>',
-    '#include "Secrets.h"',
-    "",
-    "namespace {",
-    "",
-    "const auto_typer::FirmwareConfig kFirmwareConfig = {",
-    "    {",
-    "        AUTO_TYPER_WIFI_SSID,",
-    "        AUTO_TYPER_WIFI_PASSWORD,",
-    "    },",
-    "};",
-    "",
-    "}  // namespace",
     "",
     "void setup() {",
-    "  auto_typer::autoTyperSetup(kFirmwareConfig);",
+    "  auto_typer::autoTyperSetup();",
     "}",
     "",
     "void loop() {",
     "  auto_typer::autoTyperLoop();",
     "}",
-    "",
-  ].join("\n");
-}
-
-function packageSecretsExample() {
-  return [
-    "#pragma once",
-    "",
-    '#define AUTO_TYPER_WIFI_SSID "your-wifi-ssid"',
-    '#define AUTO_TYPER_WIFI_PASSWORD "your-wifi-password"',
     "",
   ].join("\n");
 }
@@ -274,15 +216,15 @@ function packageReadme() {
     "## Arduino IDE",
     "",
     "1. Install this folder as a library, or copy `AutoTyperCore` into your Arduino libraries directory.",
-    "2. Open `examples/AutoTyperStaticSecrets/AutoTyperStaticSecrets.ino`.",
-    "3. Copy `Secrets.example.h` to `Secrets.h` next to the sketch and fill in your Wi-Fi credentials.",
-    "4. The packaged archive already bundles the required Adafruit and ArduinoJson library objects.",
-    "5. Select these board options:",
+    "2. Open `examples/AutoTyperProvisioning/AutoTyperProvisioning.ino`.",
+    "3. The packaged archive already bundles the required Adafruit and ArduinoJson library objects.",
+    "4. Select these board options:",
     "   - Board: `ESP32S3 Dev Module`",
     "   - Flash Size: `16MB (128Mb)`",
     "   - Flash Mode: `OPI 80MHz`",
     "   - PSRAM: `OPI PSRAM`",
     "   - Partition Scheme: `16M Flash (3MB APP/9.9MB FATFS)`",
+    "5. Upload the sketch, connect to SoftAP `wifi-setup` with password `admin123`, and provision Wi-Fi from the desktop controller.",
     "",
     "## Arduino CLI",
     "",
@@ -290,7 +232,7 @@ function packageReadme() {
     "arduino-cli compile \\",
     "  --fqbn esp32:esp32:esp32s3:FlashSize=16M,FlashMode=opi,PSRAM=opi,PartitionScheme=app3M_fat9M_16MB \\",
     "  --library /path/to/AutoTyperCore \\",
-    "  /path/to/AutoTyperStaticSecrets",
+    "  /path/to/AutoTyperProvisioning",
     "```",
     "",
   ].join("\n");
