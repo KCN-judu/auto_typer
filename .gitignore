@@ -1,17 +1,19 @@
+# OS files
 .DS_Store
 
+# Node and Electron build outputs
 node_modules/
-apps/*/node_modules/
 apps/*/dist/
 apps/*/dist-electron/
 apps/*/release/
 
+# Arduino build outputs
 .arduino-build/
 .arduino-cache/
 dist/arduino/
 src/test/.arduino-cli/
 src/test/docs/auto_typer_connectivity_test.pdf
-node_modules
 
+# Local-only files
 src/auto_typer/config/Secrets.h
 materials/

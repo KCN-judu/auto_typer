@@ -12,10 +12,10 @@
     "dev:main": "wait-on http://127.0.0.1:5173 && electron .",
     "prepare:electron": "node electron/check-electron.cjs && tsc -p tsconfig.electron.json",
     "build": "npm run typecheck && vite build && npm run prepare:electron",
-    "pack": "npm run build && electron-builder --dir --config electron-builder.json",
-    "dist": "npm run build && electron-builder --config electron-builder.json",
-    "dist:mac": "npm run build && electron-builder --mac --config electron-builder.json",
-    "dist:win": "npm run build && electron-builder --win portable --config electron-builder.json",
+    "pack": "npm run build && node electron/run-electron-builder.cjs --dir --config electron-builder.config.cjs",
+    "dist": "npm run build && node electron/run-electron-builder.cjs --config electron-builder.config.cjs",
+    "dist:mac": "npm run build && node electron/run-electron-builder.cjs --mac --config electron-builder.config.cjs",
+    "dist:win": "npm run build && node electron/run-electron-builder.cjs --win portable --config electron-builder.config.cjs",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.electron.json"
   },
   "dependencies": {
